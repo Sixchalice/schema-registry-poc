@@ -1,0 +1,82 @@
+| # | Test | Expected | Actual | Result | Notes |
+|---|------|----------|--------|--------|-------|
+| 1a | No credentials | 401 | 401 | **PASS** |  |
+| 1b | c17.svc-a, wrong password | 401 | 401 | **PASS** |  |
+| 1c | Unknown user | 401 | 401 | **PASS** |  |
+| 1d | c17.svc-a, correct password (plaintext in DB) | 200 | 200 | **PASS** |  |
+| 1e | c17.svc-b, correct password (stored as Jetty MD5:) | 403 | 403 | **PASS** | 403 (authz) rather than 401 => authentication succeeded |
+| 2a | c17.svc-a GET orders-value latest | 200 | 200 | **PASS** |  |
+| 2b | c17.svc-b GET orders-value latest | 403 | 403 | **PASS** | {"error_code":40301,"message":"User is denied operation Read on Subject: orders-value"} |
+| 2c | c17.svc-a register new version of orders-value | 403 | 403 | **PASS** | {"error_code":40301,"message":"User is denied operation Write on Subject: orders-value"} |
+| 2d | c17.svc-a DELETE subject orders-value | 403 | 403 | **PASS** | {"error_code":40301,"message":"User is denied operation Delete on Subject: orders-value"} |
+| 2e | c17.svc-a PUT compatibility on orders-value | 403 | 403 | **PASS** |  |
+| 2f | c17.svc-a schema lookup POST /subjects/orders-value (used when auto.register=false) | 200 | 200 | **PASS** |  |
+| 2g | platform-admin register schema (scratch subject) | 200 | 200 | **PASS** |  |
+| 2h | platform-admin soft-delete subject | 200 | 200 | **PASS** |  |
+| 2i | platform-admin hard-delete subject | 200 | 200 | **PASS** |  |
+| 3a | c17.svc-a GET /schemas/ids/1 (orders-value) | 200 | 200 | **PASS** |  |
+| 3b | c17.svc-b GET /schemas/ids/1 | 403 | 403 | **PASS** | {"error_code":40301,"message":"User is denied operation on this server."} |
+| 3c | c17.svc-a GET /schemas/ids/2 (only used by a subject it has no ACL on) | 403 | 403 | **PASS** |  |
+| 3d | c17.svc-a GET /schemas/ids/1/subjects | 200 [orders-value] | 403 {"error_code":40301,"message":"User is denied operation on this server."} | **INFO** | global endpoint: needs GLOBAL_READ (see test 4) |
+| 3e | c17.svc-b GET /schemas/ids/1/versions | 403 | 403 {"error_code":40301,"message":"User is denied operation on this server."} | **PASS** |  |
+| 3f | c17.svc-b GET non-existent id 99999 | 403 or 404 | 404 {"error_code":40403,"message":"schema not found"} | **INFO** | 404 for unknown IDs vs 403 for existing ones reveals whether an ID exists (minor) |
+| 4a | c17.svc-b GET /subjects (no ACLs) | 403 | 403 | **PASS** | {"error_code":40301,"message":"User is denied operation on this server."}; /subjects needs GLOBAL_READ |
+| 4b | c17.svc-a GET /subjects (SUBJECT_READ on orders-*) | 403 | 403 | **PASS** | denied outright, not filtered, without GLOBAL_READ |
+| 4c | platform-admin GET /subjects | 200 | 200 | **PASS** | ["com.acme.payments.Payment","orders-value"] |
+| 4d | c17.svc-a GET /subjects with GLOBAL_READ added | 200 ["orders-value"] | 200 [] | **FAIL** | filter does NOT use SUBJECT_READ |
+| 4d2 | c17.svc-a GET /schemas with GLOBAL_READ added (filtered list) | 200 orders-value only | 200 orders-value only | **PASS** | this list IS filtered by SUBJECT_READ |
+| 4d3 | c17.svc-a GET /subjects after adding SUBJECT_COMPATIBILITY_READ on orders-value | 200 ["orders-value"] | 200 ["orders-value"] | **PASS** | /subjects filter requires SUBJECT_COMPATIBILITY_READ |
+| 4d4 | c17.svc-a GET /schemas/ids/1/subjects (GLOBAL_READ + SUBJECT_COMPATIBILITY_READ) | 200 ["orders-value"] | 200 ["orders-value"] | **PASS** |  |
+| 4e | c17.svc-b GET /subjects with GLOBAL_READ added | 200 [] | 200 [] | **PASS** |  |
+| 4f | c17.svc-a GET /config (global compatibility) | 403 | 403 {"error_code":40301,"message":"User is denied operation ReadCompatibility on this server."} | **PASS** | needs GLOBAL_COMPATIBILITY_READ |
+| 4g | c17.svc-a GET /schemas/types (with GLOBAL_READ) | 200 | 200 ["JSON","PROTOBUF","AVRO"] | **PASS** |  |
+| 4h | c17.svc-b GET /schemas/types (no GLOBAL_READ) | 403 | 403 | **PASS** | also gated by GLOBAL_READ |
+| 5a0 | [rbac.enable=false] platform-admin create exporter | 200 | 200 | **PASS** | {"name":"platform-link-1791837124-a"} |
+| 5a1 | [rbac.enable=false] c17.svc-a GET /exporters | 403 | 200 | **FAIL** | ["platform-link-1791837124-a"] |
+| 5a2 | [rbac.enable=false] c17.svc-a POST /exporters (create) | 403 | 200 | **FAIL** |  |
+| 5a3 | [rbac.enable=false] c17.svc-a GET platform exporter config | 403 | 200 | **FAIL** |  |
+| 5a4 | [rbac.enable=false] c17.svc-a PUT pause on platform exporter | 403 | 200 | **FAIL** |  |
+| 5a5 | [rbac.enable=false] c17.svc-b GET /exporters | 403 | 200 | **FAIL** | ["platform-link-1791837124-a","tenant-c17.svc-a-1791837124"] |
+| 5a6 | [rbac.enable=false] c17.svc-b POST /exporters (create) | 403 | 200 | **FAIL** |  |
+| 5a7 | [rbac.enable=false] c17.svc-b GET platform exporter config | 403 | 200 | **FAIL** |  |
+| 5a8 | [rbac.enable=false] c17.svc-b PUT pause on platform exporter | 403 | 200 | **FAIL** |  |
+| 5a9 | [rbac.enable=false] c17.svc-b DELETE platform exporter | 403 | 204 | **FAIL** |  |
+| 5ax | [rbac.enable=false] platform-admin pause+delete exporter | 204 | 204 | **PASS** |  |
+| 5b0 | [rbac.enable=true] platform-admin create exporter | 200 | 200 | **PASS** | {"name":"platform-link-1791837124-b"} |
+| 5b1 | [rbac.enable=true] c17.svc-a GET /exporters | 403 | 403 | **PASS** | {"error_code":40301,"message":"User is denied operation on this server."} |
+| 5b2 | [rbac.enable=true] c17.svc-a POST /exporters (create) | 403 | 403 | **PASS** |  |
+| 5b3 | [rbac.enable=true] c17.svc-a GET platform exporter config | 403 | 403 | **PASS** |  |
+| 5b4 | [rbac.enable=true] c17.svc-a PUT pause on platform exporter | 403 | 403 | **PASS** |  |
+| 5b5 | [rbac.enable=true] c17.svc-b GET /exporters | 403 | 403 | **PASS** | {"error_code":40301,"message":"User is denied operation on this server."} |
+| 5b6 | [rbac.enable=true] c17.svc-b POST /exporters (create) | 403 | 403 | **PASS** |  |
+| 5b7 | [rbac.enable=true] c17.svc-b GET platform exporter config | 403 | 403 | **PASS** |  |
+| 5b8 | [rbac.enable=true] c17.svc-b PUT pause on platform exporter | 403 | 403 | **PASS** |  |
+| 5b9 | [rbac.enable=true] c17.svc-b DELETE platform exporter | 403 | 403 | **PASS** |  |
+| 5bx | [rbac.enable=true] platform-admin pause+delete exporter | 204 | 204 | **PASS** |  |
+| 6a | svc-a produce 'orders', TopicNameStrategy | OK | OK | **PASS** | RESULT OK produced to orders-0@0 |
+| 6b | svc-a consume 'orders' | OK | OK | **PASS** | RESULT OK consumed com.acme.orders.Order {"id": "3c1c2edd-c9bf-4a2b-b898-36d99ce69fb6", "amount": 12.34} |
+| 6c | svc-b consume 'orders' (Kafka read allowed, no SR ACL) | FAIL | FAIL | **PASS** | RESULT FAIL RecordDeserializationException: Error deserializing VALUE for partition orders-0 at offset 0. If needed, please seek past the record to continue consumption. \| root: RestClientException: User is denied operation on this server.; error code: 40301 |
+| 6d | svc-a produce 'payments', RecordNameStrategy, ACL only via --topic payments | FAIL | FAIL | **PASS** | --topic grants payments-key/-value only; subject is com.acme.payments.Payment. RESULT FAIL ExecutionException: org.apache.kafka.common.errors.AuthorizationException: Error retrieving Avro schema{"type":"record","name":"Payment","namespace":"com.acme.payments","fields":[{"name":"id","type":"string"},{"name":"orderId","type":"string"},{"name":"cents","type":"long"}]} \| root: RestClientException: User is denied operation Read on Subject: com.acme.payments.Payment; error code: 40301 |
+| 6e | same, after sr-acl-cli -s 'com.acme.payments.*' (prefix ACL) | OK | OK | **PASS** | RESULT OK produced to payments-0@0 |
+| 6f | svc-a consume 'payments' (RecordNameStrategy) | OK | OK | **PASS** | RESULT OK consumed com.acme.payments.Payment {"id": "7e342830-0ebd-4201-82d3-07af95442f07", "orderId": "o-1", "cents": 1234} |
+| 7a1 | --add #1: CLI wall time / effective after CLI start (ms) | effective before CLI returns | 1467 / 941 | **PASS** |  |
+| 7r1 | --remove #1: CLI wall time / effective after CLI start (ms) | effective before CLI returns | 1484 / 930 | **PASS** |  |
+| 7a2 | --add #2: CLI wall time / effective after CLI start (ms) | effective before CLI returns | 1465 / 926 | **PASS** |  |
+| 7r2 | --remove #2: CLI wall time / effective after CLI start (ms) | effective before CLI returns | 1470 / 920 | **PASS** |  |
+| 7a3 | --add #3: CLI wall time / effective after CLI start (ms) | effective before CLI returns | 1443 / 907 | **PASS** |  |
+| 7r3 | --remove #3: CLI wall time / effective after CLI start (ms) | effective before CLI returns | 1478 / 912 | **PASS** |  |
+| 8a | valid creds (svc-a), plugin ON: DB work per request (n=20) | - | user-queries 1.00, role-queries 1.00, new DB connections 2.00 | **INFO** |  |
+| 8b | wrong password: DB work per request (n=20) | - | user-queries 1.00, role-queries 0.00, new DB connections 1.00 | **INFO** |  |
+| 8c | unknown user: DB work per request (n=20) | - | user-queries 1.00, role-queries 0.00, new DB connections 1.00 | **INFO** |  |
+| 8d | no credentials: DB work per request (n=20) | - | user-queries 0.00, role-queries 0.00, new DB connections 0.00 | **INFO** |  |
+| 8e | valid creds, plugin OFF: DB work per request (n=20) | - | user-queries 1.00, role-queries 1.00, new DB connections 2.00 | **INFO** |  |
+| 8f | valid creds, 20 requests on ONE keep-alive HTTP connection | - | user-queries 20, role-queries 20, new DB connections 40 | **INFO** |  |
+| 8g | burst, plugin ON (n=1000, concurrency=1) | all 200 | codes {'200': 1000}, p50 6.6ms, p99 9.3ms, max 19.0ms, 76 req/s; DB user-q 1000, role-q 1000, DB conns 2000 | **PASS** |  |
+| 8h | burst, plugin OFF (n=1000, concurrency=1) | all 200 | codes {'200': 1000}, p50 6.8ms, p99 10.1ms, max 14.2ms, 74 req/s; DB user-q 1000, role-q 1000, DB conns 2000 | **PASS** |  |
+| 8i | burst, plugin ON (n=1000, concurrency=10) | all 200 | codes {'200': 1000}, p50 10.2ms, p99 17.7ms, max 24.2ms, 466 req/s; DB user-q 1000, role-q 1000, DB conns 2000 | **PASS** |  |
+| 8j | burst, plugin OFF (n=1000, concurrency=10) | all 200 | codes {'200': 1000}, p50 10.4ms, p99 21.7ms, max 29.5ms, 459 req/s; DB user-q 1000, role-q 1000, DB conns 2000 | **PASS** |  |
+| 8k | burst, plugin ON (n=1000, concurrency=50) | all 200 | codes {'200': 1000}, p50 37.5ms, p99 135.7ms, max 159.9ms, 496 req/s; DB user-q 1000, role-q 1000, DB conns 2000 | **PASS** |  |
+| 8l | valid creds while Postgres is DOWN | - | 401 {"error_code":401,"message":"Unauthorized"} | **INFO** | every request needs the DB |
+| 8m | valid creds after Postgres is back | 200 | 200 | **PASS** |  |
+| 9a | Java class run by sr-acl-cli | io.confluent.kafka.schemaregistry.security.tools.SchemaRegistryAclCommand | io.confluent.kafka.schemaregistry.security.tools.SchemaRegistryAclCommand | **PASS** |  |
+| 9b | ACL record format on _schemas_acl | - | JSON key/value, 17 subject + 5 global records (results/schemas_acl-dump.txt) | **INFO** |  |

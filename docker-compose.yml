@@ -1,0 +1,145 @@
+name: sr-acl-poc
+
+# Local POC: Confluent Schema Registry 7.9 + Security Plugin (ACL mode) with
+# HTTP Basic auth validated by Jetty's JDBCLoginModule against PostgreSQL.
+
+x-sr-common: &sr-common
+  build: ./schema-registry
+  image: sr-acl-poc/schema-registry:7.9.0
+  depends_on:
+    kafka: { condition: service_healthy }
+    postgres: { condition: service_healthy }
+  volumes:
+    - ./schema-registry:/etc/schema-registry/poc:ro
+  # Concatenate the base properties with optional extra lines (SR_EXTRA_PROPS, ';'-separated)
+  # so tests can flip a single setting without editing files.
+  entrypoint: ["bash", "-c"]
+
+services:
+  kafka:
+    image: confluentinc/cp-server:7.9.0
+    hostname: kafka
+    ports:
+      - "9092:9092"
+    environment:
+      CLUSTER_ID: "4L6g3nShT-eMCtK--X86sw"
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # CONTROLLER is PLAINTEXT but bound to localhost inside the container only.
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092,CONTROLLER://localhost:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:SASL_PLAINTEXT,EXTERNAL:SASL_PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_SASL_ENABLED_MECHANISMS: SCRAM-SHA-256
+      KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL: SCRAM-SHA-256
+      KAFKA_OPTS: "-Djava.security.auth.login.config=/etc/kafka/poc/kafka_server_jaas.conf"
+      KAFKA_AUTHORIZER_CLASS_NAME: org.apache.kafka.metadata.authorizer.StandardAuthorizer
+      KAFKA_SUPER_USERS: "User:broker;User:ANONYMOUS"
+      KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      # cp-server internal topics on a single broker
+      KAFKA_CONFLUENT_LICENSE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CONFLUENT_BALANCER_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CONFLUENT_BALANCER_ENABLE: "false"
+      KAFKA_CONFLUENT_DURABILITY_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CONFLUENT_TIER_METADATA_REPLICATION_FACTOR: 1
+      KAFKA_CONFLUENT_CLUSTER_LINK_METADATA_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CONFLUENT_REPORTERS_TELEMETRY_AUTO_ENABLE: "false"
+      KAFKA_CONFLUENT_TELEMETRY_ENABLED: "false"
+    volumes:
+      - ./kafka:/etc/kafka/poc:ro
+    # Same as the image's /etc/confluent/docker/run, except the KRaft format step
+    # also bootstraps the SCRAM credential of the inter-broker user (KIP-900).
+    command:
+      - bash
+      - -c
+      - |
+        . /etc/confluent/docker/bash-config
+        /etc/confluent/docker/configure
+        kafka-storage format --ignore-formatted --cluster-id="$$CLUSTER_ID" -c /etc/kafka/kafka.properties \
+          --add-scram 'SCRAM-SHA-256=[name=broker,password=broker-secret]'
+        exec /etc/confluent/docker/launch
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server kafka:29092 --command-config /etc/kafka/poc/admin.properties >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 20s
+      retries: 30
+
+  postgres:
+    image: postgres:16
+    hostname: postgres
+    # No host port: scripts use `docker compose exec postgres psql`.
+    environment:
+      POSTGRES_DB: platform
+      POSTGRES_USER: platform
+      POSTGRES_PASSWORD: platform-secret
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=all
+      - -c
+      - log_statement=all
+      - -c
+      - log_connections=on
+      - -c
+      - log_disconnections=on
+    volumes:
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform -d platform"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  schema-registry:
+    <<: *sr-common
+    hostname: schema-registry
+    ports:
+      - "8081:8081"
+    environment:
+      SR_BASE_PROPS: /etc/schema-registry/poc/sr.properties
+      SR_EXTRA_PROPS: ${SR_EXTRA_PROPS:-}
+      SCHEMA_REGISTRY_OPTS: "-Djava.security.auth.login.config=/etc/schema-registry/poc/jaas.conf"
+      SCHEMA_REGISTRY_LOG4J_OPTS: "-Dlog4j.configuration=file:/etc/schema-registry/poc/log4j.properties"
+    command:
+      - |
+        cp "$$SR_BASE_PROPS" /tmp/sr.properties
+        [ -n "$$SR_EXTRA_PROPS" ] && echo "$$SR_EXTRA_PROPS" | tr ';' '\n' >> /tmp/sr.properties
+        echo "===> effective extra props: $${SR_EXTRA_PROPS:-<none>}"
+        exec schema-registry-start /tmp/sr.properties
+
+  # Benchmark-only: same auth (JDBC realm), security plugin OFF. Joins the same
+  # SR group as a non-leader follower and serves reads from the same _schemas topic.
+  schema-registry-noplugin:
+    <<: *sr-common
+    profiles: ["bench"]
+    hostname: schema-registry-noplugin
+    ports:
+      - "8082:8081"
+    environment:
+      SR_BASE_PROPS: /etc/schema-registry/poc/sr-noplugin.properties
+      SCHEMA_REGISTRY_OPTS: "-Djava.security.auth.login.config=/etc/schema-registry/poc/jaas.conf"
+      SCHEMA_REGISTRY_LOG4J_OPTS: "-Dlog4j.configuration=file:/etc/schema-registry/poc/log4j.properties"
+    command:
+      - |
+        cp "$$SR_BASE_PROPS" /tmp/sr.properties
+        exec schema-registry-start /tmp/sr.properties
+
+  # Java Avro producer/consumer (see client/). Built and run via scripts/test.sh.
+  client:
+    image: maven:3.9.9-eclipse-temurin-17
+    profiles: ["client"]
+    working_dir: /src
+    volumes:
+      - ./client:/src
+      - ./.cache/m2:/root/.m2
+    entrypoint: ["java", "-jar", "/src/target/client.jar"]
+
