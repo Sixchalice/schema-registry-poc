@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
-# Seed: Postgres users, Schema Registry ACLs (sr-acl-cli), schemas registered by platform-admin.
+# Seed: SQL Server users, Schema Registry ACLs (sr-acl-cli), schemas registered by platform-admin.
 source "$(dirname "$0")/lib.sh"
 
-log "Postgres: platform principals and tenant Services"
-psql_q "
-INSERT INTO clusters VALUES ('c17') ON CONFLICT DO NOTHING;
-INSERT INTO platform_principals VALUES ('$ADMIN_USER', '$ADMIN_PASS') ON CONFLICT DO NOTHING;
--- svc-a: plaintext password; svc-b: Jetty 'MD5:' form, to show both credential formats work
-INSERT INTO services VALUES ('c17', 'svc-a', '$A_PASS') ON CONFLICT DO NOTHING;
-INSERT INTO services VALUES ('c17', 'svc-b', 'MD5:' || md5('$B_PASS')) ON CONFLICT DO NOTHING;
+log "SQL Server: platform principals and tenant Services"
+mssql_q "
+IF NOT EXISTS (SELECT 1 FROM clusters WHERE cluster_id = 'c17') INSERT INTO clusters VALUES ('c17');
+IF NOT EXISTS (SELECT 1 FROM platform_principals WHERE username = '$ADMIN_USER') INSERT INTO platform_principals VALUES ('$ADMIN_USER', '$ADMIN_PASS');
+IF NOT EXISTS (SELECT 1 FROM services WHERE cluster_id = 'c17' AND scram_user = 'svc-a') INSERT INTO services VALUES ('c17', 'svc-a', '$A_PASS');
+IF NOT EXISTS (SELECT 1 FROM services WHERE cluster_id = 'c17' AND scram_user = 'svc-b')
+  INSERT INTO services VALUES ('c17', 'svc-b', 'MD5:' + LOWER(CONVERT(varchar(32), HASHBYTES('MD5', '$B_PASS'), 2)));
 " >/dev/null
-psql_q "SELECT username, password FROM sr_auth_users ORDER BY 1" | sed 's/^/    /'
+mssql_q "SELECT username + ' | ' + password FROM sr_auth_users ORDER BY 1" | sed 's/^/    /'
+# Schema Registry picks up the new rows on its next change-tracking poll (every 5 s)
+log "Waiting for Schema Registry to load the new users"
+for _ in $(seq 30); do [[ "$(http_code "$ADMIN_USER:$ADMIN_PASS" GET "$SR/subjects")" != 401 ]] && break; sleep 1; done
 
 log "Schema Registry ACLs via sr-acl-cli"
 sracl --add -s '*' -p "$ADMIN_USER" -o '*'                >/dev/null

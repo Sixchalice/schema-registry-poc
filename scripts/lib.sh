@@ -5,6 +5,8 @@ cd "$ROOT"
 
 SR=http://localhost:8081
 SR_NOPLUGIN=http://localhost:8082
+SR_JDBC=http://localhost:8083
+MSSQL_SA_PASS=Platform-secret1
 
 # Credentials (POC only). Schema Registry user = <cluster>.<scram-user>, same password as SCRAM.
 ADMIN_USER=platform-admin;  ADMIN_PASS=platform-admin-secret
@@ -13,8 +15,12 @@ B_USER=c17.svc-b;           B_PASS=svc-b-secret
 
 dc()      { docker compose "$@"; }
 kexec()   { docker compose exec -T kafka "$@"; }
-psql_q()  { docker compose exec -T postgres psql -U platform -d platform -At -c "$1"; }
+mssql_q() { docker compose exec -T mssql /opt/mssql-tools18/bin/sqlcmd -C -I -S localhost -U sa -P "$MSSQL_SA_PASS" -d "${2:-platform}" -b -h -1 -W -Q "SET NOCOUNT ON; $1"; }
 sracl()   { docker compose exec -T schema-registry sr-acl-cli --config /tmp/sr.properties "$@"; }
+mssql_up() { # start SQL Server and wait until the platform database is ONLINE (not just the server)
+  docker compose up -d --wait mssql >/dev/null 2>&1
+  until [[ "$(mssql_q "SELECT state_desc FROM sys.databases WHERE name = 'platform'" master 2>/dev/null)" == ONLINE ]]; do sleep 1; done
+}
 now_ms()  { perl -MTime::HiRes=time -e 'printf "%d\n", time*1000'; }
 log()     { printf '\033[1;34m==> %s\033[0m\n' "$*"; }
 

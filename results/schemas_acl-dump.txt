@@ -21,15 +21,15 @@
 {"keytype":"NOOP","magic":0} | null
 {"keytype":"NOOP","magic":0} | null
 {"keytype":"NOOP","magic":0} | null
-{"keytype":"SUBJECT_ACL","magic":0,"principal":"c17.svc-a","subject":"payments-key"} | {"magic":0,"principal":"c17.svc-a","subject":"payments-key","allowedoperations":["SUBJECT_READ"]}
 {"keytype":"SUBJECT_ACL","magic":0,"principal":"c17.svc-a","subject":"payments-value"} | {"magic":0,"principal":"c17.svc-a","subject":"payments-value","allowedoperations":["SUBJECT_READ"]}
+{"keytype":"SUBJECT_ACL","magic":0,"principal":"c17.svc-a","subject":"payments-key"} | {"magic":0,"principal":"c17.svc-a","subject":"payments-key","allowedoperations":["SUBJECT_READ"]}
 {"keytype":"NOOP","magic":0} | null
 {"keytype":"SUBJECT_ACL","magic":0,"principal":"c17.svc-a","subject":"com.acme.payments.*"} | {"magic":0,"principal":"c17.svc-a","subject":"com.acme.payments.*","allowedoperations":["SUBJECT_READ"]}
 {"keytype":"NOOP","magic":0} | null
 {"keytype":"SUBJECT_ACL","magic":0,"principal":"c17.svc-a","subject":"com.acme.payments.*"} | {"magic":0,"principal":"c17.svc-a","subject":"com.acme.payments.*","allowedoperations":[]}
 {"keytype":"NOOP","magic":0} | null
-{"keytype":"SUBJECT_ACL","magic":0,"principal":"c17.svc-a","subject":"payments-key"} | {"magic":0,"principal":"c17.svc-a","subject":"payments-key","allowedoperations":[]}
 {"keytype":"SUBJECT_ACL","magic":0,"principal":"c17.svc-a","subject":"payments-value"} | {"magic":0,"principal":"c17.svc-a","subject":"payments-value","allowedoperations":[]}
+{"keytype":"SUBJECT_ACL","magic":0,"principal":"c17.svc-a","subject":"payments-key"} | {"magic":0,"principal":"c17.svc-a","subject":"payments-key","allowedoperations":[]}
 {"keytype":"NOOP","magic":0} | null
 {"keytype":"SUBJECT_ACL","magic":0,"principal":"c17.svc-b","subject":"orders-value"} | {"magic":0,"principal":"c17.svc-b","subject":"orders-value","allowedoperations":["SUBJECT_READ"]}
 {"keytype":"NOOP","magic":0} | null
@@ -42,3 +42,4 @@
 {"keytype":"SUBJECT_ACL","magic":0,"principal":"c17.svc-b","subject":"orders-value"} | {"magic":0,"principal":"c17.svc-b","subject":"orders-value","allowedoperations":["SUBJECT_READ"]}
 {"keytype":"NOOP","magic":0} | null
 {"keytype":"SUBJECT_ACL","magic":0,"principal":"c17.svc-b","subject":"orders-value"} | {"magic":0,"principal":"c17.svc-b","subject":"orders-value","allowedoperations":[]}
+{"keytype":"NOOP","magic":0} | null

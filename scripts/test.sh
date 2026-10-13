@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs tests 1-9 against the running stack (scripts/up.sh + scripts/seed.sh first).
+# Runs tests 1-10 against the running stack (scripts/up.sh + scripts/seed.sh first).
 # Writes results/results.md (table), results/results.tsv, results/details.log, results/burst-*.txt
 source "$(dirname "$0")/lib.sh"
 
@@ -35,12 +35,38 @@ client() { # args... -> prints the RESULT line
 }
 ok_or_fail() { [[ "$1" == "RESULT OK"* ]] && echo OK || echo FAIL; }
 
-pg_auth_queries() { # -> "<user-queries> <role-queries>" run by the sr_auth DB role
-  psql_q "SELECT coalesce(sum(calls) FILTER (WHERE query ILIKE '%from sr_auth_users%'),0) || ' ' ||
-                 coalesce(sum(calls) FILTER (WHERE query ILIKE '%from sr_auth_roles%'),0)
-          FROM pg_stat_statements WHERE userid = (SELECT oid FROM pg_roles WHERE rolname='sr_auth')"
+ms_stats() { # xe-session -> "<logins> <queries>" counted by an Extended Events session from mssql/init.sql
+  mssql_q "SELECT COALESCE(x.d.value('(//Event[@name=\"login\"]/@count)[1]', 'bigint'), 0),
+      COALESCE(x.d.value('(//Event[@name=\"sql_batch_completed\"]/@count)[1]', 'bigint'), 0)
+    + COALESCE(x.d.value('(//Event[@name=\"rpc_completed\"]/@count)[1]', 'bigint'), 0)
+    FROM (SELECT CAST(t.target_data AS xml) AS d FROM sys.dm_xe_session_targets t
+          JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address WHERE s.name = '$1') x" master | tr -s ' \t' ' '
 }
-pg_auth_conns() { dc logs --no-log-prefix postgres 2>&1 | grep -c 'connection authorized: user=sr_auth' || true; }
+full_loads() { # how often the snapshot module has read the whole user view (plan cache)
+  mssql_q "SELECT COALESCE(SUM(qs.execution_count),0) FROM sys.dm_exec_query_stats qs CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) t
+    WHERE t.text = 'SELECT username, password FROM sr_auth_users'" master
+}
+
+lat_stats() { # file-of-"code seconds"-lines wall-ms -> one-line summary
+  python3 - "$1" "$2" <<'PY'
+import sys, collections
+rows=[l.split() for l in open(sys.argv[1]) if l.strip()]
+codes=collections.Counter(r[0] for r in rows); lat=sorted(float(r[1])*1000 for r in rows)
+pct=lambda p: lat[min(len(lat)-1, int(round(p/100*len(lat)))-1)]
+wall=int(sys.argv[2])/1000
+print(f"codes {dict(codes)}, p50 {pct(50):.1f}ms, p99 {pct(99):.1f}ms, max {lat[-1]:.1f}ms, {len(rows)/wall:.0f} req/s")
+PY
+}
+
+wait_code() { # creds url want-code timeout-ms -> elapsed ms, or "timeout"
+  local t0; t0=$(now_ms)
+  while [[ "$(get "$1" "$2")" != "$3" ]]; do
+    (( $(now_ms) - t0 > $4 )) && { echo timeout; return; }
+    sleep 0.1
+  done
+  echo $(( $(now_ms) - t0 ))
+}
+within() { [[ "$1" != timeout ]] && (( $1 <= $2 )) && echo PASS || echo FAIL; }
 
 ADMIN="$ADMIN_USER:$ADMIN_PASS"; A="$A_USER:$A_PASS"; B="$B_USER:$B_PASS"
 ORDERS_LATEST="$SR/subjects/orders-value/versions/latest"
@@ -51,7 +77,7 @@ ORDERS_LATEST="$SR/subjects/orders-value/versions/latest"
 restart_sr ""
 
 # ======================================================================== 1
-log "Test 1: Authentication (Jetty JDBCLoginModule -> Postgres)"
+log "Test 1: Authentication (in-memory snapshot of SQL Server)"
 check 1a "No credentials"                    401 "$(get - "$ORDERS_LATEST")"
 check 1b "c17.svc-a, wrong password"         401 "$(get "$A_USER:wrong" "$ORDERS_LATEST")"
 check 1c "Unknown user"                      401 "$(get "c17.nobody:x" "$ORDERS_LATEST")"
@@ -174,54 +200,61 @@ for i in 1 2 3; do
 done
 
 # ======================================================================== 8
-log "Test 8: Database load"
-dc --profile bench up -d schema-registry-noplugin >/dev/null 2>&1; wait_for_http "$SR_NOPLUGIN/subjects" 401 180
-per_request() { # id label creds url n
-  local q0 c0 q1 c1; q0=($(pg_auth_queries)); c0=$(pg_auth_conns)
+log "Test 8: Database load (Jetty's JDBCLoginModule vs the in-memory snapshot, both on SQL Server)"
+dc --profile bench up -d schema-registry-noplugin schema-registry-jdbc >/dev/null 2>&1
+wait_for_http "$SR_NOPLUGIN/subjects" 401 180; wait_for_http "$SR_JDBC/subjects" 401 180
+until [[ "$(get "$ADMIN" "$SR_JDBC/subjects")" == 200 ]]; do sleep 1; done   # ACL cache loaded
+JDBC_LATEST="$SR_JDBC/subjects/orders-value/versions/latest"
+NOPLUGIN_LATEST="$SR_NOPLUGIN/subjects/orders-value/versions/latest"
+per_request() { # id label creds url n  (JDBCLoginModule, login sr_jdbc)
+  local s0 s1; s0=($(ms_stats sr_jdbc_activity))
   for _ in $(seq "$5"); do curl -s -o /dev/null ${3:+-u "$3"} "$4"; done
-  sleep 1; q1=($(pg_auth_queries)); c1=$(pg_auth_conns)
-  local uq=$(( q1[0]-q0[0] )) rq=$(( q1[1]-q0[1] )) cn=$(( c1-c0 ))
-  rec "$1" "$2: DB work per request (n=$5)" "-" "$(python3 -c "print(f'user-queries {$uq/$5:.2f}, role-queries {$rq/$5:.2f}, new DB connections {$cn/$5:.2f}')")" INFO
+  s1=($(ms_stats sr_jdbc_activity))
+  local q=$(( s1[1]-s0[1] )) c=$(( s1[0]-s0[0] ))
+  rec "$1" "$2: DB work per request (n=$5)" "-" "$(python3 -c "print(f'queries {$q/$5:.2f}, new DB connections {$c/$5:.2f}')")" INFO
 }
-per_request 8a "valid creds (svc-a), plugin ON" "$A" "$ORDERS_LATEST" 20
-per_request 8b "wrong password" "$A_USER:wrong" "$ORDERS_LATEST" 20
-per_request 8c "unknown user" "c17.nobody:x" "$ORDERS_LATEST" 20
-per_request 8d "no credentials" "" "$ORDERS_LATEST" 20
-per_request 8e "valid creds, plugin OFF" "$A" "$SR_NOPLUGIN/subjects/orders-value/versions/latest" 20
+per_request 8a "JDBCLoginModule, valid creds" "$A" "$JDBC_LATEST" 20
+per_request 8b "JDBCLoginModule, wrong password" "$A_USER:wrong" "$JDBC_LATEST" 20
+per_request 8c "JDBCLoginModule, unknown user" "c17.nobody:x" "$JDBC_LATEST" 20
+per_request 8d "JDBCLoginModule, no credentials" "" "$JDBC_LATEST" 20
 # Keep-alive: 20 requests over one HTTP connection
-q0=($(pg_auth_queries)); c0=$(pg_auth_conns)
-curl -s -u "$A" $(for _ in $(seq 20); do printf -- '-o /dev/null %s ' "$ORDERS_LATEST"; done); sleep 1
-q1=($(pg_auth_queries)); c1=$(pg_auth_conns)
-rec 8f "valid creds, 20 requests on ONE keep-alive HTTP connection" "-" "user-queries $(( q1[0]-q0[0] )), role-queries $(( q1[1]-q0[1] )), new DB connections $(( c1-c0 ))" INFO
+s0=($(ms_stats sr_jdbc_activity))
+curl -s -u "$A" $(for _ in $(seq 20); do printf -- '-o /dev/null %s ' "$JDBC_LATEST"; done)
+s1=($(ms_stats sr_jdbc_activity))
+rec 8e "JDBCLoginModule, 20 requests on ONE keep-alive HTTP connection" "-" "queries $(( s1[1]-s0[1] )), new DB connections $(( s1[0]-s0[0] ))" INFO
+# Snapshot: valid, wrong-password and unknown-user requests
+s0=($(ms_stats sr_auth_activity)); f0=$(full_loads); t0=$(now_ms)
+for _ in $(seq 100); do
+  curl -s -o /dev/null -u "$A" "$ORDERS_LATEST"; curl -s -o /dev/null -u "$A_USER:wrong" "$ORDERS_LATEST"; curl -s -o /dev/null -u "c17.nobody:x" "$ORDERS_LATEST"
+done
+t1=$(now_ms); s1=($(ms_stats sr_auth_activity)); f1=$(full_loads)
+rec 8f "snapshot, 300 requests (100 valid, 100 wrong password, 100 unknown user)" "no per-request DB work" \
+  "queries $(( s1[1]-s0[1] )), new DB connections $(( s1[0]-s0[0] )), full loads $(( f1-f0 )) in $(( (t1-t0)/1000 ))s" INFO \
+  "only the background poll: 1 connection + 1 query per 5s per node"
 
-burst() { # id label url n conc
-  local out="results/burst-$1.txt" q0 c0 q1 c1 t0 t1
-  q0=($(pg_auth_queries)); c0=$(pg_auth_conns); t0=$(now_ms)
+burst() { # id label url n conc xe-session
+  local out="results/burst-$1.txt" s0 s1 t0 t1
+  s0=($(ms_stats "$6")); t0=$(now_ms)
   seq "$4" | xargs -P "$5" -I{} curl -s -o /dev/null -w '%{http_code} %{time_total}\n' -u "$A" "$3" > "$out"
-  t1=$(now_ms); sleep 1; q1=($(pg_auth_queries)); c1=$(pg_auth_conns)
-  local stats; stats=$(python3 - "$out" $((t1-t0)) <<'PY'
-import sys, collections
-rows=[l.split() for l in open(sys.argv[1]) if l.strip()]
-codes=collections.Counter(r[0] for r in rows); lat=sorted(float(r[1])*1000 for r in rows)
-pct=lambda p: lat[min(len(lat)-1, int(round(p/100*len(lat)))-1)]
-wall=int(sys.argv[2])/1000
-print(f"codes {dict(codes)}, p50 {pct(50):.1f}ms, p99 {pct(99):.1f}ms, max {lat[-1]:.1f}ms, {len(rows)/wall:.0f} req/s")
-PY
-)
-  rec "$1" "$2 (n=$4, concurrency=$5)" "all 200" "$stats; DB user-q $(( q1[0]-q0[0] )), role-q $(( q1[1]-q0[1] )), DB conns $(( c1-c0 ))" \
+  t1=$(now_ms); s1=($(ms_stats "$6"))
+  rec "$1" "$2 (n=$4, concurrency=$5)" "all 200" "$(lat_stats "$out" $((t1-t0))); DB queries $(( s1[1]-s0[1] )), DB conns $(( s1[0]-s0[0] ))" \
     "$([[ $(grep -vc '^200 ' "$out") == 0 ]] && echo PASS || echo FAIL)"
 }
-burst 8g "burst, plugin ON"  "$ORDERS_LATEST" 1000 1
-burst 8h "burst, plugin OFF" "$SR_NOPLUGIN/subjects/orders-value/versions/latest" 1000 1
-burst 8i "burst, plugin ON"  "$ORDERS_LATEST" 1000 10
-burst 8j "burst, plugin OFF" "$SR_NOPLUGIN/subjects/orders-value/versions/latest" 1000 10
-burst 8k "burst, plugin ON"  "$ORDERS_LATEST" 1000 50
-# Availability: what clients see while the auth database is down
-dc stop postgres >/dev/null 2>&1
-code=$(get "$A" "$ORDERS_LATEST"); rec 8l "valid creds while Postgres is DOWN" "-" "$code $(body)" INFO "every request needs the DB"
-dc start postgres >/dev/null 2>&1; until dc exec -T postgres pg_isready -U platform >/dev/null 2>&1; do sleep 1; done; sleep 1
-check 8m "valid creds after Postgres is back" 200 "$(get "$A" "$ORDERS_LATEST")"
-dc --profile bench stop schema-registry-noplugin >/dev/null 2>&1
+# Warm-up (not measured): JIT-compile each registry, the bench twins have only just started
+for url in "$JDBC_LATEST" "$ORDERS_LATEST" "$NOPLUGIN_LATEST"; do seq 300 | xargs -P 10 -I{} curl -s -o /dev/null -u "$A" "$url"; done
+burst 8g "burst, JDBCLoginModule"   "$JDBC_LATEST"     1000 1  sr_jdbc_activity
+burst 8h "burst, snapshot"          "$ORDERS_LATEST"   1000 1  sr_auth_activity
+burst 8i "burst, JDBCLoginModule"   "$JDBC_LATEST"     1000 10 sr_jdbc_activity
+burst 8j "burst, snapshot"          "$ORDERS_LATEST"   1000 10 sr_auth_activity
+burst 8k "burst, snapshot, plugin OFF" "$NOPLUGIN_LATEST" 1000 10 sr_auth_activity
+burst 8l "burst, snapshot"          "$ORDERS_LATEST"   1000 50 sr_auth_activity
+# Availability of the stock module while the database is down (the snapshot's behavior is test 10)
+dc stop mssql >/dev/null 2>&1
+code=$(get "$A" "$JDBC_LATEST"); rec 8m "JDBCLoginModule, valid creds while SQL Server is DOWN" "-" "$code $(body)" INFO "every request needs the DB"
+mssql_up
+ms=$(wait_code "$A" "$JDBC_LATEST" 200 30000)
+rec 8n "JDBCLoginModule, valid creds after SQL Server is back" "200 within 30 s" "$ms ms after the database is ONLINE" "$(within "$ms" 30000)"
+dc --profile bench stop schema-registry-noplugin schema-registry-jdbc >/dev/null 2>&1
 
 # ======================================================================== 9
 log "Test 9: sr-acl-cli internals"
@@ -231,6 +264,37 @@ dc exec -T kafka kafka-console-consumer --bootstrap-server kafka:29092 --consume
   --topic _schemas_acl --from-beginning --property print.key=true --property key.separator=' | ' --timeout-ms 5000 \
   > results/schemas_acl-dump.txt 2>/dev/null || true
 rec 9b "ACL record format on _schemas_acl" "-" "JSON key/value, $(grep -c SUBJECT_ACL results/schemas_acl-dump.txt) subject + $(grep -c GLOBAL_ACL results/schemas_acl-dump.txt) global records (results/schemas_acl-dump.txt)" INFO
+
+# ======================================================================== 10
+log "Test 10: In-memory login snapshot: freshness and SQL Server outages"
+# Changes in SQL Server reach the snapshot via the change-tracking poll (every 5s)
+NEW="c17.svc-new:svc-new-secret"
+mssql_q "INSERT INTO services VALUES ('c17', 'svc-new', 'svc-new-secret')"
+ms=$(wait_code "$NEW" "$ORDERS_LATEST" 403 15000)
+rec 10a "new user inserted in SQL Server -> accepted (403 = authenticated, no ACL)" "<= 6000 ms" "$ms ms" "$(within "$ms" 6000)"
+mssql_q "UPDATE services SET scram_password = 'svc-new-rotated' WHERE scram_user = 'svc-new'"
+ms=$(wait_code "c17.svc-new:svc-new-rotated" "$ORDERS_LATEST" 403 15000)
+rec 10b "password changed -> new password accepted" "<= 6000 ms" "$ms ms" "$(within "$ms" 6000)" \
+  "old password now: $(get "$NEW" "$ORDERS_LATEST")"
+mssql_q "DELETE FROM services WHERE scram_user = 'svc-new'"
+ms=$(wait_code "c17.svc-new:svc-new-rotated" "$ORDERS_LATEST" 401 15000)
+rec 10c "user deleted -> rejected" "<= 6000 ms" "$ms ms" "$(within "$ms" 6000)"
+
+# SQL Server down: the running registry keeps working; a restarting one refuses to start
+dc stop mssql >/dev/null 2>&1
+sleep 6   # at least one failed background poll
+check 10d "valid creds while SQL Server is DOWN" 200 "$(get "$A" "$ORDERS_LATEST")"
+check 10e "wrong password while SQL Server is DOWN" 401 "$(get "$A_USER:wrong" "$ORDERS_LATEST")"
+cid=$(dc ps -aq schema-registry)
+docker restart "$cid" >/dev/null   # plain docker: compose would start mssql as a dependency
+until [[ "$(docker inspect -f '{{.State.Status}}' "$cid")" == exited ]]; do sleep 1; done
+rec 10f "restart Schema Registry while SQL Server is DOWN" "exits, code 1" \
+  "$(docker inspect -f '{{.State.Status}}, code {{.State.ExitCode}}' "$cid")" \
+  "$([[ "$(docker inspect -f '{{.State.ExitCode}}' "$cid")" == 1 ]] && echo PASS || echo FAIL)" \
+  "$(docker logs "$cid" 2>&1 | grep -o 'auth preflight FAILED.*' | tail -1 | cut -c1-120)"
+mssql_up
+restart_sr ""
+check 10g "after SQL Server is back: start + valid creds" 200 "$(get "$A" "$ORDERS_LATEST")"
 
 # ---------------------------------------------------------------- report
 {

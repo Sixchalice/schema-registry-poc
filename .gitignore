@@ -1,3 +1,4 @@
 .cache/
 client/target/
 results/*.log
+auth/target/

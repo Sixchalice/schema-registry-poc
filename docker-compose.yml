@@ -1,19 +1,24 @@
 name: sr-acl-poc
 
-# Local POC: Confluent Schema Registry 7.9 + Security Plugin (ACL mode) with
-# HTTP Basic auth validated by Jetty's JDBCLoginModule against PostgreSQL.
+# Local POC: Confluent Schema Registry 7.9 + Security Plugin (ACL mode) with HTTP Basic auth
+# checked against an in-memory snapshot of SQL Server (poc.auth.SnapshotLoginModule, see auth/).
 
 x-sr-common: &sr-common
   build: ./schema-registry
   image: sr-acl-poc/schema-registry:7.9.0
   depends_on:
     kafka: { condition: service_healthy }
-    postgres: { condition: service_healthy }
+    mssql: { condition: service_healthy }
   volumes:
     - ./schema-registry:/etc/schema-registry/poc:ro
-  # Concatenate the base properties with optional extra lines (SR_EXTRA_PROPS, ';'-separated)
-  # so tests can flip a single setting without editing files.
+    - ./auth/target:/opt/poc-auth:ro   # sr-auth-snapshot.jar, built by up.sh
   entrypoint: ["bash", "-c"]
+
+# Snapshot login module on the classpath (schema-registry-run-class appends to CLASSPATH) + realm.
+x-sr-env: &sr-env
+  CLASSPATH: /opt/poc-auth/sr-auth-snapshot.jar
+  SCHEMA_REGISTRY_OPTS: "-Djava.security.auth.login.config=/etc/schema-registry/poc/jaas.conf"
+  SCHEMA_REGISTRY_LOG4J_OPTS: "-Dlog4j.configuration=file:/etc/schema-registry/poc/log4j.properties"
 
 services:
   kafka:
@@ -71,52 +76,46 @@ services:
       timeout: 20s
       retries: 30
 
-  postgres:
-    image: postgres:16
-    hostname: postgres
-    # No host port: scripts use `docker compose exec postgres psql`.
+  # The platform database. x86-only image: runs under Rosetta on Apple Silicon.
+  # No host port: scripts use `docker compose exec mssql sqlcmd`. Schema: mssql/init.sql (run by up.sh).
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-CU27-ubuntu-22.04
+    platform: linux/amd64
+    hostname: mssql
     environment:
-      POSTGRES_DB: platform
-      POSTGRES_USER: platform
-      POSTGRES_PASSWORD: platform-secret
-    command:
-      - postgres
-      - -c
-      - shared_preload_libraries=pg_stat_statements
-      - -c
-      - pg_stat_statements.track=all
-      - -c
-      - log_statement=all
-      - -c
-      - log_connections=on
-      - -c
-      - log_disconnections=on
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Developer
+      MSSQL_SA_PASSWORD: Platform-secret1
     volumes:
-      - ./postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./mssql:/etc/mssql-poc:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U platform -d platform"]
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' -b >/dev/null"]
       interval: 3s
-      timeout: 5s
-      retries: 30
+      timeout: 10s
+      retries: 40
 
+  # Concatenates the base properties with optional extra lines (SR_EXTRA_PROPS, ';'-separated) so
+  # tests can flip a single setting without editing files. The preflight loads the user snapshot
+  # once before Schema Registry starts; if SQL Server is down the container exits instead.
   schema-registry:
     <<: *sr-common
     hostname: schema-registry
     ports:
       - "8081:8081"
     environment:
+      <<: *sr-env
       SR_BASE_PROPS: /etc/schema-registry/poc/sr.properties
       SR_EXTRA_PROPS: ${SR_EXTRA_PROPS:-}
-      SCHEMA_REGISTRY_OPTS: "-Djava.security.auth.login.config=/etc/schema-registry/poc/jaas.conf"
-      SCHEMA_REGISTRY_LOG4J_OPTS: "-Dlog4j.configuration=file:/etc/schema-registry/poc/log4j.properties"
     command:
       - |
         cp "$$SR_BASE_PROPS" /tmp/sr.properties
         [ -n "$$SR_EXTRA_PROPS" ] && echo "$$SR_EXTRA_PROPS" | tr ';' '\n' >> /tmp/sr.properties
         echo "===> effective extra props: $${SR_EXTRA_PROPS:-<none>}"
+        java -cp "/opt/poc-auth/*:/usr/share/java/rest-utils/*:/usr/share/java/schema-registry/*" \
+          $$SCHEMA_REGISTRY_OPTS poc.auth.Preflight SchemaRegistryRealm || exit 1
         exec schema-registry-start /tmp/sr.properties
 
-  # Benchmark-only: same auth (JDBC realm), security plugin OFF. Joins the same
+  # Benchmark-only (test 8): same auth (snapshot), security plugin OFF. Joins the same
   # SR group as a non-leader follower and serves reads from the same _schemas topic.
   schema-registry-noplugin:
     <<: *sr-common
@@ -125,12 +124,29 @@ services:
     ports:
       - "8082:8081"
     environment:
-      SR_BASE_PROPS: /etc/schema-registry/poc/sr-noplugin.properties
-      SCHEMA_REGISTRY_OPTS: "-Djava.security.auth.login.config=/etc/schema-registry/poc/jaas.conf"
+      <<: *sr-env
+    command:
+      - |
+        cp /etc/schema-registry/poc/sr-noplugin.properties /tmp/sr.properties
+        java -cp "/opt/poc-auth/*:/usr/share/java/rest-utils/*:/usr/share/java/schema-registry/*" \
+          $$SCHEMA_REGISTRY_OPTS poc.auth.Preflight SchemaRegistryRealm || exit 1
+        exec schema-registry-start /tmp/sr.properties
+
+  # Benchmark-only (test 8 baseline): same config as schema-registry (plugin ON, same ACLs), but login
+  # via Jetty's stock JDBCLoginModule against the same SQL Server (jaas-jdbc.conf). Non-leader.
+  schema-registry-jdbc:
+    <<: *sr-common
+    profiles: ["bench"]
+    hostname: schema-registry-jdbc
+    ports:
+      - "8083:8081"
+    environment:
+      SCHEMA_REGISTRY_OPTS: "-Djava.security.auth.login.config=/etc/schema-registry/poc/jaas-jdbc.conf"
       SCHEMA_REGISTRY_LOG4J_OPTS: "-Dlog4j.configuration=file:/etc/schema-registry/poc/log4j.properties"
     command:
       - |
-        cp "$$SR_BASE_PROPS" /tmp/sr.properties
+        cp /etc/schema-registry/poc/sr.properties /tmp/sr.properties
+        printf '\nhost.name=schema-registry-jdbc\nleader.eligibility=false\n' >> /tmp/sr.properties
         exec schema-registry-start /tmp/sr.properties
 
   # Java Avro producer/consumer (see client/). Built and run via scripts/test.sh.

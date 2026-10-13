@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>poc</groupId>
+  <artifactId>sr-auth-snapshot</artifactId>
+  <version>1.0</version>
+
+  <!-- JAAS login module for Schema Registry: whole auth table in memory, refreshed from SQL Server.
+       No runtime dependencies of its own: Jetty comes from the SR image, the mssql-jdbc driver is
+       added by schema-registry/Dockerfile. -->
+  <properties>
+    <maven.compiler.release>17</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+
+  <dependencies>
+    <!-- Same version as /usr/share/java/rest-utils/jetty-jaas-9.4.57.v20241219.jar in cp-schema-registry 7.9.0 -->
+    <dependency>
+      <groupId>org.eclipse.jetty</groupId>
+      <artifactId>jetty-jaas</artifactId>
+      <version>9.4.57.v20241219</version>
+      <scope>provided</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>sr-auth-snapshot</finalName>
+  </build>
+</project>

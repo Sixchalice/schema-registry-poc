@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
-# Start Kafka + Postgres, bootstrap Kafka-side security (SCRAM users, Kafka ACLs, topics), then Schema Registry.
+# Start Kafka + SQL Server, bootstrap Kafka-side security (SCRAM users, Kafka ACLs, topics), then Schema Registry.
 source "$(dirname "$0")/lib.sh"
 
-log "Building Schema Registry image (adds PostgreSQL JDBC driver)"
+log "Building Schema Registry image (adds the SQL Server JDBC driver)"
 dc build -q schema-registry
 
-log "Starting Kafka (cp-server 7.9, KRaft, SASL_PLAINTEXT/SCRAM-SHA-256, ACLs) and Postgres"
-dc up -d --wait kafka postgres
+log "Building the snapshot login module (auth/ -> auth/target/sr-auth-snapshot.jar)"
+dc run --rm -T -v "$ROOT/auth:/auth" -w /auth --entrypoint mvn client -q -B package
+
+log "Starting Kafka (cp-server 7.9, KRaft, SASL_PLAINTEXT/SCRAM-SHA-256, ACLs) and SQL Server"
+dc up -d --wait kafka mssql
+
+if [[ "$(mssql_q "SELECT COUNT(*) FROM sys.databases WHERE name = 'platform'" master)" == 0 ]]; then
+  log "SQL Server: creating the platform database (mssql/init.sql)"
+  dc exec -T mssql /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "$MSSQL_SA_PASS" -b -i /etc/mssql-poc/init.sql >/dev/null
+fi
 
 ADMIN_CFG=/etc/kafka/poc/admin.properties
 BS=kafka:29092
@@ -41,7 +49,7 @@ acl --allow-principal User:svc-a --resource-pattern-type prefixed --group c17.sv
 acl --allow-principal User:svc-b --topic orders --operation Read --operation Describe
 acl --allow-principal User:svc-b --resource-pattern-type prefixed --group c17.svc-b --operation Read
 
-log "Starting Schema Registry (security plugin, ACL authorizer, JDBC realm)"
+log "Starting Schema Registry (security plugin, ACL authorizer, in-memory login from SQL Server)"
 dc up -d schema-registry
 wait_for_http "$SR/subjects" 401 180
 log "Schema Registry is up (unauthenticated request -> 401). Next: scripts/seed.sh"
