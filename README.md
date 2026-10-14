@@ -77,8 +77,8 @@ Schema Registry (Jetty web server)
    │      of the SQL Server view sr_auth_users (no database call)
    │    → Jetty compares the password (plaintext / MD5: / CRYPT:)
    │    wrong/unknown → 401
-   │    (a background thread keeps the copy current: every 5 s it asks SQL Server
-   │     "did anything change?" and reloads the whole view if so)
+   │    (a background thread keeps the copy current: every 60 s it reloads
+   │     the whole view with one query)
    │
    │ 2. AUTHORIZATION: Security Plugin (SchemaRegistryAclAuthorizer)
    │    → maps the endpoint to an operation (e.g. GET /subjects/X/versions → SUBJECT_READ on X)
@@ -112,7 +112,7 @@ The in-memory ACL table is filled from the Kafka topic `_schemas_acl`. `sr-acl-c
                           ┌───────────────────────────── docker network ─────────────────────────────┐
  host :8081 ──────────────► schema-registry (cp-schema-registry 7.9.0 + SQL Server JDBC driver)       │
                           │    • HTTP Basic, JAAS realm → poc.auth.SnapshotLoginModule (auth/)         │
-                          │      users in memory ◄── poll every 5 s ── mssql (SQL Server 2022,         │
+                          │      users in memory ◄─ reload every 60 s ─ mssql (SQL Server 2022,         │
                           │    • Security Plugin, ACL authorizer          platform DB, sr_auth_* views) │
                           │    • exporters (Schema Linking) enabled, for test 5 only                   │
                           │    • storage + ACLs in Kafka: _schemas, _schemas_acl                       │
@@ -148,8 +148,7 @@ Schemas registered by platform-admin during seeding:
 - `sr_auth_roles(username, role)`: every user gets the role `sr-user`. Only `JDBCLoginModule` reads it; the in-memory module assigns `sr-user` itself. Schema Registry requires a role; actual permissions come from ACLs.
 
 On top of that:
-- **Change Tracking** is on for the database and for the base tables `services` and `platform_principals`. `SELECT CHANGE_TRACKING_CURRENT_VERSION()` returns a number that goes up on every insert, update or delete, so the module can detect changes without reading rows.
-- **Two read-only logins:** `sr_auth` (the in-memory module, `SELECT` on `sr_auth_users` only; reading the change-tracking version needs no extra permission) and `sr_jdbc` (the `JDBCLoginModule` baseline). Separate logins keep their database work apart in the measurements.
+- **Two read-only logins:** `sr_auth` (the in-memory module, `SELECT` on `sr_auth_users` only) and `sr_jdbc` (the `JDBCLoginModule` baseline). Separate logins keep their database work apart in the measurements.
 - **Two Extended Events sessions** (`sr_auth_activity`, `sr_jdbc_activity`) count each login's connections and queries for test 8.
 
 ### Files
@@ -160,10 +159,10 @@ On top of that:
 | `schema-registry/Dockerfile` | `cp-schema-registry:7.9.0` plus the SQL Server JDBC driver 12.8.1. **This is the only addition to the image**; the Security Plugin is already in it. The login module jar is mounted from `auth/target`. |
 | `schema-registry/sr.properties` | Schema Registry config: login, plugin, ACL authorizer, Kafka connection, exporters (POC only, for test 5; production drops them, see §12). Every line is commented. |
 | `schema-registry/sr-noplugin.properties` | The same, without the plugin. Used only for the test 8 comparison. |
-| `schema-registry/jaas.conf` | The login realm: `poc.auth.SnapshotLoginModule` pointing at SQL Server, with poll intervals. |
+| `schema-registry/jaas.conf` | The login realm: `poc.auth.SnapshotLoginModule` pointing at SQL Server, with the reload interval. |
 | `schema-registry/jaas-jdbc.conf` | The test 8 baseline realm: Jetty `JDBCLoginModule` pointing at the same SQL Server. |
 | `auth/` | The in-memory login module (Maven, no runtime dependencies): `SnapshotLoginModule`, `UserSnapshot` (the in-memory table and its refresh thread), `Preflight` (the startup check). Built by `up.sh` into `auth/target/`, which is mounted into the containers. |
-| `mssql/init.sql` | Tables, views, Change Tracking, the `sr_auth` and `sr_jdbc` logins, the Extended Events counters. Run once by `up.sh`. |
+| `mssql/init.sql` | Tables, views, the `sr_auth` and `sr_jdbc` logins, the Extended Events counters. Run once by `up.sh`. |
 | `kafka/` | The broker's SCRAM login file and an admin client config. |
 | `client/` | Java producer/consumer (Maven): `auto.register.schemas=false`, choice of TopicNameStrategy or RecordNameStrategy. |
 | `scripts/up.sh` | Builds the image and the login module, starts Kafka and SQL Server, creates the database, SCRAM users, Kafka ACLs and topics, then starts Schema Registry. |
@@ -212,8 +211,8 @@ docker compose exec schema-registry sr-acl-cli --config /tmp/sr.properties --rem
 # Add a tenant: the SQL Server row is all that's needed to log in (403 = logged in, no ACLs yet)
 docker compose exec mssql /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P Platform-secret1 -d platform \
   -Q "INSERT INTO services VALUES ('c17','svc-c','svc-c-secret')"
-curl -u c17.svc-c:svc-c-secret http://localhost:8081/subjects/orders-value/versions/latest   # 401, then 403 within 5 s
-# Deleting the row locks the user out within 5 s (401)
+curl -u c17.svc-c:svc-c-secret http://localhost:8081/subjects/orders-value/versions/latest   # 401, then 403 within 60 s
+# Deleting the row locks the user out within 60 s (401)
 
 # Watch the login module reload its snapshot
 docker compose logs -f schema-registry | grep poc.auth
@@ -333,9 +332,9 @@ The POC's login, built in `auth/`. Its realm is `schema-registry/jaas.conf`, use
 
 **How it works:**
 - **One table in memory.** The module loads the whole `sr_auth_users` view (username, stored credential) into a map. A login is a map lookup plus Jetty's normal password check (plaintext, `MD5:`, `CRYPT:`), with no database work. For 10,000 users the map takes a few MB.
-- **Changes are found by polling.** A background thread runs `SELECT CHANGE_TRACKING_CURRENT_VERSION()` every 5 s. This returns one number and reads no rows. When the number changes, the thread reloads the whole table. Every 5 minutes it reloads regardless. SQL Server has no `LISTEN/NOTIFY`, and Query Notifications only work from .NET, so polling a cheap version number is the practical choice.
+- **Changes are found by reloading on a timer.** Every 60 s a background thread opens one connection and runs one query that reads the whole view (`SELECT username, password FROM sr_auth_users`). There is no change detection: no Change Tracking, triggers or version column. This is what the platform DBA recommended. At ≤10,000 users one full read per minute per node is a small, predictable load.
 - **Swapped, never edited.** Each reload builds a new map and replaces the old one in a single step, so a request never sees a half-loaded table. A reload that returns 0 users while the current snapshot has users is rejected, since it's far more likely a broken view than "everyone was deleted".
-- **Database down: keep the last snapshot.** Failed polls are logged with the snapshot's age, and logins carry on.
+- **Database down: keep the last snapshot.** Failed reloads are logged with the snapshot's age, and logins carry on.
 - **Fails at startup instead of at the first request.** Jetty only creates a login module on the first login, so the module can't check the database at startup itself. The container first runs `poc.auth.Preflight`, which reads the same JAAS entry and does one full load. If that fails, the container exits and Schema Registry never starts. No Schema Registry extension is involved.
 
 **Measured (tests 8 and 10), next to Jetty's `JDBCLoginModule` on the same SQL Server:**
@@ -343,7 +342,7 @@ The POC's login, built in `auth/`. Its realm is `schema-registry/jaas.conf`, use
 | | `JDBCLoginModule` | In-memory module |
 |---|---|---|
 | DB work per request (valid, wrong password or unknown user) | 1–2 queries, 1–2 new connections | **none** (300 requests: 1 query, 1 connection, both the background poll) |
-| DB work in the background | none | 1 connection + 1 version query per 5 s per node, plus a full load per change or every 5 min |
+| DB work in the background | none | 1 connection + 1 full load per 60 s per node |
 | 1,000 requests, 1 at a time | p50 20.9 ms, p99 32.2 ms | **p50 1.8 ms, p99 4.3 ms** |
 | 1,000 requests, 10 parallel | p50 36.6 ms, p99 73.8 ms, 192 req/s | **p50 2.1 ms, p99 6.7 ms, 598 req/s** |
 | New user can log in | next request | after **2.0 s** |
@@ -355,10 +354,10 @@ The POC's login, built in `auth/`. Its realm is `schema-registry/jaas.conf`, use
 **The plugin's own cost is now measurable, and it's zero.** With the database out of the request path, plugin ON and OFF both handled 1,000 requests at 10 parallel in 598 req/s (p50 2.1 vs 2.6 ms; tests 8j, 8k).
 
 **What to decide before production:**
-- **Up to 5 s delay for changes** (new Services, password rotations, removals). With Kafka the new SCRAM password works immediately, so for up to 5 s Schema Registry rejects a password that Kafka accepts. Provisioning can wait for it, or the poll interval can be shortened, since it's cheap.
-- **Revocation stops during an outage.** While SQL Server is down, a deleted user keeps working on nodes that already loaded it. Alert on snapshot age (the module logs it on every failed poll). If an unbounded window isn't acceptable, add a maximum age after which the module rejects all logins.
+- **Up to 60 s delay for changes** (new Services, password rotations, removals). With Kafka the new SCRAM password works immediately, so for up to 60 s Schema Registry rejects a password that Kafka accepts, and a removed Service keeps access for up to 60 s. Provisioning can wait for it, or `reloadSeconds` can be shortened, at the cost of one more full read per node per interval.
+- **Revocation stops during an outage.** While SQL Server is down, a deleted user keeps working on nodes that already loaded it. Alert on snapshot age (the module logs it on every failed reload). If an unbounded window isn't acceptable, add a maximum age after which the module rejects all logins.
 - **It's your code in the login path.** It uses Jetty 9.4's JAAS classes (`AbstractLoginModule`, `UserInfo`), which change between Jetty major versions. Check it against the Jetty in every Schema Registry upgrade.
-- **Each node polls on its own.** Database load grows with the number of Schema Registry nodes, not with request rate.
+- **Each node reloads on its own.** Database load grows with the number of Schema Registry nodes, not with request rate.
 - **Credential formats don't change.** The stored password must still be plaintext, `MD5:` or `CRYPT:`, because Jetty does the comparison.
 
 ---
@@ -592,7 +591,6 @@ value: {"magic":0,"principal":"platform-admin","allowedoperations":["GLOBAL_COMP
 | Custom login module on the classpath: `CLASSPATH=/opt/poc-auth/sr-auth-snapshot.jar` | `schema-registry-run-class` appends to an existing `CLASSPATH`, so the jar loads in the same classloader as `jetty-jaas`. Confirmed by test 10. |
 | `poc.auth.SnapshotLoginModule` extending Jetty's `AbstractLoginModule`, returning `UserInfo(name, Credential, roles)` | Signatures read with `javap` from `jetty-jaas-9.4.57`. `AbstractLoginModule.login()` calls `getUserInfo`, then `checkCredential`, then `fetchRoles`, which is a no-op once roles are passed to the constructor. JAAS creates a new module per login, so the snapshot is static. |
 | SQL Server JDBC driver | Not in the image. Added in `schema-registry/Dockerfile` (`com.microsoft.sqlserver:mssql-jdbc:12.8.1.jre11`). |
-| `CHANGE_TRACKING_CURRENT_VERSION()` as `sr_auth` | Works with only `SELECT` on the view. `VIEW CHANGE TRACKING` would only be needed for `CHANGETABLE()`, which the module doesn't use. |
 
 ### Guessed or not minimized: check before production
 
@@ -608,7 +606,7 @@ value: {"magic":0,"principal":"platform-admin","allowedoperations":["GLOBAL_COMP
 - **Not tried:** `confluent.schema.registry.anonymous.principal` (left unset), the combined `RbacAndAclAuthorizer`, and Jetty's `CRYPT:` password format.
 - **Kafka broker:** the controller listener is PLAINTEXT but bound to localhost inside the container. Fine for a POC, not a production pattern.
 - **SQL Server TLS:** `jaas.conf` and `jaas-jdbc.conf` use `encrypt=true;trustServerCertificate=true`, which encrypts without checking the server certificate. Production should validate it.
-- **Snapshot intervals** (`changePollSeconds=5`, `fullReloadSeconds=300`) are the values discussed, not tuned. The periodic 5-minute reload wasn't waited for in the tests; only change-triggered reloads were.
+- **Reload interval** (`reloadSeconds=60`) is the DBA's recommendation, not tuned. Load was measured with the POC's handful of users, not 10,000.
 
 ---
 

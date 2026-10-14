@@ -21,25 +21,21 @@ import org.eclipse.jetty.util.security.Credential;
  * Process-wide, in-memory copy of the auth view.
  *
  * JAAS creates a new login module for every login, so all state here is static. Requests only read
- * {@link #users}; one background thread replaces it with a freshly built map:
- *  - every changePollSeconds it reads SQL Server's change-tracking version (one number, no rows)
- *    and reloads everything if it moved;
- *  - every fullReloadSeconds it reloads everything regardless.
- * If the database is unreachable the last snapshot stays in use.
+ * {@link #users}; one background thread replaces it with a freshly built map every reloadSeconds
+ * (one connection, one query that reads the whole view). If the database is unreachable the last
+ * snapshot stays in use.
  */
 final class UserSnapshot {
   private static final Logger LOG = Log.getLogger(UserSnapshot.class);
 
-  record Settings(String dbUrl, String dbUserName, String dbPassword, String usersQuery, String versionQuery,
-                  String role, long changePollSeconds, long fullReloadSeconds) {
+  record Settings(String dbUrl, String dbUserName, String dbPassword, String usersQuery, String role,
+                  long reloadSeconds) {
     static Settings from(Map<String, ?> o) {
       return new Settings(
           req(o, "dbUrl"), req(o, "dbUserName"), req(o, "dbPassword"),
           opt(o, "usersQuery", "SELECT username, password FROM sr_auth_users"),
-          opt(o, "versionQuery", "SELECT CHANGE_TRACKING_CURRENT_VERSION()"),
           opt(o, "role", "sr-user"),
-          Long.parseLong(opt(o, "changePollSeconds", "5")),
-          Long.parseLong(opt(o, "fullReloadSeconds", "300")));
+          Long.parseLong(opt(o, "reloadSeconds", "60")));
     }
     private static String req(Map<String, ?> o, String k) {
       Object v = o.get(k);
@@ -52,13 +48,9 @@ final class UserSnapshot {
     }
   }
 
-  /** One read of the database: change-tracking version (null if tracking is off) and all users. */
-  record Load(Long version, Map<String, UserInfo> users) {}
-
   private static volatile Map<String, UserInfo> users;   // null until the first successful load
   private static volatile long loadedAtMs;
   private static Settings settings;
-  private static Long lastVersion;
   private static volatile ScheduledExecutorService refresher;
 
   private UserSnapshot() {}
@@ -80,7 +72,8 @@ final class UserSnapshot {
       t.setDaemon(true);
       return t;
     });
-    refresher.scheduleWithFixedDelay(UserSnapshot::tick, s.changePollSeconds(), s.changePollSeconds(), TimeUnit.SECONDS);
+    refresher.scheduleWithFixedDelay(() -> reload(users == null ? "retry after failed initial load" : "periodic"),
+        s.reloadSeconds(), s.reloadSeconds(), TimeUnit.SECONDS);
   }
 
   /** Current snapshot, or null if no load has succeeded yet. */
@@ -88,34 +81,17 @@ final class UserSnapshot {
     return users;
   }
 
-  private static void tick() {
-    try {
-      if (users == null) {
-        reload("retry after failed initial load");
-      } else if (System.currentTimeMillis() - loadedAtMs >= settings.fullReloadSeconds() * 1000) {
-        reload("periodic");
-      } else {
-        Long v = currentVersion(settings);
-        if (v != null && !v.equals(lastVersion)) reload("change-tracking version " + lastVersion + " -> " + v);
-      }
-    } catch (Exception e) {
-      // Database down or query failing: keep serving the last snapshot.
-      LOG.warn("auth DB check failed, keeping snapshot from {}s ago: {}", ageSeconds(), e.toString());
-    }
-  }
-
   private static void reload(String reason) {
     try {
-      Load l = load(settings);
-      if (l.users().isEmpty() && users != null && !users.isEmpty()) {
+      Map<String, UserInfo> loaded = load(settings);
+      if (loaded.isEmpty() && users != null && !users.isEmpty()) {
         // Almost certainly a broken view or bad migration, not "everyone was deleted".
         LOG.warn("auth reload ({}) returned 0 users; keeping previous snapshot of {} users", reason, users.size());
         return;
       }
-      users = l.users();
-      lastVersion = l.version();
+      users = loaded;
       loadedAtMs = System.currentTimeMillis();
-      LOG.info("auth snapshot loaded ({}): {} users, change-tracking version {}", reason, l.users().size(), l.version());
+      LOG.info("auth snapshot loaded ({}): {} users", reason, loaded.size());
     } catch (Exception e) {
       LOG.warn("auth reload ({}) failed, keeping snapshot from {}s ago: {}", reason, ageSeconds(), e.toString());
     }
@@ -125,11 +101,10 @@ final class UserSnapshot {
     return users == null ? "never" : String.valueOf((System.currentTimeMillis() - loadedAtMs) / 1000);
   }
 
-  /** Reads the version first, so a change made during the load is picked up by the next poll. */
-  static Load load(Settings s) throws SQLException {
+  /** Reads the whole view: one connection, one query. */
+  static Map<String, UserInfo> load(Settings s) throws SQLException {
     try (Connection c = DriverManager.getConnection(s.dbUrl(), s.dbUserName(), s.dbPassword());
          Statement st = c.createStatement()) {
-      Long version = version(st, s);
       Map<String, UserInfo> m = new HashMap<>();
       List<String> roles = List.of(s.role());
       try (ResultSet rs = st.executeQuery(s.usersQuery())) {
@@ -141,22 +116,8 @@ final class UserSnapshot {
           }
         }
       }
-      return new Load(version, Map.copyOf(m));
+      return Map.copyOf(m);
     }
   }
 
-  static Long currentVersion(Settings s) throws SQLException {
-    try (Connection c = DriverManager.getConnection(s.dbUrl(), s.dbUserName(), s.dbPassword());
-         Statement st = c.createStatement()) {
-      return version(st, s);
-    }
-  }
-
-  private static Long version(Statement st, Settings s) throws SQLException {
-    try (ResultSet rs = st.executeQuery(s.versionQuery())) {
-      if (!rs.next()) return null;
-      long v = rs.getLong(1);
-      return rs.wasNull() ? null : v;
-    }
-  }
 }

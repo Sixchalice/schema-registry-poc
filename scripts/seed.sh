@@ -11,9 +11,9 @@ IF NOT EXISTS (SELECT 1 FROM services WHERE cluster_id = 'c17' AND scram_user = 
   INSERT INTO services VALUES ('c17', 'svc-b', 'MD5:' + LOWER(CONVERT(varchar(32), HASHBYTES('MD5', '$B_PASS'), 2)));
 " >/dev/null
 mssql_q "SELECT username + ' | ' + password FROM sr_auth_users ORDER BY 1" | sed 's/^/    /'
-# Schema Registry picks up the new rows on its next change-tracking poll (every 5 s)
+# Schema Registry picks up the new rows on its next full reload (every 60 s)
 log "Waiting for Schema Registry to load the new users"
-for _ in $(seq 30); do [[ "$(http_code "$ADMIN_USER:$ADMIN_PASS" GET "$SR/subjects")" != 401 ]] && break; sleep 1; done
+for _ in $(seq 75); do [[ "$(http_code "$ADMIN_USER:$ADMIN_PASS" GET "$SR/subjects")" != 401 ]] && break; sleep 1; done
 
 log "Schema Registry ACLs via sr-acl-cli"
 sracl --add -s '*' -p "$ADMIN_USER" -o '*'                >/dev/null

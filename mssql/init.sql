@@ -1,12 +1,8 @@
 -- "Platform database" for the POC (SQL Server 2022). Run once by scripts/up.sh via sqlcmd.
 -- Read by two login modules:
---   sr_auth -> poc.auth.SnapshotLoginModule (schema-registry, schema-registry-noplugin): whole view, polled
+--   sr_auth -> poc.auth.SnapshotLoginModule (schema-registry, schema-registry-noplugin): whole view every 60 s
 --   sr_jdbc -> Jetty's JDBCLoginModule (schema-registry-jdbc, test 8 baseline only): two queries per login
 CREATE DATABASE platform;
-GO
--- Change Tracking lets the snapshot module detect any insert/update/delete with one cheap query:
--- SELECT CHANGE_TRACKING_CURRENT_VERSION()
-ALTER DATABASE platform SET CHANGE_TRACKING = ON (CHANGE_RETENTION = 2 DAYS, AUTO_CLEANUP = ON);
 GO
 USE platform;
 GO
@@ -26,9 +22,6 @@ CREATE TABLE platform_principals (
   username varchar(256) PRIMARY KEY,
   password varchar(256) NOT NULL
 );
--- Change Tracking is enabled on the base tables (it can't be enabled on a view).
-ALTER TABLE services ENABLE CHANGE_TRACKING;
-ALTER TABLE platform_principals ENABLE CHANGE_TRACKING;
 GO
 -- The snapshot module runs:   SELECT username, password FROM sr_auth_users        (whole view)
 -- Jetty's JDBCLoginModule runs: select password from sr_auth_users where username = ?

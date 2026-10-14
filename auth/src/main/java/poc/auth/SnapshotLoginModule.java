@@ -12,8 +12,8 @@ import org.eclipse.jetty.jaas.spi.UserInfo;
  * Jetty JAAS login module that checks Basic-auth credentials against an in-memory snapshot of the
  * auth view (see {@link UserSnapshot}). A login never touches the database.
  *
- * jaas.conf options: dbUrl, dbUserName, dbPassword (required); usersQuery, versionQuery, role,
- * changePollSeconds (default 5), fullReloadSeconds (default 300).
+ * jaas.conf options: dbUrl, dbUserName, dbPassword (required); usersQuery, role,
+ * reloadSeconds (default 60).
  */
 public class SnapshotLoginModule extends AbstractLoginModule {
 

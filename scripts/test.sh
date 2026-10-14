@@ -230,7 +230,7 @@ done
 t1=$(now_ms); s1=($(ms_stats sr_auth_activity)); f1=$(full_loads)
 rec 8f "snapshot, 300 requests (100 valid, 100 wrong password, 100 unknown user)" "no per-request DB work" \
   "queries $(( s1[1]-s0[1] )), new DB connections $(( s1[0]-s0[0] )), full loads $(( f1-f0 )) in $(( (t1-t0)/1000 ))s" INFO \
-  "only the background poll: 1 connection + 1 query per 5s per node"
+  "only the background reload: 1 connection + 1 full load per 60s per node"
 
 burst() { # id label url n conc xe-session
   local out="results/burst-$1.txt" s0 s1 t0 t1
@@ -267,22 +267,22 @@ rec 9b "ACL record format on _schemas_acl" "-" "JSON key/value, $(grep -c SUBJEC
 
 # ======================================================================== 10
 log "Test 10: In-memory login snapshot: freshness and SQL Server outages"
-# Changes in SQL Server reach the snapshot via the change-tracking poll (every 5s)
+# Changes in SQL Server reach the snapshot on the next full reload (every 60s)
 NEW="c17.svc-new:svc-new-secret"
 mssql_q "INSERT INTO services VALUES ('c17', 'svc-new', 'svc-new-secret')"
-ms=$(wait_code "$NEW" "$ORDERS_LATEST" 403 15000)
-rec 10a "new user inserted in SQL Server -> accepted (403 = authenticated, no ACL)" "<= 6000 ms" "$ms ms" "$(within "$ms" 6000)"
+ms=$(wait_code "$NEW" "$ORDERS_LATEST" 403 75000)
+rec 10a "new user inserted in SQL Server -> accepted (403 = authenticated, no ACL)" "<= 61000 ms" "$ms ms" "$(within "$ms" 61000)"
 mssql_q "UPDATE services SET scram_password = 'svc-new-rotated' WHERE scram_user = 'svc-new'"
-ms=$(wait_code "c17.svc-new:svc-new-rotated" "$ORDERS_LATEST" 403 15000)
-rec 10b "password changed -> new password accepted" "<= 6000 ms" "$ms ms" "$(within "$ms" 6000)" \
+ms=$(wait_code "c17.svc-new:svc-new-rotated" "$ORDERS_LATEST" 403 75000)
+rec 10b "password changed -> new password accepted" "<= 61000 ms" "$ms ms" "$(within "$ms" 61000)" \
   "old password now: $(get "$NEW" "$ORDERS_LATEST")"
 mssql_q "DELETE FROM services WHERE scram_user = 'svc-new'"
-ms=$(wait_code "c17.svc-new:svc-new-rotated" "$ORDERS_LATEST" 401 15000)
-rec 10c "user deleted -> rejected" "<= 6000 ms" "$ms ms" "$(within "$ms" 6000)"
+ms=$(wait_code "c17.svc-new:svc-new-rotated" "$ORDERS_LATEST" 401 75000)
+rec 10c "user deleted -> rejected" "<= 61000 ms" "$ms ms" "$(within "$ms" 61000)"
 
 # SQL Server down: the running registry keeps working; a restarting one refuses to start
 dc stop mssql >/dev/null 2>&1
-sleep 6   # at least one failed background poll
+sleep 61   # at least one failed background reload
 check 10d "valid creds while SQL Server is DOWN" 200 "$(get "$A" "$ORDERS_LATEST")"
 check 10e "wrong password while SQL Server is DOWN" 401 "$(get "$A_USER:wrong" "$ORDERS_LATEST")"
 cid=$(dc ps -aq schema-registry)

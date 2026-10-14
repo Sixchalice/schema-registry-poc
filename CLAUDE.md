@@ -50,7 +50,7 @@ cid=$(docker create confluentinc/cp-schema-registry:7.9.0); docker cp $cid:/usr/
 
 ## Architecture (things that span several files)
 
-**The bootstrap is split by dependency order.** Schema Registry won't start without its Kafka ACLs, so `up.sh` does all Kafka-side setup (SCRAM users, Kafka ACLs, topics `orders`/`payments`) *before* starting SR. `up.sh` also creates the SQL Server database from `mssql/init.sql` (once; it checks `sys.databases`). `seed.sh` only does things that need a running SR: SQL Server users, SR ACLs and schema registration. New users reach SR on its next 5 s poll, so `seed.sh` waits for `platform-admin` to stop getting 401 before registering schemas.
+**The bootstrap is split by dependency order.** Schema Registry won't start without its Kafka ACLs, so `up.sh` does all Kafka-side setup (SCRAM users, Kafka ACLs, topics `orders`/`payments`) *before* starting SR. `up.sh` also creates the SQL Server database from `mssql/init.sql` (once; it checks `sys.databases`). `seed.sh` only does things that need a running SR: SQL Server users, SR ACLs and schema registration. New users reach SR on its next 60 s reload, so `seed.sh` waits for `platform-admin` to stop getting 401 before registering schemas.
 
 **Kafka (`docker-compose.yml` `kafka.command`).** It replaces the image's `run` script so the KRaft format step can bootstrap the inter-broker SCRAM user (`--add-scram`, user `broker`).
 - **Super users:** `broker` and `ANONYMOUS`. The PLAINTEXT controller listener is bound to localhost only.
@@ -64,11 +64,11 @@ cid=$(docker create confluentinc/cp-schema-registry:7.9.0); docker cp $cid:/usr/
 **Authentication chain.**
 - **Realm:** `authentication.realm=SchemaRegistryRealm` must match the entry name in `schema-registry/jaas.conf` (`poc.auth.SnapshotLoginModule`). The JAAS file is passed via `SCHEMA_REGISTRY_OPTS`.
 - **What the module reads:** the whole view `sr_auth_users` in `mssql/init.sql` (never the base tables), as the read-only login `sr_auth`. The SR username is built in the view as `cluster_id + '.' + scram_user`.
-- **Change detection:** a refresh thread polls `SELECT CHANGE_TRACKING_CURRENT_VERSION()` every 5 s and reloads the whole view when it moves, plus every 5 min. Change Tracking is enabled on the base tables.
+- **Refresh:** a background thread reloads the whole view every 60 s (`reloadSeconds`): one connection, one query. There is no change detection (no Change Tracking); that's the DBA's recommendation, keep it that way.
 - **State is static** in `UserSnapshot`: JAAS creates a new module instance per login, and the refresh thread starts on the first login, not at SR startup.
 - **Startup check:** each SR container command runs `poc.auth.Preflight` (same JAAS entry, one full load) before `schema-registry-start` and exits 1 on failure. This replaces a resource extension, which the user explicitly didn't want.
 - **Credential formats:** stored credentials must be plaintext, `MD5:<hex>` or `CRYPT:` (Jetty 9.4 `Credential`).
-- **Load measurement:** test 8 counts connections and queries with the Extended Events sessions `sr_auth_activity` / `sr_jdbc_activity` (one DB login per module). Don't use the plan cache for this: trivial queries like the version check are never cached. The server-wide `Logins/sec` counter includes the healthcheck.
+- **Load measurement:** test 8 counts connections and queries with the Extended Events sessions `sr_auth_activity` / `sr_jdbc_activity` (one DB login per module). Don't use the plan cache for connection counts; it only sees cached plans (test.sh uses it just to count full loads). The server-wide `Logins/sec` counter includes the healthcheck.
 
 **Identity mapping.** The Kafka SCRAM user is `svc-a`; the SR principal is `c17.svc-a`; both use the same password. The Java client (`client/src/main/java/poc/Client.java`) derives the SR login from the cluster and SCRAM user arguments. The svc-b consumer group must match the Kafka ACL prefix `c17.svc-x*`.
 

@@ -19,11 +19,8 @@ public final class Preflight {
       if (entries == null) throw new IllegalStateException("no JAAS entry named " + realm);
       for (AppConfigurationEntry e : entries) {
         if (!e.getLoginModuleName().equals(SnapshotLoginModule.class.getName())) continue;
-        UserSnapshot.Load l = UserSnapshot.load(UserSnapshot.Settings.from(e.getOptions()));
-        if (l.version() == null) {
-          throw new IllegalStateException("change tracking is not enabled on the auth database (version query returned NULL)");
-        }
-        System.out.printf("auth preflight OK: %d users, change-tracking version %d%n", l.users().size(), l.version());
+        int n = UserSnapshot.load(UserSnapshot.Settings.from(e.getOptions())).size();
+        System.out.printf("auth preflight OK: %d users%n", n);
         return;
       }
       throw new IllegalStateException("JAAS entry " + realm + " does not use " + SnapshotLoginModule.class.getName());
