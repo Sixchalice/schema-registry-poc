@@ -9,19 +9,7 @@ DETAIL=results/details.log
 : > "$RES"; : > "$DETAIL"
 RUN_ID=$(date +%s)
 
-# ---------------------------------------------------------------- helpers
-rec() { # id title expected actual verdict [notes]
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "${6:-}" >> "$RES"
-  local c='\033[1;32m'; [[ "$5" == FAIL ]] && c='\033[1;31m'; [[ "$5" == INFO ]] && c='\033[1;33m'
-  printf "  ${c}%-4s\033[0m %-4s %s | expected: %s | actual: %s\n" "$5" "$1" "$2" "$3" "$4"
-}
-check() { # id title expected actual [notes] -- PASS iff actual == expected
-  local v=FAIL; [[ "$3" == "$4" ]] && v=PASS
-  rec "$1" "$2" "$3" "$4" "$v" "${5:-}"
-}
-get()  { http_code "$1" GET "$2"; }
-body() { tr -d '\n' < "$LAST_BODY" | tr '\t' ' ' | cut -c1-150; }
-
+# ---------------------------------------------------------------- helpers (rec, check, get, body, wait_code, within: lib.sh)
 restart_sr() { # extra-props
   log "Restarting Schema Registry with SR_EXTRA_PROPS='${1:-}'"
   SR_EXTRA_PROPS="${1:-}" dc up -d schema-registry >/dev/null 2>&1
@@ -58,17 +46,6 @@ print(f"codes {dict(codes)}, p50 {pct(50):.1f}ms, p99 {pct(99):.1f}ms, max {lat[
 PY
 }
 
-wait_code() { # creds url want-code timeout-ms -> elapsed ms, or "timeout"
-  local t0; t0=$(now_ms)
-  while [[ "$(get "$1" "$2")" != "$3" ]]; do
-    (( $(now_ms) - t0 > $4 )) && { echo timeout; return; }
-    sleep 0.1
-  done
-  echo $(( $(now_ms) - t0 ))
-}
-within() { [[ "$1" != timeout ]] && (( $1 <= $2 )) && echo PASS || echo FAIL; }
-
-ADMIN="$ADMIN_USER:$ADMIN_PASS"; A="$A_USER:$A_PASS"; B="$B_USER:$B_PASS"
 ORDERS_LATEST="$SR/subjects/orders-value/versions/latest"
 
 [[ -f client/target/client.jar ]] || { log "Building Java client"; dc --profile client run --rm --entrypoint mvn client -q -B package >/dev/null; }
@@ -297,11 +274,7 @@ restart_sr ""
 check 10g "after SQL Server is back: start + valid creds" 200 "$(get "$A" "$ORDERS_LATEST")"
 
 # ---------------------------------------------------------------- report
-{
-  echo "| # | Test | Expected | Actual | Result | Notes |"
-  echo "|---|------|----------|--------|--------|-------|"
-  awk -F'\t' '{ for (i=1;i<=6;i++) gsub(/\|/, "\\|", $i); printf "| %s | %s | %s | %s | **%s** | %s |\n", $1,$2,$3,$4,$5,$6 }' "$RES"
-} > results/results.md
+write_md results/results.md
 echo
 log "Summary: $(cut -f5 "$RES" | sort | uniq -c | tr '\n' ' ')"
 log "Table written to results/results.md"

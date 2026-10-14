@@ -18,6 +18,7 @@ The deliverable is the findings, which are in `README.md`. Its numbers and concl
 ./scripts/up.sh      # build SR image + auth/ jar, start Kafka+SQL Server, create DB, SCRAM users, Kafka ACLs, topics, then SR
 ./scripts/seed.sh    # SQL Server users (waits until SR has loaded them), SR ACLs (sr-acl-cli), schemas registered as platform-admin
 ./scripts/test.sh    # all tests 1-10 (~3 min) -> results/results.md, results.tsv, details.log, burst-*.txt
+./scripts/dr-test.sh # DR with an exporter, README §12 (~2 min) -> results/dr-results.md/.tsv; removes the DR registry after
 ./scripts/down.sh    # remove everything incl. volumes
 ```
 
@@ -76,6 +77,8 @@ cid=$(docker create confluentinc/cp-schema-registry:7.9.0); docker cp $cid:/usr/
 - `schema-registry-noplugin` (port 8082): same in-memory login, plugin OFF (`sr-noplugin.properties`).
 - `schema-registry-jdbc` (port 8083): plugin ON, Jetty's stock `JDBCLoginModule` against the same SQL Server (`jaas-jdbc.conf`, login `sr_jdbc`, views `sr_auth_users` + `sr_auth_roles`).
 
+**DR registry (profile `dr`, `dr-test.sh` only).** `schema-registry-dr` (port 8084) is a separate registry cluster on the same Kafka: `sr.properties` with `sr-dr.properties` appended (own `schema.registry.group.id` and `_schemas_dr*` / `_exporter_dr_*` topics, covered by the existing prefix Kafka ACLs). Its ACLs are separate: use `docker compose exec -T schema-registry-dr sr-acl-cli --config /tmp/sr.properties`. The script's cleanup (also on failure, via `trap`) deletes exporters, `dr-test-*` subjects, the primary's IMPORT mode, the DR container and its topics; `KEEP_DR=1` keeps the DR registry running.
+
 **`scripts/test.sh` mechanics.**
 - **Recording:** `rec`/`check` append rows to `results/results.tsv`, and `results.md` is generated from that at the end.
 - **Cleanup:** each test removes the ACLs and exporters it creates, so the script is re-runnable.
@@ -89,7 +92,8 @@ cid=$(docker create confluentinc/cp-schema-registry:7.9.0); docker cp $cid:/usr/
 - **Timings vary by run on this machine.** Compare numbers within one run only. Test 8 warms each registry up before its bursts because the bench twins start cold; without it plugin OFF looked slower than ON.
 - **Exporters need `kafkastore.update.handlers=io.confluent.schema.exporter.storage.SchemaExporterUpdateHandler`.** Without it SR crashes at startup with an NPE in `SchemaExporterResourceExtension.register`.
 - **`schema.linking.rbac.enable=true` in `sr.properties` is intentional.** With the default `false`, `/exporters` is completely unauthorized in ACL mode (finding F1). Keep it `true`.
-- **Test 5 is permission checks only** (agreed scope). Its exporters point back at this SR without credentials and are deleted immediately. Don't add a destination registry or any data-copying demo.
+- **Test 5 is permission checks only** (agreed scope). Its exporters point back at this SR without credentials and are deleted immediately. Real exporting to a destination registry lives in `dr-test.sh`, kept out of `test.sh` on purpose.
+- **DR is active-passive with exporters** (README §12); cold standby via Cluster Linking was rejected. The exporter's user needs `SUBJECT_DELETE` and `GLOBAL_COMPATIBILITY_READ` beyond the three ops Confluent documents, or the exporter goes `PAUSED` (trace only in `GET /exporters/<name>/status`).
 - **Subject listing filters on a different operation.** The `GET /subjects` filter uses `SUBJECT_COMPATIBILITY_READ`, not `SUBJECT_READ`. `sr-acl-cli --topic T` only covers `T-key`/`T-value`. Subject ACLs treat `*` anywhere as a glob.
 - **The license is the single-node developer license** (log line `License for single cluster, single node`), not the 30-day trial.
 - **Kafka ACLs for the SR principal in `up.sh` are deliberately broad prefix grants,** not a verified minimum.

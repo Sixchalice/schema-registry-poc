@@ -149,6 +149,24 @@ services:
         printf '\nhost.name=schema-registry-jdbc\nleader.eligibility=false\n' >> /tmp/sr.properties
         exec schema-registry-start /tmp/sr.properties
 
+  # DR registry (profile dr, scripts/dr-test.sh only): a separate Schema Registry cluster fed by an
+  # exporter on schema-registry. Same image, login and plugin; its own group and topics via the
+  # overrides in sr-dr.properties, appended to sr.properties (later keys win). Shares this Kafka.
+  schema-registry-dr:
+    <<: *sr-common
+    profiles: ["dr"]
+    hostname: schema-registry-dr
+    ports:
+      - "8084:8081"
+    environment:
+      <<: *sr-env
+    command:
+      - |
+        cat /etc/schema-registry/poc/sr.properties /etc/schema-registry/poc/sr-dr.properties > /tmp/sr.properties
+        java -cp "/opt/poc-auth/*:/usr/share/java/rest-utils/*:/usr/share/java/schema-registry/*" \
+          $$SCHEMA_REGISTRY_OPTS poc.auth.Preflight SchemaRegistryRealm || exit 1
+        exec schema-registry-start /tmp/sr.properties
+
   # Java Avro producer/consumer (see client/). Built and run via scripts/test.sh.
   client:
     image: maven:3.9.9-eclipse-temurin-17

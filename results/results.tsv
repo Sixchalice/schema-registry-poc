@@ -29,18 +29,18 @@
 4f	c17.svc-a GET /config (global compatibility)	403	403 {"error_code":40301,"message":"User is denied operation ReadCompatibility on this server."}	PASS	needs GLOBAL_COMPATIBILITY_READ
 4g	c17.svc-a GET /schemas/types (with GLOBAL_READ)	200	200 ["JSON","PROTOBUF","AVRO"]	PASS	
 4h	c17.svc-b GET /schemas/types (no GLOBAL_READ)	403	403	PASS	also gated by GLOBAL_READ
-5a0	[rbac.enable=false] platform-admin create exporter	200	200	PASS	{"name":"platform-link-1791964994-a"}
-5a1	[rbac.enable=false] c17.svc-a GET /exporters	403	200	FAIL	["platform-link-1791964994-a"]
+5a0	[rbac.enable=false] platform-admin create exporter	200	200	PASS	{"name":"platform-link-1791987174-a"}
+5a1	[rbac.enable=false] c17.svc-a GET /exporters	403	200	FAIL	["platform-link-1791987174-a"]
 5a2	[rbac.enable=false] c17.svc-a POST /exporters (create)	403	200	FAIL	
 5a3	[rbac.enable=false] c17.svc-a GET platform exporter config	403	200	FAIL	
 5a4	[rbac.enable=false] c17.svc-a PUT pause on platform exporter	403	200	FAIL	
-5a5	[rbac.enable=false] c17.svc-b GET /exporters	403	200	FAIL	["platform-link-1791964994-a","tenant-c17.svc-a-1791964994"]
+5a5	[rbac.enable=false] c17.svc-b GET /exporters	403	200	FAIL	["platform-link-1791987174-a","tenant-c17.svc-a-1791987174"]
 5a6	[rbac.enable=false] c17.svc-b POST /exporters (create)	403	200	FAIL	
 5a7	[rbac.enable=false] c17.svc-b GET platform exporter config	403	200	FAIL	
 5a8	[rbac.enable=false] c17.svc-b PUT pause on platform exporter	403	200	FAIL	
 5a9	[rbac.enable=false] c17.svc-b DELETE platform exporter	403	204	FAIL	
 5ax	[rbac.enable=false] platform-admin pause+delete exporter	204	204	PASS	
-5b0	[rbac.enable=true] platform-admin create exporter	200	200	PASS	{"name":"platform-link-1791964994-b"}
+5b0	[rbac.enable=true] platform-admin create exporter	200	200	PASS	{"name":"platform-link-1791987174-b"}
 5b1	[rbac.enable=true] c17.svc-a GET /exporters	403	403	PASS	{"error_code":40301,"message":"User is denied operation on this server."}
 5b2	[rbac.enable=true] c17.svc-a POST /exporters (create)	403	403	PASS	
 5b3	[rbac.enable=true] c17.svc-a GET platform exporter config	403	403	PASS	
@@ -52,29 +52,37 @@
 5b9	[rbac.enable=true] c17.svc-b DELETE platform exporter	403	403	PASS	
 5bx	[rbac.enable=true] platform-admin pause+delete exporter	204	204	PASS	
 6a	svc-a produce 'orders', TopicNameStrategy	OK	OK	PASS	RESULT OK produced to orders-0@0
-6b	svc-a consume 'orders'	OK	OK	PASS	RESULT OK consumed com.acme.orders.Order {"id": "5dd341e2-f571-47ae-8325-7b1aac5b8b36", "amount": 12.34}
+6b	svc-a consume 'orders'	OK	OK	PASS	RESULT OK consumed com.acme.orders.Order {"id": "9221b05f-7bc0-43b8-86f6-da85b3d5a2fc", "amount": 12.34}
 6c	svc-b consume 'orders' (Kafka read allowed, no SR ACL)	FAIL	FAIL	PASS	RESULT FAIL RecordDeserializationException: Error deserializing VALUE for partition orders-0 at offset 0. If needed, please seek past the record to continue consumption. | root: RestClientException: User is denied operation on this server.; error code: 40301
 6d	svc-a produce 'payments', RecordNameStrategy, ACL only via --topic payments	FAIL	FAIL	PASS	--topic grants payments-key/-value only; subject is com.acme.payments.Payment. RESULT FAIL ExecutionException: org.apache.kafka.common.errors.AuthorizationException: Error retrieving Avro schema{"type":"record","name":"Payment","namespace":"com.acme.payments","fields":[{"name":"id","type":"string"},{"name":"orderId","type":"string"},{"name":"cents","type":"long"}]} | root: RestClientException: User is denied operation Read on Subject: com.acme.payments.Payment; error code: 40301
 6e	same, after sr-acl-cli -s 'com.acme.payments.*' (prefix ACL)	OK	OK	PASS	RESULT OK produced to payments-0@0
-6f	svc-a consume 'payments' (RecordNameStrategy)	OK	OK	PASS	RESULT OK consumed com.acme.payments.Payment {"id": "0ac42f66-d20d-483c-a4cb-5c9923c7956e", "orderId": "o-1", "cents": 1234}
-7a1	--add #1: CLI wall time / effective after CLI start (ms)	effective before CLI returns	1868 / 1320	PASS	
-7r1	--remove #1: CLI wall time / effective after CLI start (ms)	effective before CLI returns	1808 / 1272	PASS	
-7a2	--add #2: CLI wall time / effective after CLI start (ms)	effective before CLI returns	1860 / 1330	PASS	
-7r2	--remove #2: CLI wall time / effective after CLI start (ms)	effective before CLI returns	1921 / 1397	PASS	
-7a3	--add #3: CLI wall time / effective after CLI start (ms)	effective before CLI returns	1822 / 1276	PASS	
-7r3	--remove #3: CLI wall time / effective after CLI start (ms)	effective before CLI returns	1806 / 1271	PASS	
+6f	svc-a consume 'payments' (RecordNameStrategy)	OK	OK	PASS	RESULT OK consumed com.acme.payments.Payment {"id": "6ebe988c-48d4-4f2f-9ccb-0f12f254f7ec", "orderId": "o-1", "cents": 1234}
+7a1	--add #1: CLI wall time / effective after CLI start (ms)	effective before CLI returns	1792 / 1256	PASS	
+7r1	--remove #1: CLI wall time / effective after CLI start (ms)	effective before CLI returns	1790 / 1267	PASS	
+7a2	--add #2: CLI wall time / effective after CLI start (ms)	effective before CLI returns	1819 / 1289	PASS	
+7r2	--remove #2: CLI wall time / effective after CLI start (ms)	effective before CLI returns	1799 / 1276	PASS	
+7a3	--add #3: CLI wall time / effective after CLI start (ms)	effective before CLI returns	1776 / 1242	PASS	
+7r3	--remove #3: CLI wall time / effective after CLI start (ms)	effective before CLI returns	1790 / 1233	PASS	
 8a	JDBCLoginModule, valid creds: DB work per request (n=20)	-	queries 2.00, new DB connections 2.00	INFO	
 8b	JDBCLoginModule, wrong password: DB work per request (n=20)	-	queries 1.00, new DB connections 1.00	INFO	
 8c	JDBCLoginModule, unknown user: DB work per request (n=20)	-	queries 1.00, new DB connections 1.00	INFO	
 8d	JDBCLoginModule, no credentials: DB work per request (n=20)	-	queries 0.00, new DB connections 0.00	INFO	
 8e	JDBCLoginModule, 20 requests on ONE keep-alive HTTP connection	-	queries 40, new DB connections 40	INFO	
 8f	snapshot, 300 requests (100 valid, 100 wrong password, 100 unknown user)	no per-request DB work	queries 0, new DB connections 0, full loads 0 in 3s	INFO	only the background reload: 1 connection + 1 full load per 60s per node
-8g	burst, JDBCLoginModule (n=1000, concurrency=1)	all 200	codes {'200': 1000}, p50 22.9ms, p99 52.7ms, max 114.9ms, 29 req/s; DB queries 2000, DB conns 2000	PASS	
-8h	burst, snapshot (n=1000, concurrency=1)	all 200	codes {'200': 1000}, p50 1.8ms, p99 4.5ms, max 14.1ms, 97 req/s; DB queries 0, DB conns 0	PASS	
-8i	burst, JDBCLoginModule (n=1000, concurrency=10)	all 200	codes {'200': 1000}, p50 35.5ms, p99 54.0ms, max 71.2ms, 203 req/s; DB queries 2000, DB conns 2000	PASS	
-8j	burst, snapshot (n=1000, concurrency=10)	all 200	codes {'200': 1000}, p50 2.8ms, p99 10.6ms, max 29.1ms, 474 req/s; DB queries 0, DB conns 0	PASS	
-8k	burst, snapshot, plugin OFF (n=1000, concurrency=10)	all 200	codes {'200': 1000}, p50 3.7ms, p99 14.9ms, max 42.2ms, 457 req/s; DB queries 0, DB conns 0	PASS	
-8l	burst, snapshot (n=1000, concurrency=50)	all 200	codes {'200': 1000}, p50 2.7ms, p99 8.1ms, max 13.7ms, 528 req/s; DB queries 1, DB conns 1	PASS	
+8g	burst, JDBCLoginModule (n=1000, concurrency=1)	all 200	codes {'200': 1000}, p50 21.1ms, p99 29.1ms, max 45.0ms, 32 req/s; DB queries 2000, DB conns 2000	PASS	
+8h	burst, snapshot (n=1000, concurrency=1)	all 200	codes {'200': 1000}, p50 1.8ms, p99 3.1ms, max 6.7ms, 97 req/s; DB queries 0, DB conns 0	PASS	
+8i	burst, JDBCLoginModule (n=1000, concurrency=10)	all 200	codes {'200': 1000}, p50 41.6ms, p99 87.5ms, max 100.6ms, 171 req/s; DB queries 2000, DB conns 2000	PASS	
+8j	burst, snapshot (n=1000, concurrency=10)	all 200	codes {'200': 1000}, p50 2.0ms, p99 4.5ms, max 8.8ms, 668 req/s; DB queries 0, DB conns 0	PASS	
+8k	burst, snapshot, plugin OFF (n=1000, concurrency=10)	all 200	codes {'200': 1000}, p50 3.6ms, p99 9.1ms, max 20.4ms, 450 req/s; DB queries 0, DB conns 0	PASS	
+8l	burst, snapshot (n=1000, concurrency=50)	all 200	codes {'200': 1000}, p50 2.7ms, p99 13.8ms, max 16.7ms, 585 req/s; DB queries 0, DB conns 0	PASS	
 8m	JDBCLoginModule, valid creds while SQL Server is DOWN	-	401 {"error_code":401,"message":"Unauthorized"}	INFO	every request needs the DB
-8n	JDBCLoginModule, valid creds after SQL Server is back	200 within 30 s	129 ms after the database is ONLINE	PASS	
+8n	JDBCLoginModule, valid creds after SQL Server is back	200 within 30 s	124 ms after the database is ONLINE	PASS	
 9a	Java class run by sr-acl-cli	io.confluent.kafka.schemaregistry.security.tools.SchemaRegistryAclCommand	io.confluent.kafka.schemaregistry.security.tools.SchemaRegistryAclCommand	PASS	
+9b	ACL record format on _schemas_acl	-	JSON key/value, 17 subject + 5 global records (results/schemas_acl-dump.txt)	INFO	
+10a	new user inserted in SQL Server -> accepted (403 = authenticated, no ACL)	<= 61000 ms	52051 ms	PASS	
+10b	password changed -> new password accepted	<= 61000 ms	59432 ms	PASS	old password now: 401
+10c	user deleted -> rejected	<= 61000 ms	59722 ms	PASS	
+10d	valid creds while SQL Server is DOWN	200	200	PASS	
+10e	wrong password while SQL Server is DOWN	401	401	PASS	
+10f	restart Schema Registry while SQL Server is DOWN	exits, code 1	exited, code 1	PASS	auth preflight FAILED: com.microsoft.sqlserver.jdbc.SQLServerException: The TCP/IP connection to the host mssql, port 14
+10g	after SQL Server is back: start + valid creds	200	200	PASS	
