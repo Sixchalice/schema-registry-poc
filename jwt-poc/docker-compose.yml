@@ -1,0 +1,88 @@
+name: sr-jwt-poc
+
+# Bearer-token design for Schema Registry (see POC_REPORT.md):
+#   client --Basic--> nginx --auth_request--> auth-service (bcrypt vs sr_services in SQL Server, mints RS256 JWT)
+#          nginx --Authorization: Bearer <JWT>--> sr-jwt-1 / sr-jwt-2 (security plugin, ACL authorizer)
+# Reuses Kafka and SQL Server from the repo's main stack (../docker-compose.yml) on its network.
+# Only NGINX publishes a host port.
+
+networks:
+  default:
+    name: sr-acl-poc_default
+    external: true
+
+x-sr: &sr
+  image: confluentinc/cp-schema-registry:7.9.0
+  depends_on:
+    auth-service: { condition: service_healthy }
+  volumes:
+    - ./schema-registry:/etc/schema-registry/jwt:ro
+  environment: &sr-env
+    SCHEMA_REGISTRY_LOG4J_OPTS: "-Dlog4j.configuration=file:/etc/schema-registry/jwt/log4j.properties"
+  entrypoint: ["bash", "-c"]
+  healthcheck:
+    # Any HTTP answer (401 without a token) means Jetty is serving
+    test: ["CMD-SHELL", "curl -s -o /dev/null -w '%{http_code}' localhost:8081/subjects | grep -q 401"]
+    interval: 60s          # rare once up: each probe is a line in the request log
+    start_period: 180s
+    start_interval: 2s
+    timeout: 5s
+    retries: 3
+
+services:
+  auth-service:
+    build: ./auth-service
+    image: sr-jwt-poc/auth-service
+    hostname: auth-service
+    environment:
+      DB_PASSWORD: sr-jwt-auth-secret
+    volumes:
+      - ./keys:/keys:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/jwks.json')\""]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # Leader-eligible node
+  sr-jwt-1:
+    <<: *sr
+    hostname: sr-jwt-1
+    command:
+      - |
+        { cat /etc/schema-registry/jwt/sr-jwt.properties; echo; echo host.name=sr-jwt-1; } > /tmp/sr.properties
+        exec schema-registry-start /tmp/sr.properties
+
+  # Follower (never leader): registrations it receives are forwarded to sr-jwt-1 (check 13)
+  sr-jwt-2:
+    <<: *sr
+    hostname: sr-jwt-2
+    depends_on:
+      sr-jwt-1: { condition: service_healthy }
+    command:
+      - |
+        { cat /etc/schema-registry/jwt/sr-jwt.properties; echo; echo host.name=sr-jwt-2; echo leader.eligibility=false; } > /tmp/sr.properties
+        exec schema-registry-start /tmp/sr.properties
+
+  nginx:
+    image: nginx:1.27.5-alpine
+    hostname: nginx
+    depends_on:
+      sr-jwt-2: { condition: service_healthy }
+    ports:
+      - "10000:10000"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+
+  # Test runner (profile tests): pytest on the compose network, so it can also call sr-jwt-* directly.
+  tests:
+    build: ./tests
+    image: sr-jwt-poc/tests
+    profiles: ["tests"]
+    working_dir: /tests
+    volumes:
+      - ./tests:/tests
+      - ./schemas:/schemas:ro
+      - ./keys:/keys:ro
+      - ./results:/results
+    entrypoint: ["python", "-m", "pytest"]

@@ -1,0 +1,108 @@
+# sr-jwt-1 / sr-jwt-2, this run (since 2026-10-18T17:35:22Z)
+sr-jwt-2-1  | [2026-10-18 17:35:22,843] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-2-1  | [2026-10-18 17:35:22,845] DEBUG The principal is svc-reader for qtp2102368942-34 (io.confluent.common.security.auth.AuthenticationFilter)
+sr-jwt-2-1  | [2026-10-18 17:35:22,847] INFO 172.19.0.7 - svc-reader [18/Oct/2026:17:35:22 +0000] "GET /subjects/payments-value/versions/latest HTTP/1.0" 403 89 "-" "python-requests/2.32.3" 4 (io.confluent.rest-utils.requests)
+sr-jwt-2-1  | [2026-10-18 17:35:23,417] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-2-1  | [2026-10-18 17:35:23,418] DEBUG The principal is platform for qtp2102368942-39 (io.confluent.common.security.auth.AuthenticationFilter)
+sr-jwt-2-1  | [2026-10-18 17:35:23,419] INFO 172.19.0.7 - platform [18/Oct/2026:17:35:23 +0000] "GET /subjects/orders-value/versions/latest HTTP/1.0" 200 155 "-" "python-requests/2.32.3" 3 (io.confluent.rest-utils.requests)
+sr-jwt-2-1  | [2026-10-18 17:35:23,425] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-2-1  | [2026-10-18 17:35:23,426] DEBUG The principal is svc-reader for qtp2102368942-38 (io.confluent.common.security.auth.AuthenticationFilter)
+sr-jwt-2-1  | [2026-10-18 17:35:23,426] INFO 172.19.0.7 - svc-reader [18/Oct/2026:17:35:23 +0000] "GET /schemas/ids/1 HTTP/1.0" 200 130 "-" "python-requests/2.32.3" 1 (io.confluent.rest-utils.requests)
+sr-jwt-2-1  | [2026-10-18 17:35:23,434] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-2-1  | [2026-10-18 17:35:23,435] DEBUG The principal is svc-reader for qtp2102368942-45 (io.confluent.common.security.auth.AuthenticationFilter)
+sr-jwt-2-1  | [2026-10-18 17:35:23,436] INFO 172.19.0.7 - svc-reader [18/Oct/2026:17:35:23 +0000] "POST /subjects/orders-value/versions HTTP/1.0" 403 88 "-" "python-requests/2.32.3" 3 (io.confluent.rest-utils.requests)
+sr-jwt-2-1  | [2026-10-18 17:35:23,448] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-2-1  | [2026-10-18 17:35:23,449] DEBUG The principal is svc-reader for qtp2102368942-36 (io.confluent.common.security.auth.AuthenticationFilter)
+sr-jwt-2-1  | [2026-10-18 17:35:23,450] INFO 172.19.0.7 - svc-reader [18/Oct/2026:17:35:23 +0000] "GET /subjects/payments-value/versions/latest HTTP/1.0" 403 89 "-" "python-requests/2.32.3" 2 (io.confluent.rest-utils.requests)
+sr-jwt-2-1  | [2026-10-18 17:35:24,537] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-2-1  | [2026-10-18 17:35:24,539] DEBUG The principal is svc-reader for qtp2102368942-33 (io.confluent.common.security.auth.AuthenticationFilter)
+sr-jwt-2-1  | [2026-10-18 17:35:24,541] INFO 172.19.0.7 - svc-reader [18/Oct/2026:17:35:24 +0000] "GET /schemas/ids/1 HTTP/1.0" 200 130 "-" "python-httpx/0.28.1" 5 (io.confluent.rest-utils.requests)
+sr-jwt-2-1  | [2026-10-18 17:35:24,547] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-2-1  | [2026-10-18 17:35:24,548] DEBUG The principal is platform for qtp2102368942-34 (io.confluent.common.security.auth.AuthenticationFilter)
+sr-jwt-2-1  | [2026-10-18 17:35:24,560] INFO 172.19.0.8 - platform [18/Oct/2026:17:35:24 +0000] "POST /subjects/jwt-forward-test-value/versions HTTP/1.1" 200 8 "-" "python-requests/2.32.3" 12 (io.confluent.rest-utils.requests)
+sr-jwt-2-1  | [2026-10-18 17:35:24,563] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-2-1  | [2026-10-18 17:35:24,564] DEBUG The principal is svc-reader for qtp2102368942-39 (io.confluent.common.security.auth.AuthenticationFilter)
+sr-jwt-2-1  | [2026-10-18 17:35:24,565] INFO 172.19.0.8 - svc-reader [18/Oct/2026:17:35:24 +0000] "POST /subjects/jwt-forward-test-value/versions HTTP/1.1" 403 98 "-" "python-requests/2.32.3" 3 (io.confluent.rest-utils.requests)
+sr-jwt-2-1  | [2026-10-18 17:35:29,870] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-2-1  | [2026-10-18 17:35:29,871] DEBUG The principal is svc-reader for qtp2102368942-38 (io.confluent.common.security.auth.AuthenticationFilter)
+sr-jwt-2-1  | [2026-10-18 17:35:29,872] INFO 172.19.0.7 - svc-reader [18/Oct/2026:17:35:29 +0000] "GET /subjects/orders-value/versions/latest HTTP/1.0" 200 155 "-" "python-requests/2.32.3" 2 (io.confluent.rest-utils.requests)
+sr-jwt-1-1  | [2026-10-18 17:35:22,836] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-1-1  | [2026-10-18 17:35:22,837] DEBUG The principal is svc-reader for qtp2102368942-38 (io.confluent.common.security.auth.AuthenticationFilter)
+sr-jwt-1-1  | [2026-10-18 17:35:22,839] INFO 172.19.0.7 - svc-reader [18/Oct/2026:17:35:22 +0000] "GET /subjects/orders-value/versions/latest HTTP/1.0" 200 155 "-" "python-requests/2.32.3" 3 (io.confluent.rest-utils.requests)
+sr-jwt-1-1  | [2026-10-18 17:35:23,055] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-1-1  | [2026-10-18 17:35:23,056] DEBUG The principal is svc-other for qtp2102368942-33 (io.confluent.common.security.auth.AuthenticationFilter)
+sr-jwt-1-1  | [2026-10-18 17:35:23,057] INFO 172.19.0.7 - svc-other [18/Oct/2026:17:35:23 +0000] "GET /subjects/orders-value/versions/latest HTTP/1.0" 403 87 "-" "python-requests/2.32.3" 2 (io.confluent.rest-utils.requests)
+sr-jwt-1-1  | [2026-10-18 17:35:23,421] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-1-1  | [2026-10-18 17:35:23,422] DEBUG The principal is platform for qtp2102368942-40 (io.confluent.common.security.auth.AuthenticationFilter)
+sr-jwt-1-1  | [2026-10-18 17:35:23,423] INFO 172.19.0.7 - platform [18/Oct/2026:17:35:23 +0000] "GET /subjects/payments-value/versions/latest HTTP/1.0" 200 161 "-" "python-requests/2.32.3" 2 (io.confluent.rest-utils.requests)
+sr-jwt-1-1  | [2026-10-18 17:35:23,429] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-1-1  | [2026-10-18 17:35:23,429] DEBUG The principal is svc-reader for qtp2102368942-37 (io.confluent.common.security.auth.AuthenticationFilter)
+sr-jwt-1-1  | [2026-10-18 17:35:23,430] INFO 172.19.0.7 - svc-reader [18/Oct/2026:17:35:23 +0000] "GET /schemas/ids/2 HTTP/1.0" 403 73 "-" "python-requests/2.32.3" 2 (io.confluent.rest-utils.requests)
+sr-jwt-1-1  | [2026-10-18 17:35:23,438] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-1-1  | [2026-10-18 17:35:23,438] DEBUG The principal is platform for qtp2102368942-36 (io.confluent.common.security.auth.AuthenticationFilter)
+sr-jwt-1-1  | [2026-10-18 17:35:23,442] INFO 172.19.0.7 - platform [18/Oct/2026:17:35:23 +0000] "POST /subjects/orders-value/versions HTTP/1.0" 200 8 "-" "python-requests/2.32.3" 5 (io.confluent.rest-utils.requests)
+sr-jwt-1-1  | [2026-10-18 17:35:23,451] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-1-1  | [2026-10-18 17:35:23,452] INFO 172.19.0.8 - - [18/Oct/2026:17:35:23 +0000] "GET /subjects/payments-value/versions/latest HTTP/1.1" 401 41 "-" "python-requests/2.32.3" 1 (io.confluent.rest-utils.requests)
+sr-jwt-1-1  | [2026-10-18 17:35:23,456] INFO 172.19.0.8 - - [18/Oct/2026:17:35:23 +0000] "GET /subjects/orders-value/versions/latest HTTP/1.1" 401 43 "-" "python-requests/2.32.3" 1 (io.confluent.rest-utils.requests)
+sr-jwt-1-1  | [2026-10-18 17:35:23,456] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-1-1  | [2026-10-18 17:35:23,457] INFO 172.19.0.8 - - [18/Oct/2026:17:35:23 +0000] "GET /subjects/orders-value/versions/latest HTTP/1.1" 401 41 "-" "python-requests/2.32.3" 1 (io.confluent.rest-utils.requests)
+sr-jwt-1-1  | [2026-10-18 17:35:23,458] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-1-1  | [2026-10-18 17:35:23,459] INFO 172.19.0.8 - - [18/Oct/2026:17:35:23 +0000] "GET /subjects/orders-value/versions/latest HTTP/1.1" 401 41 "-" "python-requests/2.32.3" 1 (io.confluent.rest-utils.requests)
+sr-jwt-1-1  | [2026-10-18 17:35:23,460] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-1-1  | [2026-10-18 17:35:23,460] INFO 172.19.0.8 - - [18/Oct/2026:17:35:23 +0000] "GET /subjects/orders-value/versions/latest HTTP/1.1" 401 41 "-" "python-requests/2.32.3" 1 (io.confluent.rest-utils.requests)
+sr-jwt-1-1  | [2026-10-18 17:35:23,461] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-1-1  | [2026-10-18 17:35:23,461] INFO 172.19.0.8 - - [18/Oct/2026:17:35:23 +0000] "GET /subjects/orders-value/versions/latest HTTP/1.1" 401 41 "-" "python-requests/2.32.3" 0 (io.confluent.rest-utils.requests)
+sr-jwt-1-1  | [2026-10-18 17:35:23,462] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-1-1  | [2026-10-18 17:35:23,464] INFO 172.19.0.8 - - [18/Oct/2026:17:35:23 +0000] "GET /subjects/orders-value/versions/latest HTTP/1.1" 401 41 "-" "python-requests/2.32.3" 2 (io.confluent.rest-utils.requests)
+sr-jwt-1-1  | [2026-10-18 17:35:23,465] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-1-1  | [2026-10-18 17:35:23,465] INFO 172.19.0.8 - - [18/Oct/2026:17:35:23 +0000] "GET /subjects/orders-value/versions/latest HTTP/1.1" 401 43 "-" "python-requests/2.32.3" 0 (io.confluent.rest-utils.requests)
+sr-jwt-1-1  | [2026-10-18 17:35:23,467] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-1-1  | [2026-10-18 17:35:23,468] DEBUG The principal is svc-reader for qtp2102368942-36 (io.confluent.common.security.auth.AuthenticationFilter)
+sr-jwt-1-1  | [2026-10-18 17:35:23,469] INFO 172.19.0.8 - svc-reader [18/Oct/2026:17:35:23 +0000] "GET /subjects/orders-value/versions/latest HTTP/1.1" 200 155 "-" "python-requests/2.32.3" 2 (io.confluent.rest-utils.requests)
+sr-jwt-1-1  | [2026-10-18 17:35:23,472] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-1-1  | [2026-10-18 17:35:23,473] DEBUG The principal is svc-reader for qtp2102368942-38 (io.confluent.common.security.auth.AuthenticationFilter)
+sr-jwt-1-1  | [2026-10-18 17:35:23,474] INFO 172.19.0.8 - svc-reader [18/Oct/2026:17:35:23 +0000] "GET /subjects/orders-value/versions/latest HTTP/1.1" 200 155 "-" "python-requests/2.32.3" 2 (io.confluent.rest-utils.requests)
+sr-jwt-1-1  | [2026-10-18 17:35:23,513] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-1-1  | [2026-10-18 17:35:23,513] DEBUG The principal is svc-reader for qtp2102368942-40 (io.confluent.common.security.auth.AuthenticationFilter)
+sr-jwt-1-1  | [2026-10-18 17:35:23,514] INFO 172.19.0.7 - svc-reader [18/Oct/2026:17:35:23 +0000] "GET /subjects/orders-value/versions/latest HTTP/1.0" 200 155 "-" "python-httpx/0.28.1" 2 (io.confluent.rest-utils.requests)
+sr-jwt-1-1  | [2026-10-18 17:35:24,552] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-1-1  | [2026-10-18 17:35:24,553] DEBUG The principal is platform for qtp2102368942-37 (io.confluent.common.security.auth.AuthenticationFilter)
+sr-jwt-1-1  | [2026-10-18 17:35:24,559] INFO 172.19.0.6 - platform [18/Oct/2026:17:35:24 +0000] "POST /subjects/jwt-forward-test-value/versions?normalize=false HTTP/1.1" 200 8 "-" "Java/17.0.13" 8 (io.confluent.rest-utils.requests)
+sr-jwt-1-1  | [2026-10-18 17:35:24,566] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-1-1  | [2026-10-18 17:35:24,567] DEBUG The principal is platform for qtp2102368942-39 (io.confluent.common.security.auth.AuthenticationFilter)
+sr-jwt-1-1  | [2026-10-18 17:35:24,568] INFO 172.19.0.8 - platform [18/Oct/2026:17:35:24 +0000] "GET /subjects/jwt-forward-test-value/versions/latest HTTP/1.1" 200 167 "-" "python-requests/2.32.3" 2 (io.confluent.rest-utils.requests)
+sr-jwt-1-1  | [2026-10-18 17:35:24,569] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-1-1  | [2026-10-18 17:35:24,570] DEBUG The principal is platform for qtp2102368942-45 (io.confluent.common.security.auth.AuthenticationFilter)
+sr-jwt-1-1  | [2026-10-18 17:35:24,573] INFO 172.19.0.8 - platform [18/Oct/2026:17:35:24 +0000] "DELETE /subjects/jwt-forward-test-value HTTP/1.1" 200 3 "-" "python-requests/2.32.3" 4 (io.confluent.rest-utils.requests)
+sr-jwt-1-1  | [2026-10-18 17:35:24,574] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-1-1  | [2026-10-18 17:35:24,575] DEBUG The principal is platform for qtp2102368942-33 (io.confluent.common.security.auth.AuthenticationFilter)
+sr-jwt-1-1  | [2026-10-18 17:35:24,578] INFO 172.19.0.8 - platform [18/Oct/2026:17:35:24 +0000] "DELETE /subjects/jwt-forward-test-value?permanent=true HTTP/1.1" 200 3 "-" "python-requests/2.32.3" 4 (io.confluent.rest-utils.requests)
+sr-jwt-1-1  | [2026-10-18 17:35:28,044] DEBUG Processing new Jwt login request. (io.confluent.common.security.jetty.JwtLoginService)
+sr-jwt-1-1  | [2026-10-18 17:35:28,045] DEBUG The principal is svc-reader for qtp2102368942-38 (io.confluent.common.security.auth.AuthenticationFilter)
+
+# startup: authentication handler configuration
+sr-jwt-1-1  | [2026-10-18 17:33:19,811] DEBUG Configured IDP issuer: sr-auth-proxy, IDP key url: http://auth-service:8080/jwks.json (io.confluent.common.security.jetty.initializer.AuthenticationHandler)
+sr-jwt-1-1  | [2026-10-18 17:33:19,811] DEBUG Confluent OAuth enabled: false, IDP Oauth is enabled: true (io.confluent.common.security.jetty.initializer.AuthenticationHandler)
+
+# nginx access log, this run
+ACCESS GET /subjects/orders-value/versions/latest status=200 upstream=172.19.0.5:8081 user=svc-reader auth=ok
+ACCESS GET /subjects/payments-value/versions/latest status=403 upstream=172.19.0.6:8081 user=svc-reader auth=ok
+ACCESS GET /subjects/orders-value/versions/latest status=403 upstream=172.19.0.5:8081 user=svc-other auth=ok
+ACCESS GET /subjects/orders-value/versions/latest?probe-4-7d982e470c09=1 status=401 upstream=- user=svc-reader auth=invalid-credentials
+ACCESS GET /subjects/orders-value/versions/latest status=200 upstream=172.19.0.6:8081 user=platform auth=ok
+ACCESS GET /subjects/payments-value/versions/latest status=200 upstream=172.19.0.5:8081 user=platform auth=ok
+ACCESS GET /schemas/ids/1 status=200 upstream=172.19.0.6:8081 user=svc-reader auth=ok
+ACCESS GET /schemas/ids/2 status=403 upstream=172.19.0.5:8081 user=svc-reader auth=ok
+ACCESS POST /subjects/orders-value/versions status=403 upstream=172.19.0.6:8081 user=svc-reader auth=ok
+ACCESS POST /subjects/orders-value/versions status=200 upstream=172.19.0.5:8081 user=platform auth=ok
+ACCESS GET /subjects/payments-value/versions/latest status=401 upstream=- user=- auth=basic-credentials-required
+ACCESS GET /subjects/payments-value/versions/latest status=400 upstream=- user=svc-reader auth=-
+ACCESS GET /subjects/payments-value/versions/latest status=403 upstream=172.19.0.6:8081 user=svc-reader auth=ok
+ACCESS GET /subjects/orders-value/versions/latest status=200 upstream=172.19.0.5:8081 user=svc-reader auth=ok
+ACCESS GET /schemas/ids/1 status=200 upstream=172.19.0.6:8081 user=svc-reader auth=ok
+ACCESS GET /subjects/orders-value/versions/latest status=200 upstream=172.19.0.5:8081 user=svc-reader auth=ok
+ACCESS GET /subjects/orders-value/versions/latest status=200 upstream=172.19.0.6:8081 user=svc-reader auth=ok
+ACCESS GET /subjects/orders-value/versions/latest status=500 upstream=- user=svc-other auth=credential-store-unavailable
+ACCESS GET /subjects/orders-value/versions/latest status=500 upstream=- user=svc-reader auth=credential-store-unavailable
+ACCESS GET /subjects/orders-value/versions/latest?probe-12-dd59e5b9e575=1 status=500 upstream=- user=svc-reader auth=
+ACCESS GET /subjects/orders-value/versions/latest status=200 upstream=172.19.0.5:8081 user=svc-reader auth=ok
