@@ -1,4 +1,4 @@
-17/17 rows passed
+20/20 rows passed
 
 | # | Check | Expected | Actual | Result | Notes |
 |---|---|---|---|---|---|
@@ -6,16 +6,19 @@
 | 2 | svc-reader GET payments-value latest via NGINX | 403/40301 | 403/40301 | PASS | User is denied operation Read on Subject: payments-value |
 | 3 | svc-other GET orders-value latest via NGINX | 403/40301 | 403/40301 | PASS | User is denied operation Read on Subject: orders-value |
 | 4 | wrong password -> 401 (auth service reason via NGINX) | 401/invalid-credentials | 401/invalid-credentials | PASS | SR-side evidence: row 4b |
-| 4b | wrong-password request never reached SR (marker in SR request logs \| NGINX upstream) | 0\|- | 0\|- | PASS | probe-4-7d982e470c09 |
+| 4b | wrong-password request never reached SR (marker in SR request logs \| NGINX upstream) | 0\|- | 0\|- | PASS | probe-4-c9a2e0ae9e8e |
 | 5 | svc-reader GET /schemas/ids/<orders id> \| <payments id> | 200\|403 | 200\|403 | PASS | orders id=1, payments id=2; {"error_code":40301,"message":"User is denied operation on this server."} |
 | 6 | POST orders-value versions: svc-reader \| platform | 403\|200 | 403\|200 | PASS | platform -> {"id":1} |
 | 7 | forged platform token: Bearer via NGINX \| + valid Basic (2 Authorization headers) \| valid Basic + client X-SR-Token \| Bearer direct to SR | 401\|400\|403\|401 | 401\|400\|403\|401 | PASS | a: basic-credentials-required; b: NGINX '400 Bad Request'; c: {"error_code":40301,"message":"User is denied operation Read on Subjec |
 | 8 | direct to sr-jwt-1: no auth, forged key, expired, wrong aud, wrong iss, alg none, Basic platform \| control: valid token | 401 401 401 401 401 401 401 \| 200 | 401 401 401 401 401 401 401 \| 200 | PASS |  |
 | 9 | JWKS over plain HTTP accepted (token from http://auth-service:8080/jwks.json validates) | 200 | 200 | PASS | no HTTPS requirement; see SR log 'IDP key url: http://...' |
-| 10 | confluent-kafka Avro produce+consume on orders (SR as svc-reader via NGINX) | {'id': 'jwt-fec7fa7a', 'amount': 12.5} | {'id': 'jwt-fec7fa7a', 'amount': 12.5} | PASS | schema id in record=1, partition/offset=(0, 2) |
-| 11 | SQL Server stopped: cached svc-reader \| uncached svc-other \| svc-reader wrong pw | 200\|500\|500 | 200\|500\|500 | PASS | auth reason: credential-store-unavailable |
+| 10 | confluent-kafka Avro produce+consume on orders (SR as svc-reader via NGINX) | {'id': 'jwt-e79fcd58', 'amount': 12.5} | {'id': 'jwt-e79fcd58', 'amount': 12.5} | PASS | schema id in record=1, partition/offset=(0, 6) |
+| 11 | SQL Server stopped, a reload has failed: svc-reader \| svc-other \| svc-reader wrong pw | True\|200\|403\|401 | True\|200\|403\|401 | PASS | snapshot age 60.8 s; svc-other authenticates and is denied by the ACL, as normal |
+| 11b | auth service restarted while SQL Server is down -> exits (no start without credentials) | exited/3 | exited/3 | PASS | OperationalError: (20009, b'DB-Lib error message 20009, severity 9:\nUnable  |
 | 12 | auth service stopped: svc-reader via NGINX (fails closed, 500 from NGINX) | 500/nginx | 500/nginx | PASS | SR-side evidence: row 12b |
-| 12b | with auth service down the request never reached SR (marker in SR request logs \| NGINX upstream) | 0\|- | 0\|- | PASS | probe-12-dd59e5b9e575 |
-| 12c | auth service started again: svc-reader via NGINX recovers | 200 | 200 | PASS | NGINX re-resolves auth-service (resolver valid=5s) |
-| 13 | POST to follower sr-jwt-2 as platform \| as svc-reader; leader has it | 200\|403\|True | 200\|403\|True | PASS | {"id":4}; marker probe-13-021eafd46c3f; leader-log evidence: row 13b |
+| 12b | with auth service down the request never reached SR (marker in SR request logs \| NGINX upstream) | 0\|- | 0\|- | PASS | probe-12-f419b02a8949 |
+| 12c | auth service started again: svc-reader via NGINX gets 200 within 15 s | yes | yes | PASS | 4 s after the container was healthy: NGINX dropped the name while Docker DNS had no record, re-resolves every 5 s |
+| 13 | POST to follower sr-jwt-2 as platform \| as svc-reader; leader has it | 200\|403\|True | 200\|403\|True | PASS | {"id":8}; marker probe-13-f436247dfc2a; leader-log evidence: row 13b |
 | 13b | forwarded registration logged as principal platform on follower \| leader | 1\|1 | 1\|1 | PASS | request-log lines with user=platform; svc-reader's attempt was denied on the follower, never forwarded |
+| 14 | 30 requests via NGINX: DB queries (<= 1 periodic reload in the window) \| bcrypt checks | True\|0 | True\|0 | PASS | db_loads +0, verified_hits +30 |
+| 15 | svc-new inserted -> authenticated (403 from SR, no ACLs) within 65 s \| deleted -> 401 within 65 s (no restart) | yes\|yes | yes\|yes | PASS | seconds: added 22, removed 60 (reload every 60 s) |

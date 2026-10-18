@@ -4,7 +4,8 @@ A proof of concept for authenticating clients to Confluent Schema Registry 7.9:
 
 - Clients keep using plain **HTTP Basic** (Service name + password).
 - **NGINX** checks every request with a small **Python auth service**. That service verifies the password
-  against SQL Server (bcrypt) and mints a short-lived **RS256 JWT**.
+  (bcrypt) against an **in-memory copy of the SQL Server table**, reloaded once a minute, and mints a short-lived
+  **RS256 JWT**. Requests never query the database.
 - **Schema Registry** never sees the password. It validates the JWT and takes `sub` as the principal.
   Authorization is done by the Confluent Security Plugin in **ACL mode** (`SchemaRegistryAclAuthorizer`,
   ACLs managed with `sr-acl-cli`).
@@ -21,14 +22,15 @@ Results, exact config and log evidence are in [`POC_REPORT.md`](POC_REPORT.md).
   - NGINX: the only published port, `localhost:10000`.
   - The auth service.
   - A 2-node Schema Registry cluster, `sr-jwt-1` (leader) and `sr-jwt-2` (follower), with its own topics and no host ports.
-- **The checks:** 13, automated with pytest plus a bash driver. All pass (`results/jwt-results.md`). They cover:
+- **The checks:** 15, automated with pytest plus a bash driver. All pass (`results/jwt-results.md`, 20 rows). They cover:
   - allow and deny by ACL, for reads, writes and `/schemas/ids`
   - wrong passwords
   - forged, expired and wrong-audience tokens, through NGINX and directly against SR
   - JWKS over plain HTTP
   - an end-to-end Avro producer and consumer
-  - a SQL Server outage and an auth service outage
+  - a SQL Server outage, the auth service refusing to start without the DB, and an auth service outage
   - follower-to-leader forwarding of writes
+  - no DB query per request, and a Service added or removed in the DB taking effect within one reload
 - **How the config was checked:** the SR auth config was read from the plugin jars with `javap` before it was used. The config from the brief
   (`AuthenticationHandler`, `oauthbearer.*`, `auth.mechanism=JETTY_AUTH`) turned out to be correct as written.
 - **Proxy:** the proxy was first Envoy `ext_authz`, then switched to NGINX `auth_request`, which is what the team uses.
@@ -40,7 +42,7 @@ Results, exact config and log evidence are in [`POC_REPORT.md`](POC_REPORT.md).
 | Component | Role | Key facts |
 |---|---|---|
 | **NGINX** | The only entry point. | `auth_request` on every request. Copies the auth service's `X-SR-Token` into `Authorization: Bearer …` and so **replaces** whatever the client sent. Round-robins over the SR nodes. |
-| **Auth service** (`auth-service/app.py`) | Basic → JWT | FastAPI, PyJWT, bcrypt, pymssql. Reads `sr_services(name, password_hash)` as a read-only DB login. Caches **successful** checks in memory for 10 min. Serves `/jwks.json`. |
+| **Auth service** (`auth-service/app.py`) | Basic → JWT | FastAPI, PyJWT, bcrypt, pymssql. Keeps the **whole** `sr_services(name, password_hash)` table in memory: one `SELECT` at startup, then one every 60 s on a background thread (read-only DB login). Requests only read that copy. Serves `/jwks.json`. |
 | **JWT** | Identity for SR | RS256 with `kid`. Claims: `sub=<Service>`, `iss=sr-auth-proxy`, `aud=schema-registry`, `iat`, `exp=now+300`. |
 | **Schema Registry** | Validates the token and authorizes | `AuthenticationHandler` validates signature, `iss`, `aud` and `exp` against the JWKS. `sub` becomes the principal, and the ACL authorizer decides. |
 | **SQL Server** | Credential store | Table `sr_services`. Only the auth service reads it. |
@@ -59,13 +61,16 @@ sequenceDiagram
     participant D as SQL Server
     participant S as Schema Registry node
     C->>N: GET /subjects/orders-value/versions/latest<br/>Authorization: Basic svc-reader:pw
+    loop every 60 s (background thread, independent of requests)
+        A->>D: SELECT name, password_hash FROM sr_services
+        D-->>A: all rows → replace the in-memory snapshot (on error: keep the old one)
+    end
     N->>A: auth_request /check (headers only, no body)
-    alt cached (verified < 10 min ago)
-        A-->>A: HMAC(password) matches the cache
-    else not cached
-        A->>D: SELECT password_hash FROM sr_services WHERE name = ?
-        D-->>A: $2b$12$...
-        A-->>A: bcrypt.checkpw, then cache the success
+    A-->>A: look up svc-reader in the snapshot (no DB access)
+    alt this password was already verified against this stored hash
+        A-->>A: HMAC(password) matches → skip bcrypt
+    else first time
+        A-->>A: bcrypt.checkpw (~0.2 s), remember HMAC(password) for (name, hash)
     end
     A-->>N: 200, X-SR-Token: <RS256 JWT sub=svc-reader>
     N->>S: same request, Authorization: Bearer <JWT> (the client's header is replaced)
@@ -84,8 +89,9 @@ sequenceDiagram
 | Wrong password or unknown Service | Auth service, 401 | 401 + `WWW-Authenticate: Basic`, `X-Auth-Service: invalid-credentials` | no |
 | No Basic header (e.g. the client sends its own Bearer) | Auth service, 401 | 401, `basic-credentials-required` | no |
 | Two `Authorization` headers | NGINX | 400 (before `auth_request` runs) | no |
-| SQL Server down, Service verified < 10 min ago | Auth service, from cache | 200 / 403, as normal | yes |
-| SQL Server down, Service not cached | Auth service, 503 | **500** (`auth_request` turns any status other than 2xx/401/403 into 500) | no |
+| SQL Server down (auth service already running) | Auth service, from the last good snapshot | 200 / 403 / 401, as normal, for every Service in the snapshot | yes (unless 401) |
+| SQL Server down when the auth service starts | Auth service exits (first load failed) | **500** from NGINX (fails closed) | no |
+| Service added to / removed from `sr_services` | Auth service, after the next reload (≤ 60 s) | works / 401 | — |
 | Auth service down | NGINX | **500** (fails closed) | no |
 | Anyone calling an SR node directly without a valid token | SR | 401 | yes, then rejected |
 
@@ -120,7 +126,7 @@ This needs the repo's main stack to have been bootstrapped once (`../scripts/up.
 ```bash
 cd jwt-poc
 ./scripts/up.sh     # keys, sr_services + bcrypt rows, auth-service, sr-jwt-1/2, nginx, SR ACLs, 2 schemas
-./scripts/test.sh   # checks 1-13 (~1 min) -> results/jwt-results.md, results/jwt-principal-log.txt
+./scripts/test.sh   # checks 1-15 (~4 min, waits for reloads) -> results/jwt-results.md, results/jwt-principal-log.txt
 ./scripts/down.sh   # remove this stack's containers and _schemas_jwt* topics (main stack untouched)
 ```
 
@@ -195,9 +201,10 @@ Services are provisioned by the platform, writing a bcrypt hash:
 bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()   # cost 12 by default, ~0.2-0.3 s to verify
 ```
 
-A password change applies within 10 minutes on every auth-service instance (the cache TTL). The new password works
-right away, since the cache is keyed on the password too. The **old password keeps working until its cache entry expires.**
-If that matters, lower `CACHE_TTL_SECONDS`.
+Every change (new Service, deleted Service, new password) takes effect on each auth-service instance at its next
+reload, so within `RELOAD_SECONDS` (60 s). Until then, that instance still uses the old row. In particular, an old
+password keeps working for up to 60 s. The DB load is one connection and one full `SELECT` per instance per minute,
+whatever the request rate.
 
 ### 4. Signing keys
 
@@ -224,17 +231,23 @@ WorkingDirectory=/opt/sr-auth
 Environment=DB_HOST=sqlprod01 DB_NAME=platform DB_USER=sr_jwt_auth
 EnvironmentFile=/etc/sr-auth/secrets.env           # DB_PASSWORD=...
 Environment=JWT_PRIVATE_KEY=/etc/sr-auth/private.pem JWT_KID=sr-auth-2026-10
-Environment=JWT_ISSUER=sr-auth-proxy JWT_AUDIENCE=schema-registry JWT_TTL_SECONDS=300 CACHE_TTL_SECONDS=600
+Environment=JWT_ISSUER=sr-auth-proxy JWT_AUDIENCE=schema-registry JWT_TTL_SECONDS=300 RELOAD_SECONDS=60
 ExecStart=/opt/sr-auth/venv/bin/uvicorn app:app --host 0.0.0.0 --port 8080 --workers 2 --no-access-log
 Restart=always
 ```
 
 Things to know:
-- **The cache is per process.** With several instances or workers, a Service is cached only where it was verified. During
-  a DB outage, a Service still gets through on any NGINX→auth hop whose process cached it. Others get 500. To
-  ride out outages reliably, use a shared cache or sticky routing **(not tested in PoC)**.
-- **The DB connection:** pymssql opens one per cache miss. For encrypted TDS to SQL Server, configure FreeTDS
-  encryption **(not tested in PoC)**.
+- **The snapshot is per process.** Each instance and each uvicorn worker loads the whole table itself, so the DB sees
+  one `SELECT` per process per minute. Processes reload independently, so for up to 60 s after a change, two
+  instances can disagree.
+- **DB outage:** a running process keeps its last good snapshot indefinitely, and logs `reload failed, keeping the snapshot
+  from N s ago`. A process that **starts** while the DB is down exits (first load fails), so don't restart instances
+  during a DB outage. `GET /healthz` shows `snapshot_age_s` and `db_errors`.
+- **bcrypt** runs once per (Service, stored hash, password) per process. After that, a matching HMAC skips it. An
+  unknown name returns 401 without running bcrypt, so the response time reveals whether a name exists. If that matters,
+  run bcrypt against a dummy hash.
+- **The DB connection:** pymssql opens one per reload. For encrypted TDS to SQL Server, configure FreeTDS encryption
+  **(not tested in PoC)**.
 - **Exposure:** `/check` and `/jwks.json` are the only endpoints. Only NGINX and the SR nodes need to reach the service.
 
 ### 6. Schema Registry nodes
@@ -331,7 +344,7 @@ server {
 }
 ```
 
-If clients should see **503** rather than 500 when the credential store or the auth service is down, add
+If clients should see **503** rather than 500 when the auth service is down or unreachable, add
 `error_page 500 =503 /50x.json;` or similar **(not tested in PoC)**.
 
 ### 9. Clients
@@ -357,11 +370,11 @@ The Python `confluent-kafka` 2.8 Avro producer and consumer were tested this way
   `log4j.logger.io.confluent.kafka.schemaregistry.security=DEBUG`. They log `The principal is ...` and each ACL decision.
   These are verbose, so don't leave them on in production.
 - **Health checks:**
-  - auth service: `GET /healthz` (cache size, DB lookups, cache hits, DB errors)
+  - auth service: `GET /healthz` (`services`, `snapshot_age_s`, `db_loads`, `db_errors`, `bcrypt_checks`, `verified_hits`)
   - SR: any request without a token returns 401 once Jetty is up
 - **Alert on:**
-  - NGINX `auth request unexpected status` in its error log: the auth service is down, or the DB is down and the Service is not cached
-  - `db_errors` rising in `/healthz`
+  - NGINX `auth request unexpected status` in its error log: the auth service is down or unreachable
+  - `snapshot_age_s` in `/healthz` growing past ~2 reload intervals: the DB is unreachable and the snapshot is getting stale
 
 ## Limits found in the PoC
 
@@ -370,5 +383,9 @@ The differences from the brief, with details, are in `POC_REPORT.md` → "Where 
 - `auth_request` passes only 2xx, 401 and 403 through. Anything else becomes 500.
 - NGINX rejects a request with two `Authorization` headers (400).
 - SR has no Basic fallback in this config. Direct Basic gets 401.
+- A Service with no ACLs at all gets 403 (not an empty list) on `GET /subjects`. The subject list is filtered on
+  `SUBJECT_COMPATIBILITY_READ`, not `SUBJECT_READ`.
+- With `server ... resolve`, NGINX drops the auth service while its DNS name is gone (container stopped). It recovers
+  within ~5 s of the name coming back (check 12c: 4 s). With static addresses on prem, this doesn't apply.
 - The developer license is single-node.
 - **Not tested:** TLS anywhere, JWKS key rotation, SR starting while JWKS is unreachable, load and latency.

@@ -69,6 +69,20 @@ def code(r):
 # ------------------------------------------------------------------------------------------- main
 
 @pytest.mark.main
+def test_14_no_db_query_per_request(check):
+    for creds in (READER, OTHER, PLATFORM):   # first use of each password may cost one bcrypt check
+        requests.get(f"{PROXY}/subjects", auth=creds)
+    before = requests.get(f"{AUTH}/healthz", timeout=5).json()
+    for i in range(30):
+        requests.get(f"{PROXY}/subjects/orders-value/versions/latest", auth=(READER, OTHER, PLATFORM)[i % 3])
+    after = requests.get(f"{AUTH}/healthz", timeout=5).json()
+    loads = after["db_loads"] - before["db_loads"]
+    check("14", "30 requests via NGINX: DB queries (<= 1 periodic reload in the window) | bcrypt checks",
+          "True|0", f"{loads <= 1}|{after['bcrypt_checks'] - before['bcrypt_checks']}",
+          f"db_loads +{loads}, verified_hits +{after['verified_hits'] - before['verified_hits']}")
+
+
+@pytest.mark.main
 def test_01_reader_reads_orders(check):
     r = requests.get(f"{PROXY}/subjects/orders-value/versions/latest", auth=READER)
     check("1", "svc-reader GET orders-value latest via NGINX", 200, code(r), r.text[:80])
@@ -221,20 +235,23 @@ def test_13_follower_forwards_to_leader(check):
 
 # ------------------------------------------------------------------------- DB outage (check 11)
 
-@pytest.mark.warm
-def test_11_warm_cache():
-    r = requests.get(f"{PROXY}/subjects/orders-value/versions/latest", auth=READER)
-    assert r.status_code == 200, r.text
+def health():
+    return requests.get(f"{AUTH}/healthz", timeout=5).json()
 
 
 @pytest.mark.db_down
 def test_11_db_down(check):
+    # Wait for a reload to fail, so the answers below come from the snapshot kept after a failed reload
+    errors, deadline = health()["db_errors"], time.time() + 90
+    while health()["db_errors"] == errors and time.time() < deadline:
+        time.sleep(1)
+    h = health()
     a = requests.get(f"{PROXY}/subjects/orders-value/versions/latest", auth=READER)
     b = requests.get(f"{PROXY}/subjects/orders-value/versions/latest", auth=OTHER)
     c = requests.get(f"{PROXY}/subjects/orders-value/versions/latest", auth=("svc-reader", "wrong"))
-    # auth service answers 503 for anything it can't verify without the DB; auth_request turns non-401/403 into 500
-    check("11", "SQL Server stopped: cached svc-reader | uncached svc-other | svc-reader wrong pw", "200|500|500",
-          f"{code(a)}|{code(b)}|{code(c)}", f"auth reason: {b.headers.get('X-Auth-Service')}")
+    check("11", "SQL Server stopped, a reload has failed: svc-reader | svc-other | svc-reader wrong pw",
+          "True|200|403|401", f"{h['db_errors'] > errors}|{code(a)}|{code(b)}|{code(c)}",
+          f"snapshot age {h['snapshot_age_s']} s; svc-other authenticates and is denied by the ACL, as normal")
 
 
 # ---------------------------------------------------------------------- auth outage (check 12)

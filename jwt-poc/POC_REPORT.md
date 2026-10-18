@@ -6,14 +6,19 @@ the RS256 JWT against the JWKS. The `sub` claim then becomes the principal (`The
 and the ACL authorizer allows or denies on that name, exactly as it does for a Basic-auth user. No custom
 plugin was needed. The config from the brief worked as given, including `confluent.schema.registry.auth.mechanism=JETTY_AUTH`.
 
-All 13 checks pass (17 result rows; 4b, 12b, 12c and 13b are log-based or extra rows). Source run: `results/jwt-results.md`.
+All 15 checks pass (20 result rows; 4b, 11b, 12b, 12c and 13b are log-based or extra rows). Source run: `results/jwt-results.md`.
+
+Checks 14 and 15 were added, and check 11 was changed, when the auth service moved from a per-request DB lookup with a
+10-minute cache of successes to a **whole-table snapshot reloaded every 60 s**. That's the same model as the main repo's
+SnapshotLoginModule.
 
 ## Design as built
 
 ```
 client --Basic svc:pw--> nginx:10000 --auth_request /_auth (headers only)--> auth-service:8080/check
-                          |                          bcrypt vs sr_services (SQL Server), 10 min cache of successes
-                          |                          200 + X-SR-Token: <RS256 JWT>  |  401  |  503 (DB down, not cached)
+                          |                          bcrypt vs in-memory snapshot of sr_services (no DB access)
+                          |                          200 + X-SR-Token: <RS256 JWT>  |  401
+                          |                          (background: SELECT name, password_hash FROM sr_services every 60 s)
                           '--Authorization: Bearer $sr_token--> sr-jwt-1 (leader) / sr-jwt-2 (follower), round-robin
                                                                 validates JWT via http://auth-service:8080/jwks.json
 ```
@@ -28,15 +33,18 @@ client --Basic svc:pw--> nginx:10000 --auth_request /_auth (headers only)--> aut
   - **Database access:** reads `sr_services(name, password_hash)` as the read-only login `sr_jwt_auth`.
   - **Signing key:** the RSA key pair is generated once by `scripts/up.sh` into `keys/` (gitignored).
   - **Token:** RS256, `kid=sr-auth-proxy-1`. Claims are `sub`, `iss=sr-auth-proxy`, `aud=schema-registry`, `iat` and `exp=now+300`.
-  - **Cache:** only successful checks are cached, for 10 minutes. The key is name + HMAC(password), so a
-    different password for a cached name still goes to the DB.
+  - **Credentials in memory:** the whole table is loaded at startup and reloaded every 60 s by one thread (one
+    connection, one `SELECT`). Requests only read the snapshot.
+  - **Reload failure:** if a reload fails, the last good snapshot stays. If the **first** load fails, the service exits.
+  - **Skipping bcrypt:** a password already verified against a given stored hash is remembered as HMAC(password), keyed on
+    (name, hash), so bcrypt runs only once. A changed hash (new password) invalidates that entry.
 - **Test data:**
   - `svc-reader` has `SUBJECT_READ` on `orders-value`.
   - `svc-other` has no ACLs.
   - `platform` has every operation on `*`.
   - `platform` registered `orders-value` (id 1) and `payments-value` (id 2) through NGINX.
 
-Run: `./scripts/up.sh && ./scripts/test.sh` (test run ~1 min). Remove: `./scripts/down.sh`.
+Run: `./scripts/up.sh && ./scripts/test.sh` (test run ~4 min, mostly waiting for reloads). Remove: `./scripts/down.sh`.
 
 ## Results
 
@@ -53,12 +61,15 @@ Run: `./scripts/up.sh && ./scripts/test.sh` (test run ~1 min). Remove: `./script
 | 8 | Direct to `sr-jwt-1:8081` from inside the network: no auth, forged key, expired, wrong `aud`, plus wrong `iss`, `alg:none`, Basic `platform:…` | all 401; valid token control 200 | all 401; control 200 | PASS |
 | 9 | JWKS over plain HTTP | accepted, or record that HTTPS is needed | accepted: `http://` JWKS URL works, no HTTPS requirement | PASS |
 | 10 | Python confluent-kafka 2.8.0 Avro producer + consumer, `basic.auth.user.info=svc-reader:…`, `auto.register.schemas=false`, `use.latest.version=true`, topic `orders` | record round-trips | round-trips; schema id in record = 1 | PASS |
-| 11 | SQL Server stopped: cached svc-reader \| uncached svc-other \| svc-reader wrong pw | 200 \| rejected \| rejected | 200 \| 500 \| 500 | PASS (see differences, item 2) |
+| 11 | SQL Server stopped, after a reload has failed: svc-reader \| svc-other \| svc-reader wrong pw | 200 \| 403 \| 401 (snapshot still used) | 200 \| 403 \| 401; snapshot age 60.8 s | PASS |
+| 11b | Auth service restarted while SQL Server is down | exits (no start without credentials) | `exited/3`, `OperationalError (20009 ... Unable to connect)` | PASS |
 | 12 | Auth service stopped | NGINX rejects (fails closed) | 500 from NGINX | PASS |
 | 12b | …never reached SR | 0 hits, `upstream=-` | 0 hits, `upstream=-` | PASS |
-| 12c | Auth service restarted → works again | 200 | 200 | PASS |
+| 12c | Auth service restarted → works again | 200 within 15 s | 200 after 4 s (see differences, item 2) | PASS |
 | 13 | Registration sent straight to follower `sr-jwt-2`: as platform \| as svc-reader; leader has it | 200 \| 403 \| yes | 200 \| 403 \| yes | PASS |
 | 13b | Forwarded request carries the token | leader logs it as `platform` | leader: `172.19.0.6 - platform "POST …?normalize=false" 200 "Java/17.0.13"` | PASS |
+| 14 | 30 requests via NGINX: DB queries \| bcrypt checks | ≤ 1 (periodic reload) \| 0 | 0 \| 0 (30 snapshot + verified-password hits) | PASS |
+| 15 | `svc-new` inserted into `sr_services` \| then deleted, no restart | authenticated within 65 s \| 401 within 65 s | after 22 s (403 from SR: no ACLs) \| after 60 s | PASS |
 
 ## Schema Registry config that worked
 
@@ -159,6 +170,14 @@ DEBUG Failed to process token JWT rejected due to invalid signature. ... {"alg":
 JwtVerificationException: Failed to validate authentication token : InvalidJwtException ... [[JWT aud claim has unexpected value ...
 ```
 
+Auth service: check 15 (svc-new added, then removed), then check 11 (SQL Server stopped), then SQL Server back:
+```
+18:23:37 INFO loaded 4 Services from sr_services
+18:24:37 INFO loaded 3 Services from sr_services
+18:25:37 WARNING reload failed, keeping the snapshot from 60 s ago: (20009, b'DB-Lib error message 20009 ... Unable to connect: Adaptive Server is unavailable or does not exist (mssql)
+18:25:49 INFO loaded 3 Services from sr_services
+```
+
 NGINX access log (`upstream=-` means the request never reached Schema Registry):
 ```
 ACCESS GET /subjects/orders-value/versions/latest status=200 upstream=172.19.0.6:8081 user=svc-reader auth=ok
@@ -170,30 +189,34 @@ ACCESS GET /subjects/orders-value/versions/latest status=401 upstream=- user=svc
 1. **Nothing had to change on the Schema Registry side.** `rest.servlet.initializor.classes=...AuthenticationHandler`
    and `auth.mechanism=JETTY_AUTH` are correct as written. The one thing we deliberately did was to leave
    `authentication.method` unset (NONE). We didn't test what happens with `BASIC` set alongside the handler.
-2. **`auth_request` can't pass 503 through.** NGINX passes only 2xx, 401 and 403 from the auth sub-request to the client;
-   anything else becomes **500**. The cases where that shows:
-   - **DB down (check 11):** the auth service answers 503 `credential-store-unavailable` for an uncached Service, and the client sees 500.
-   - **Auth service unreachable (check 12):** the sub-request gets a 502, and the client sees 500.
-
-   It still fails closed. If clients should see 503, add an `error_page 500 =503` mapping in NGINX.
-   The NGINX error log keeps the real cause (`auth request unexpected status: 503`).
+2. **Outages surface as 500.** NGINX passes only 2xx, 401 and 403 from the auth sub-request to the client; anything
+   else becomes **500**.
+   - **Auth service down (check 12):** the client gets 500. It fails closed. If clients should see 503,
+     add an `error_page 500 =503` mapping.
+   - **SQL Server down:** clients aren't affected, because the snapshot is kept (check 11). They get 500 only when an auth
+     service has to *start* without the DB (check 11b).
+   - **Recovery:** after the auth service container comes back, NGINX returned 500 ("no live upstreams") for a few seconds
+     (4 s in check 12c). With `server … resolve`, NGINX removes a server whose name stops resolving: Docker DNS drops the name
+     of a stopped container. NGINX re-resolves every `valid=5s`. With static addresses this doesn't apply.
 3. **Duplicate `Authorization` headers get 400 from NGINX itself (check 7b).** NGINX rejects them before
    `auth_request` runs (`auth=-` in the access log). The brief's expected outcome was overwrite or reject, and the result is reject.
    - **Single header:** when the client sends one `Authorization: Bearer <forged>`, the auth service answers 401 `basic-credentials-required`.
    - **Client-sent `X-SR-Token`:** ignored, because `$sr_token` comes from the sub-request's response (7c: still svc-reader, 403).
 4. **Wording of the 403 message:** a denied `/schemas/ids/<id>` returns `User is denied operation on this server.`
    rather than naming the subject.
-5. **SR does not accept Basic directly.** The handler is `OAuthOrBasicAuthenticator`, but no Basic login service is
+5. **A Service with no ACLs at all gets 403 on `GET /subjects`** (check 15), not 200 with an empty list. The subject list
+   is filtered on `SUBJECT_COMPATIBILITY_READ`, so svc-reader (only `SUBJECT_READ`) also gets 403 there.
+6. **SR does not accept Basic directly.** The handler is `OAuthOrBasicAuthenticator`, but no Basic login service is
    configured without MDS, so `Basic platform:…` sent straight to SR gets 401 (check 8).
-6. **A startup warning to note:** `WARN Skipping impersonation identity validation as client auth is not set.
+7. **A startup warning to note:** `WARN Skipping impersonation identity validation as client auth is not set.
    Configure 'ssl.client.authentication'`. It concerns mTLS impersonation tokens and doesn't affect this design.
-7. **The license covers one node.** The cluster ran 2 nodes on the developer license, which logs
+8. **The license covers one node.** The cluster ran 2 nodes on the developer license, which logs
    `License for single cluster, single node`. Production would need a proper license for a multi-node cluster.
-8. **What the network boundary does and doesn't do.** Not publishing SR ports stops access from the host only.
+9. **What the network boundary does and doesn't do.** Not publishing SR ports stops access from the host only.
    Anything on the Docker network can still reach `sr-jwt-*:8081` directly (check 8). What protects SR there is token
    validation, not reachability: a caller needs a token signed by the auth service's key. In production, also
    restrict the network path to NGINX.
-9. **Process notes:**
+10. **Process notes:**
    - The PoC was first built with Envoy `ext_authz`. Checks 1–3 passed with Envoy too, then the proxy was switched to
      NGINX for team fit. All the results above are from NGINX.
    - The confluent-kafka consumer printed one harmless `GroupCoordinator: SASL authentication error ...
@@ -204,4 +227,4 @@ ACCESS GET /subjects/orders-value/versions/latest status=401 upstream=- user=svc
 - HTTPS anywhere: NGINX, the JWKS endpoint and SR are all plain HTTP. HTTPS is not required by SR (check 9).
 - What happens if the auth service (JWKS) is down when SR starts.
 - Key rotation. SR refetches the JWKS when it sees an unknown `kid`, according to the config doc; this wasn't tested.
-- Load or latency. Every request runs an auth sub-request; bcrypt runs only on a cache miss.
+- Load or latency. Every request runs an auth sub-request, which is answered from memory; bcrypt runs once per Service, password and process.
