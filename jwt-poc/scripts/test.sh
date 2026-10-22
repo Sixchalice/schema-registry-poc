@@ -19,13 +19,18 @@ rec() { # id title expected actual [notes]  -- PASS iff actual == expected
 marker() { awk -F'\t' -v id="$1" '$1 == id { print $2 }' "$MARKERS" | tail -1; }
 sr_logs() { dc logs --no-log-prefix --since "$START" sr-jwt-1 sr-jwt-2 2>&1; }
 hits()    { grep -c -- "$1" || true; }
+upstream_of() { # marker -> Envoy access log upstream= for that request ("-" = never reached SR); waits for the log flush
+  local line t0=$SECONDS
+  until line=$(dc logs --no-log-prefix envoy | grep "^ACCESS .*$1") || (( SECONDS - t0 >= 15 )); do sleep 1; done
+  sed -E 's/.*upstream=([^ ]*).*/\1/' <<< "$line" | tail -1
+}
 
 log "Phase main: checks 1-10, 13"
 pytest_phase main
 
 m=$(marker 4)
-rec 4b "wrong-password request never reached SR (marker in SR request logs | NGINX upstream)" "0|-" \
-  "$(sr_logs | hits "$m")|$(dc logs --no-log-prefix nginx | grep "^ACCESS .*$m" | sed -E 's/.*upstream=([^ ]*).*/\1/' | tail -1)" "$m"
+rec 4b "wrong-password request never reached SR (marker in SR request logs | Envoy upstream)" "0|-" \
+  "$(sr_logs | hits "$m")|$(upstream_of "$m")" "$m"
 
 m=$(marker 13)
 leader=$(dc logs --no-log-prefix --since "$START" sr-jwt-1 | grep 'POST /subjects/jwt-forward-test-value/versions' | grep -c ' - platform \[' || true)
@@ -35,7 +40,7 @@ rec 13b "forwarded registration logged as principal platform on follower | leade
 
 mssql_wait() { until [[ "$(mssql_q "SELECT state_desc FROM sys.databases WHERE name = 'platform'" master 2>/dev/null)" == ONLINE ]]; do sleep 1; done; }
 proxy_code() { curl -s -o /dev/null -w '%{http_code}' -u "$1" "$PROXY/subjects"; }
-wait_code() { # creds want-code timeout-s -> seconds until NGINX answered want-code, or "timeout"
+wait_code() { # creds want-code timeout-s -> seconds until Envoy answered want-code, or "timeout"
   local t0=$SECONDS
   until [[ "$(proxy_code "$1")" == "$2" ]]; do (( SECONDS - t0 >= $3 )) && { echo timeout; return; }; sleep 1; done
   echo $(( SECONDS - t0 ))
@@ -72,16 +77,16 @@ log "Check 12: stop the auth service"
 dc stop auth-service >/dev/null
 pytest_phase auth_down
 m=$(marker 12)
-rec 12b "with auth service down the request never reached SR (marker in SR request logs | NGINX upstream)" "0|-" \
-  "$(sr_logs | hits "$m")|$(dc logs --no-log-prefix nginx | grep "^ACCESS .*$m" | sed -E 's/.*upstream=([^ ]*).*/\1/' | tail -1)" "$m"
+rec 12b "with auth service down the request never reached SR (marker in SR request logs | Envoy upstream)" "0|-" \
+  "$(sr_logs | hits "$m")|$(upstream_of "$m")" "$m"
 dc up -d --wait auth-service >/dev/null
 t0=$SECONDS
 until [[ "$(curl -s -o /dev/null -w '%{http_code}' -u "$READER" "$PROXY/subjects/orders-value/versions/latest")" == 200 ]]; do
   (( SECONDS - t0 >= 30 )) && break; sleep 1
 done
 back=$(( SECONDS - t0 ))
-rec 12c "auth service started again: svc-reader via NGINX gets 200 within 15 s" yes "$(within "$back" 15)" \
-  "$back s after the container was healthy: NGINX dropped the name while Docker DNS had no record, re-resolves every 5 s"
+rec 12c "auth service started again: svc-reader via Envoy gets 200 within 15 s" yes "$(within "$back" 15)" \
+  "$back s after the container was healthy (STRICT_DNS cluster, re-resolved every 5 s)"
 
 log "Principal log excerpts -> results/jwt-principal-log.txt"
 {
@@ -91,8 +96,8 @@ log "Principal log excerpts -> results/jwt-principal-log.txt"
     | grep -v '"GET /subjects HTTP/1.1" 401' | head -80 || true
   echo; echo "# startup: authentication handler configuration"
   dc logs sr-jwt-1 2>&1 | grep -E 'IDP issuer|IDP Oauth is enabled' | tail -2 || true
-  echo; echo "# nginx access log, this run"
-  dc logs --no-log-prefix --since "$START" nginx | grep ACCESS | head -60 || true
+  echo; echo "# envoy access log, this run"
+  dc logs --no-log-prefix --since "$START" envoy | grep ACCESS | head -60 || true
   echo; echo "# auth service, this run"
   dc logs --no-log-prefix --since "$START" auth-service 2>&1 | grep -E 'loaded|reload failed|startup failed' | head -20 || true
 } > results/jwt-principal-log.txt

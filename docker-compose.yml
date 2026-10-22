@@ -115,6 +115,22 @@ services:
           $$SCHEMA_REGISTRY_OPTS poc.auth.Preflight SchemaRegistryRealm || exit 1
         exec schema-registry-start /tmp/sr.properties
 
+  # sr-acl-cli as a REST service (acl-service/): reads/writes _schemas_acl with the Security Plugin's
+  # own classes, using the SR config for the Kafka connection. Needs only Kafka, not Schema Registry.
+  acl-service:
+    build: ./acl-service
+    image: sr-acl-poc/acl-service:7.9.0
+    depends_on:
+      kafka: { condition: service_healthy }
+    ports:
+      - "8085:8085"
+    volumes:
+      - ./schema-registry:/etc/schema-registry/poc:ro
+    environment:
+      ACL_SERVICE_USER: acl-admin
+      ACL_SERVICE_PASSWORD: acl-admin-secret
+      ACL_SERVICE_OPTS: "-Dlog4j.configuration=file:/etc/schema-registry/poc/log4j.properties"
+
   # Benchmark-only (test 8): same auth (snapshot), security plugin OFF. Joins the same
   # SR group as a non-leader follower and serves reads from the same _schemas topic.
   schema-registry-noplugin:

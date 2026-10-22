@@ -19,6 +19,7 @@ The deliverable is the findings, which are in `README.md`. Its numbers and concl
 ./scripts/seed.sh    # SQL Server users (waits until SR has loaded them), SR ACLs (sr-acl-cli), schemas registered as platform-admin
 ./scripts/test.sh    # all tests 1-10 (~3 min) -> results/results.md, results.tsv, details.log, burst-*.txt
 ./scripts/dr-test.sh # DR with an exporter, README §12 (~2 min) -> results/dr-results.md/.tsv; removes the DR registry after
+./scripts/acl-service-test.sh # ACL REST service tests (~20 s) -> results/acl-service-results.md/.tsv; removes the ACLs it adds
 ./scripts/down.sh    # remove everything incl. volumes
 ```
 
@@ -72,6 +73,12 @@ cid=$(docker create confluentinc/cp-schema-registry:7.9.0); docker cp $cid:/usr/
 - **Load measurement:** test 8 counts connections and queries with the Extended Events sessions `sr_auth_activity` / `sr_jdbc_activity` (one DB login per module). Don't use the plan cache for connection counts; it only sees cached plans (test.sh uses it just to count full loads). The server-wide `Logins/sec` counter includes the healthcheck.
 
 **Identity mapping.** The Kafka SCRAM user is `svc-a`; the SR principal is `c17.svc-a`; both use the same password. The Java client (`client/src/main/java/poc/Client.java`) derives the SR login from the cluster and SCRAM user arguments. The svc-b consumer group must match the Kafka ACL prefix `c17.svc-x*`.
+
+**ACL REST service (`acl-service/`, port 8085).** It does what `sr-acl-cli` does, over HTTP. It is not a wrapper around the CLI. The CLI has no server side: it writes ACL records to the Kafka topic `_schemas_acl`, and SR's authorizer reads them. The service does the same in-process, with the Security Plugin's own public classes (`SchemaRegistryAclReaderThread`, `AclMessageSerializer`, `SubjectAclKey/Value`, `GlobalAclKey/Value`). Its add/remove merge rules and validation are ported from `SchemaRegistryAclCommand`/`SchemaRegistryAclCommandOptions`, found with javap.
+- **API:** `GET /acls[?principal=&subject=]`, `POST /acls` (add), `DELETE /acls` (remove), body `{"principals":[],"subjects":[],"topics":[],"operations":[]}`. Also `GET /operations` and `GET /health` (the only call without auth).
+- **Auth:** Basic `acl-admin:acl-admin-secret` (env `ACL_SERVICE_USER/PASSWORD`). Whoever can call it can grant anything.
+- **Build:** those classes aren't on Maven Central, so the Dockerfile compiles with `javac` against `/usr/share/java` copied from the SR image, then runs on the SR image with `sr-acl-cli`'s classpath. It needs only Kafka. It reads the Kafka connection and topic name from `schema-registry/sr.properties`.
+- **Concurrency:** writes are serialized inside one instance, and each write first catches up on the topic. Two instances, or the service and the CLI, writing the same key at the same moment can lose an update, just like two concurrent CLI runs.
 
 **Benchmark twins (profile `bench`, test 8 only).** Both join the same SR group as non-leaders (`leader.eligibility=false`) and read the same `_schemas`.
 - `schema-registry-noplugin` (port 8082): same in-memory login, plugin OFF (`sr-noplugin.properties`).

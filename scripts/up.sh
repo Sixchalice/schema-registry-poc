@@ -2,8 +2,8 @@
 # Start Kafka + SQL Server, bootstrap Kafka-side security (SCRAM users, Kafka ACLs, topics), then Schema Registry.
 source "$(dirname "$0")/lib.sh"
 
-log "Building Schema Registry image (adds the SQL Server JDBC driver)"
-dc build -q schema-registry
+log "Building Schema Registry image (adds the SQL Server JDBC driver) and the ACL REST service"
+dc build -q schema-registry acl-service
 
 log "Building the snapshot login module (auth/ -> auth/target/sr-auth-snapshot.jar)"
 dc run --rm -T -v "$ROOT/auth:/auth" -w /auth --entrypoint mvn client -q -B package
@@ -50,6 +50,7 @@ acl --allow-principal User:svc-b --topic orders --operation Read --operation Des
 acl --allow-principal User:svc-b --resource-pattern-type prefixed --group c17.svc-b --operation Read
 
 log "Starting Schema Registry (security plugin, ACL authorizer, in-memory login from SQL Server)"
-dc up -d schema-registry
+dc up -d schema-registry acl-service
 wait_for_http "$SR/subjects" 401 180
+wait_for_http "http://localhost:8085/health" 200 60
 log "Schema Registry is up (unauthenticated request -> 401). Next: scripts/seed.sh"

@@ -1,8 +1,9 @@
-"""NGINX auth_request service: HTTP Basic (Service name + password) -> RS256 JWT for Schema Registry.
+"""Envoy ext_authz (HTTP) service: HTTP Basic (Service name + password) -> RS256 JWT for Schema Registry.
 
-NGINX sends every client request's headers (no body) to /check. On success we answer 200 with
-`X-SR-Token: <JWT>`; NGINX sends it upstream as `Authorization: Bearer <JWT>`, replacing whatever the
-client sent. 401 goes back to the client and the request never reaches Schema Registry.
+Envoy sends every client request's method and headers (no body) to /check<original path>. On success we answer 200
+with `Authorization: Bearer <JWT>`; Envoy sets it on the upstream request, replacing whatever the client sent
+(`X-SR-Token` carries the same JWT for callers other than Envoy). 401 goes back to the client and the request
+never reaches Schema Registry.
 Passwords are checked against an in-memory snapshot of sr_services, reloaded every RELOAD_SECONDS.
 """
 import base64
@@ -126,8 +127,8 @@ def healthz():
     return {"ok": True, "services": len(_users), "snapshot_age_s": round(time.time() - _loaded_at, 1), **stats}
 
 
-@app.api_route("/check", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
-def check(request: Request):
+@app.api_route("/check{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+def check(request: Request, path: str = ""):
     auth = request.headers.get("authorization", "")
     if not auth.lower().startswith("basic "):
         return _deny(401, "basic-credentials-required")
@@ -136,10 +137,10 @@ def check(request: Request):
     except Exception:
         return _deny(401, "malformed-basic-credentials")
     if not _verify(name, password):
-        log.info("denied %s %s %s", name, request.headers.get("x-original-method"),
-                 request.headers.get("x-original-uri"))
+        log.info("denied %s %s %s", name, request.method, path + (f"?{request.url.query}" if request.url.query else ""))
         return _deny(401, "invalid-credentials")
     now = int(time.time())
     token = jwt.encode({"sub": name, "iss": ISSUER, "aud": AUDIENCE, "iat": now, "exp": now + TTL},
                        PRIVATE_KEY, algorithm="RS256", headers={"kid": KID})
-    return Response(status_code=200, headers={"X-SR-Token": token, "X-Auth-Service": "ok"})
+    return Response(status_code=200, headers={"Authorization": f"Bearer {token}", "X-SR-Token": token,
+                                              "X-Auth-Service": "ok"})

@@ -1,10 +1,10 @@
 name: sr-jwt-poc
 
 # Bearer-token design for Schema Registry (see POC_REPORT.md):
-#   client --Basic--> nginx --auth_request--> auth-service (bcrypt vs sr_services in SQL Server, mints RS256 JWT)
-#          nginx --Authorization: Bearer <JWT>--> sr-jwt-1 / sr-jwt-2 (security plugin, ACL authorizer)
+#   client --Basic--> envoy --ext_authz--> auth-service (bcrypt vs sr_services in SQL Server, mints RS256 JWT)
+#          envoy --Authorization: Bearer <JWT>--> sr-jwt-1 / sr-jwt-2 (security plugin, ACL authorizer)
 # Reuses Kafka and SQL Server from the repo's main stack (../docker-compose.yml) on its network.
-# Only NGINX publishes a host port.
+# Only Envoy publishes a host port.
 
 networks:
   default:
@@ -64,15 +64,17 @@ services:
         { cat /etc/schema-registry/jwt/sr-jwt.properties; echo; echo host.name=sr-jwt-2; echo leader.eligibility=false; } > /tmp/sr.properties
         exec schema-registry-start /tmp/sr.properties
 
-  nginx:
-    image: nginx:1.27.5-alpine
-    hostname: nginx
+  envoy:
+    image: envoyproxy/envoy:v1.39.4
+    hostname: envoy
     depends_on:
       sr-jwt-2: { condition: service_healthy }
+    # access log lines are buffered: flush every 1 s instead of the default 10 s
+    command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "--log-level", "warn", "--file-flush-interval-msec", "1000"]
     ports:
       - "10000:10000"
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
 
   # Test runner (profile tests): pytest on the compose network, so it can also call sr-jwt-* directly.
   tests:

@@ -1,6 +1,6 @@
 """Checks 1-13 of the bearer-token PoC. Runs inside the `tests` container on the compose network.
 
-PROXY (NGINX) is the only published entry point; LEADER/FOLLOWER are the Schema Registry nodes, reachable only from
+PROXY (Envoy) is the only published entry point; LEADER/FOLLOWER are the Schema Registry nodes, reachable only from
 inside the network (check 8, 13). Checks that need log evidence (4, 12, 13) write a marker to MARKERS; the
 wrapper (scripts/test.sh) greps the container logs for it afterwards.
 """
@@ -16,7 +16,7 @@ import requests
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-PROXY = "http://nginx:10000"
+PROXY = "http://envoy:10000"
 LEADER = "http://sr-jwt-1:8081"
 FOLLOWER = "http://sr-jwt-2:8081"
 AUTH = "http://auth-service:8080"
@@ -51,10 +51,10 @@ def bearer(t):
 
 
 def issued_token(creds):
-    """A real token from the auth service, exactly as NGINX would get it."""
-    r = requests.get(f"{AUTH}/check", auth=creds, timeout=5)
+    """A real token from the auth service, exactly as Envoy would get it."""
+    r = requests.get(f"{AUTH}/check/subjects", auth=creds, timeout=5)
     assert r.status_code == 200, r.text
-    return r.headers["X-SR-Token"]
+    return r.headers["Authorization"].removeprefix("Bearer ")
 
 
 def schema_of(path):
@@ -77,7 +77,7 @@ def test_14_no_db_query_per_request(check):
         requests.get(f"{PROXY}/subjects/orders-value/versions/latest", auth=(READER, OTHER, PLATFORM)[i % 3])
     after = requests.get(f"{AUTH}/healthz", timeout=5).json()
     loads = after["db_loads"] - before["db_loads"]
-    check("14", "30 requests via NGINX: DB queries (<= 1 periodic reload in the window) | bcrypt checks",
+    check("14", "30 requests via Envoy: DB queries (<= 1 periodic reload in the window) | bcrypt checks",
           "True|0", f"{loads <= 1}|{after['bcrypt_checks'] - before['bcrypt_checks']}",
           f"db_loads +{loads}, verified_hits +{after['verified_hits'] - before['verified_hits']}")
 
@@ -85,20 +85,20 @@ def test_14_no_db_query_per_request(check):
 @pytest.mark.main
 def test_01_reader_reads_orders(check):
     r = requests.get(f"{PROXY}/subjects/orders-value/versions/latest", auth=READER)
-    check("1", "svc-reader GET orders-value latest via NGINX", 200, code(r), r.text[:80])
+    check("1", "svc-reader GET orders-value latest via Envoy", 200, code(r), r.text[:80])
 
 
 @pytest.mark.main
 def test_02_reader_denied_payments(check):
     r = requests.get(f"{PROXY}/subjects/payments-value/versions/latest", auth=READER)
-    check("2", "svc-reader GET payments-value latest via NGINX", "403/40301", f"{code(r)}/{r.json().get('error_code')}",
+    check("2", "svc-reader GET payments-value latest via Envoy", "403/40301", f"{code(r)}/{r.json().get('error_code')}",
           r.json().get("message", ""))
 
 
 @pytest.mark.main
 def test_03_other_denied_orders(check):
     r = requests.get(f"{PROXY}/subjects/orders-value/versions/latest", auth=OTHER)
-    check("3", "svc-other GET orders-value latest via NGINX", "403/40301", f"{code(r)}/{r.json().get('error_code')}",
+    check("3", "svc-other GET orders-value latest via Envoy", "403/40301", f"{code(r)}/{r.json().get('error_code')}",
           r.json().get("message", ""))
 
 
@@ -106,7 +106,7 @@ def test_03_other_denied_orders(check):
 def test_04_wrong_password(check):
     m = mark("4", "wrong password; must not appear in any SR request log")
     r = requests.get(f"{PROXY}/subjects/orders-value/versions/latest?{m}=1", auth=("svc-reader", "wrong"))
-    check("4", "wrong password -> 401 (auth service reason via NGINX)", "401/invalid-credentials",
+    check("4", "wrong password -> 401 (auth service reason via Envoy)", "401/invalid-credentials",
           f"{code(r)}/{r.headers.get('X-Auth-Service')}", "SR-side evidence: row 4b")
 
 
@@ -130,28 +130,29 @@ def test_06_register(check):
 
 
 @pytest.mark.main
-def test_07_forged_token_via_nginx(check):
+def test_07_forged_token_via_proxy(check):
     forged = mint(FORGED_KEY, sub="platform")   # same kid as the real key, different key
     # a) forged bearer only: no Basic credentials -> auth service refuses (401), nothing goes upstream
     a = requests.get(f"{PROXY}/subjects/payments-value/versions/latest", headers=bearer(forged))
     # b) valid Basic for svc-reader AND a second Authorization header with the forged platform token.
-    #    NGINX refuses a duplicate Authorization header outright (400, before auth_request runs).
-    c = http.client.HTTPConnection("nginx", 10000, timeout=5)
+    #    Envoy joins the two into one header; the auth service accepts the Basic part and Envoy replaces the whole
+    #    header with svc-reader's JWT, so SR sees svc-reader and denies payments-value (the forged token is dropped).
+    c = http.client.HTTPConnection("envoy", 10000, timeout=5)
     c.putrequest("GET", "/subjects/payments-value/versions/latest")
     c.putheader("Authorization", "Basic " + base64.b64encode(b"svc-reader:svc-reader-secret").decode())
     c.putheader("Authorization", f"Bearer {forged}")
     c.endheaders()
     rb = c.getresponse()
-    b_title = rb.read().decode().split("<title>")[-1].split("</title>")[0]
-    # c) valid Basic for svc-reader + the forged platform token in X-SR-Token: NGINX takes $sr_token from the
-    #    auth sub-request's response, never from the client, so SR sees svc-reader and denies payments-value.
+    b_body = rb.read().decode()[:70]
+    # c) valid Basic for svc-reader + the forged platform token in X-SR-Token: Envoy takes Authorization from the
+    #    auth service's response, never from the client, so SR sees svc-reader and denies payments-value.
     e = requests.get(f"{PROXY}/subjects/payments-value/versions/latest", auth=READER, headers={"X-SR-Token": forged})
-    # d) forged token signed by a different key, sent straight to SR (what would arrive if NGINX passed it on)
+    # d) forged token signed by a different key, sent straight to SR (what would arrive if Envoy passed it on)
     d = requests.get(f"{LEADER}/subjects/payments-value/versions/latest", headers=bearer(forged))
-    check("7", "forged platform token: Bearer via NGINX | + valid Basic (2 Authorization headers) | "
-               "valid Basic + client X-SR-Token | Bearer direct to SR", "401|400|403|401",
+    check("7", "forged platform token: Bearer via Envoy | + valid Basic (2 Authorization headers) | "
+               "valid Basic + client X-SR-Token | Bearer direct to SR", "401|403|403|401",
           f"{code(a)}|{rb.status}|{code(e)}|{code(d)}",
-          f"a: {a.headers.get('X-Auth-Service')}; b: NGINX '{b_title}'; c: {e.text[:70]}")
+          f"a: {a.headers.get('X-Auth-Service')}; b: {b_body}; c: {e.text[:70]}")
 
 
 @pytest.mark.main
@@ -211,7 +212,7 @@ def test_10_avro_end_to_end(check):
     msg = c.poll(15)
     c.close()
     got = de(msg.value(), ctx) if msg is not None and msg.error() is None else None
-    check("10", "confluent-kafka Avro produce+consume on orders (SR as svc-reader via NGINX)", order, got,
+    check("10", "confluent-kafka Avro produce+consume on orders (SR as svc-reader via Envoy)", order, got,
           f"schema id in record={schema_id}, partition/offset={tp}")
 
 
@@ -260,5 +261,5 @@ def test_11_db_down(check):
 def test_12_auth_down(check):
     m = mark("12", "auth service stopped; must not appear in any SR request log")
     r = requests.get(f"{PROXY}/subjects/orders-value/versions/latest?{m}=1", auth=READER)
-    check("12", "auth service stopped: svc-reader via NGINX (fails closed, 500 from NGINX)", "500/nginx",
-          f"{code(r)}/{'nginx' if 'nginx' in r.text else r.text[:60]}", "SR-side evidence: row 12b")
+    check("12", "auth service stopped: svc-reader via Envoy (fails closed, 503 from Envoy)", "503/envoy",
+          f"{code(r)}/{r.headers.get('server')}", "SR-side evidence: row 12b")

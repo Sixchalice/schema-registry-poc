@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start the bearer-token stack on top of the repo's Kafka + SQL Server, then seed it:
-# keys, sr_services rows (bcrypt), SR ACLs (sr-acl-cli), and two schemas registered as `platform` via NGINX.
+# keys, sr_services rows (bcrypt), SR ACLs (sr-acl-cli), and two schemas registered as `platform` via Envoy.
 source "$(dirname "$0")/lib.sh"
 
 if ! base ps --status running --services 2>/dev/null | grep -qx kafka; then
@@ -37,15 +37,15 @@ done
 mssql_q "$sql"
 mssql_q "SELECT name + ' | ' + password_hash FROM sr_services ORDER BY 1" | sed 's/^/    /'
 
-log "Starting auth-service, sr-jwt-1 (leader), sr-jwt-2 (follower), nginx"
-dc up -d --wait auth-service sr-jwt-1 sr-jwt-2 nginx
+log "Starting auth-service, sr-jwt-1 (leader), sr-jwt-2 (follower), envoy"
+dc up -d --wait auth-service sr-jwt-1 sr-jwt-2 envoy
 
 log "Schema Registry ACLs (sr-acl-cli on sr-jwt-1)"
 sracl --add -s '*' -p platform -o '*' >/dev/null
 sracl --add -s orders-value -p svc-reader -o SUBJECT_READ >/dev/null
 sracl --list | sed 's/^/    /'
 
-log "Registering schemas as platform via NGINX"
+log "Registering schemas as platform via Envoy"
 for s in orders-value payments-value; do
   for _ in $(seq 30); do   # ACLs reach SR through the _schemas_jwt_acl topic; retry until they apply
     code=$(curl -s -o /tmp/srjwt.out -w '%{http_code}' -u "$PLATFORM" -X POST \
