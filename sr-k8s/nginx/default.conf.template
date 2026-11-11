@@ -1,0 +1,55 @@
+# Rendered to /etc/nginx/conf.d/default.conf at container start; ${AUTH_SERVICE} and ${SCHEMA_REGISTRY} come from
+# the environment (see Dockerfile for defaults). Everything else with a $ is an NGINX variable and is left alone.
+#
+# Client URL: http://<nginx>/<cluster>/<schema registry path>, e.g. http://sr-proxy/c17/subjects
+#   1. /_auth asks the auth service: X-Cluster=<cluster> + the client's Basic header
+#   2. 200 -> forward to Schema Registry without the /<cluster> prefix, with Authorization: Bearer <JWT>
+#      401 -> back to the client, nothing reaches Schema Registry
+
+# First path segment = cluster. Read from $request_uri (the raw URI) so the forwarded path is exactly what the
+# client sent, still percent-encoded.
+map $request_uri $cluster {
+  default "";
+  "~^/([a-z0-9-]+)(?:[/?]|$)" $1;
+}
+# The rest of the path after /<cluster>, without the query string ("/" if nothing is left)
+map $request_uri $sr_path {
+  default "/";
+  "~^/[^/?]+/+([^?]*)" /$1;
+}
+map $is_args $sr_query {
+  default "";
+  "?"     "?$args";
+}
+
+upstream auth_service    { server ${AUTH_SERVICE}; }
+upstream schema_registry { server ${SCHEMA_REGISTRY}; }
+
+server {
+  listen 8080;
+  client_max_body_size 20m;
+
+  location = /healthz {
+    return 200 "ok\n";
+  }
+
+  location / {
+    if ($cluster = "") { return 404 '{"error_code":404,"message":"URL must be http://<proxy>/<cluster>/..."}\n'; }
+
+    auth_request /_auth;
+    auth_request_set $sr_token $upstream_http_x_sr_token;
+
+    proxy_set_header Authorization "Bearer $sr_token";
+    proxy_set_header Host $host;
+    proxy_pass http://schema_registry$sr_path$sr_query;
+  }
+
+  location = /_auth {
+    internal;
+    proxy_pass http://auth_service/check;
+    proxy_method GET;
+    proxy_pass_request_body off;
+    proxy_set_header Content-Length "";
+    proxy_set_header X-Cluster $cluster;
+  }
+}

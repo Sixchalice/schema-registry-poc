@@ -1,0 +1,1 @@
+confluent-kafka[schemaregistry]==2.8.0
