@@ -326,7 +326,8 @@ schema_validator/
   _proto/              # bundled google/type/*.proto and confluent/*.proto (section 5.3), shipped as package data
 integration/
   docker-compose.yml   # exists: Kafka + Schema Registry 7.9.0, no auth (SR on localhost:18081, Kafka on localhost:19092)
-  probes/              # exists: the scripts that produced section 10; turn them into integration/tests/
+  tests/               # the integration tests (section 10a)
+  java/                # the Java checks (probe.Main, probe.ProtoRefs)
 tests/
   fake_sr.py           # in-memory SR fake
   schemas/             # good and bad sample schemas per format
@@ -423,7 +424,7 @@ Unit tests always run against the fake SR. The Docker-based tests are a separate
 
 ## 10. What has been verified
 
-Verified on 2026-11-16 against `confluentinc/cp-schema-registry:7.9.0` (no auth) on `apache/kafka:3.8.1`, with confluent-kafka-python 2.16.1 and the Confluent 7.9.0 Java serializers. The scripts are in `integration/probes/`.
+Verified on 2026-11-16 against `confluentinc/cp-schema-registry:7.9.0` (no auth) on `apache/kafka:3.8.1`, with confluent-kafka-python 2.16.1 and the Confluent 7.9.0 Java serializers. The checks are in `integration/tests/` (Python) and `integration/java/` (Java).
 
 | # | Question | Result |
 |---|---|---|
@@ -462,13 +463,13 @@ Setup:
 
 - `integration/docker-compose.yml` exists: one Kafka broker (`apache/kafka:3.8.1`) and one Schema Registry (`confluentinc/cp-schema-registry:7.9.0`), without authentication. Image names are variables (`KAFKA_IMAGE`, `SR_IMAGE`): the target environment is air-gapped, so images may have to come from an internal registry. If an image cannot be pulled, stop and report exactly which image is missing; do not substitute a different version silently.
 - The client tests need `confluent-kafka[schemaregistry,avro,json,protobuf]` (test dependency only; without the extras the Protobuf serializer fails to import `google.type`).
-- The Java checks live in `integration/probes/java` and run in a `maven:3.9.9-eclipse-temurin-17` container on the compose network.
+- The Java checks live in `integration/java` and run in a `maven:3.9.9-eclipse-temurin-17` container on the compose network.
 - Integration tests under `integration/tests/`, marked with a pytest marker (`@pytest.mark.integration`) so the unit suite stays runnable without Docker.
 
 What each test asserts (the expected results are the ones recorded in section 10):
 
 1. **Compatibility endpoint on a new subject.** For each format, a valid schema gives `200 is_compatible: true`; an invalid one gives `200 is_compatible: false` with a message starting `Invalid schema ` and containing `details: `.
-2. **Name match with real clients.** For each format, register a schema under the validator's `expected_name`, then serialize and produce one message with a real Python producer (`record_subject_name_strategy`, `auto.register.schemas=False`, `use.latest.version=True`). Include an Avro schema whose `name` contains dots and a conflicting `namespace`. The Java equivalent is `probe.Main` in `integration/probes/java`.
+2. **Name match with real clients.** For each format, register a schema under the validator's `expected_name`, then serialize and produce one message with a real Python producer (`record_subject_name_strategy`, `auto.register.schemas=False`, `use.latest.version=True`). Include an Avro schema whose `name` contains dots and a conflicting `namespace`. The Java equivalent is `probe.Main` in `integration/java`.
 3. **References end to end.** For each format: register a referenced schema, register a schema that references it with the payload the validator implies, and produce with a real client. JSON: `$ref` with and without `#fragment`. Protobuf: import path `com/acme/Address.proto` for subject `com.acme.Address`; the Java producer with `QualifiedReferenceSubjectNameStrategy` succeeds and with the default strategy fails (`probe.ProtoRefs`).
 4. **SR does not enforce the validator's own rules.** SR accepts: an unused reference row, a Protobuf reference name that differs from the import path, a Protobuf cycle, a JSON `title` with a space. If a future SR version starts rejecting these, the test fails and the plan is revisited.
 5. **Built-in Protobuf imports.** Every path in `builtin_proto_imports` registers with no references when its type is used, and compiles locally with the bundled `_proto` directory; `google/type/localized_text.proto` and `google/rpc/status.proto` do not register.

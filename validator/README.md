@@ -128,7 +128,7 @@ All errors are collected; a stage is skipped only when it depends on one that fa
 | D6 | JSON: every row has a `ref_string` | `Reference to '{s}' needs the text used in the schema (the $ref value).` |
 | E1 | Schema Registry accepts the schema as valid | `Schema Registry rejected the schema: {reason}` |
 | E2 | Schema Registry finds it compatible with the registered versions | `Not {sr_level}-compatible with version {n}: {descriptions}` (when the registry names no version: `Not {sr_level}-compatible with the existing versions: {descriptions}`) |
-| E3 | Schema Registry is reachable (timeouts, connection errors, 5xx, unreadable responses) | `Could not reach Schema Registry to validate. Try again.` |
+| E3 | Schema Registry is reachable (timeouts, connection errors, 5xx, unreadable responses, a 404 that is not Schema Registry's "subject or version not found") | `Could not reach Schema Registry to validate. Try again.` |
 | E4 | Schema Registry accepts the validator's credentials (no 401 or 403) | `The validator is not allowed to query Schema Registry. Contact the platform team.` |
 
 E1 shows only the reason Schema Registry gives (the text after `details: `), and E2 only the extracted descriptions, because the registry's raw messages contain the whole schema text. E3 and E4 also apply to the reference lookups of stage D.

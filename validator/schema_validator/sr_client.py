@@ -178,11 +178,12 @@ class HttpSchemaRegistryClient:
             raise SchemaRegistryUnauthorized(f"{where}: HTTP {status}")
         if status >= 500:
             raise SchemaRegistryUnavailable(f"{where}: HTTP {status}")
+        if status == 404 and _error_code(response) not in _NOT_FOUND_CODES:
+            # Not Schema Registry's own "not found": a wrong URL or a proxy, on every call.
+            raise SchemaRegistryUnavailable(f"{where}: HTTP 404 without a not-found error_code")
         if 400 <= status < 500:
             if status == 404 and not_found_ok:
-                if _error_code(response) in _NOT_FOUND_CODES:
-                    return _NOT_FOUND
-                raise SchemaRegistryUnavailable(f"{where}: HTTP 404 without a not-found error_code")
+                return _NOT_FOUND
             raise SchemaRegistryRejected(_error_message(response))
         if not 200 <= status < 300:
             raise SchemaRegistryUnavailable(f"{where}: HTTP {status}")

@@ -390,7 +390,10 @@ def test_sr_not_found_codes_are_none_on_both_gets(code):
     assert client.get_version("a.B", 1) is None
 
 
-@pytest.mark.parametrize("text", [
+# 404 bodies without Schema Registry's "subject/version not found" codes. The second
+# JSON one is what Schema Registry 7.9.0 returns for a path it does not serve, e.g.
+# when sr_url has a wrong prefix (observed in integration/tests/test_sr_behaviour.py).
+_OTHER_404_BODIES = [
     "<html>not found</html>",
     "",
     json.dumps({"message": "Subject 'a.B' not found."}),
@@ -400,13 +403,24 @@ def test_sr_not_found_codes_are_none_on_both_gets(code):
     json.dumps({"error_code": None}),
     json.dumps([{"error_code": 40401}]),
     json.dumps(40401),
-])
+]
+
+
+@pytest.mark.parametrize("text", _OTHER_404_BODIES)
 def test_other_404_on_gets_is_unavailable(text):
     client = client_for(StubSession(StubResponse(404, text=text)))
     with pytest.raises(SchemaRegistryUnavailable):
         client.get_latest("a.B")
     with pytest.raises(SchemaRegistryUnavailable):
         client.get_version("a.B", 1)
+
+
+@pytest.mark.parametrize("text", _OTHER_404_BODIES)
+def test_other_404_on_level_and_compatibility_is_unavailable(text):
+    client = client_for(StubSession(StubResponse(404, text=text)))
+    for call in call_all(client)[2:]:
+        with pytest.raises(SchemaRegistryUnavailable):
+            call()
 
 
 # ---- secrets ------------------------------------------------------------------

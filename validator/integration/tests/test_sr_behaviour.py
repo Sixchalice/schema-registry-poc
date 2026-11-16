@@ -9,10 +9,11 @@ from collections.abc import Callable
 
 import pytest
 
-from schema_validator import HttpSchemaRegistryClient, ValidatorConfig
+from schema_validator import HttpSchemaRegistryClient, ValidationRequest, ValidationResult, ValidatorConfig, validate
+from schema_validator import messages
 from schema_validator.formats import protobuf
 from schema_validator.models import DEFAULT_BUILTIN_PROTO_IMPORTS
-from schema_validator.sr_client import CompatibilityVerdict
+from schema_validator.sr_client import CompatibilityVerdict, SchemaRegistryUnavailable
 from schema_validator.sr_messages import invalid_schema_reason, parse_incompatibility
 
 FORMATS = ("AVRO", "JSON", "PROTOBUF")
@@ -242,3 +243,32 @@ def test_get_version_missing(
     assert isinstance(body, dict) and body.get("error_code") == 40402
 
     assert sr.get_version(subject, 99) is None
+
+
+def test_404_from_a_wrong_base_url_is_not_not_found(
+    register: Register,
+    raw_get: Callable[[str], Response],
+    config: ValidatorConfig,
+    ns: str,
+) -> None:
+    # A wrong base URL also gives 404, but without a "not found" code. Taking it for
+    # "not registered" would make every create pass and every reference fail D1.
+    subject = f"{ns}.Order"
+    assert register(subject, valid_schema("AVRO", ns))[0] == 200
+    for path in (f"/no-such-prefix/subjects/{subject}/versions/latest",
+                 f"/no-such-prefix/subjects/{subject}/versions/1"):
+        status, body = raw_get(path)
+        assert status == 404
+        assert isinstance(body, dict) and body.get("error_code") not in (40401, 40402), body
+
+    wrong = HttpSchemaRegistryClient(config.sr_url + "/no-such-prefix")
+    with pytest.raises(SchemaRegistryUnavailable):
+        wrong.get_latest(f"{ns}.none")
+    with pytest.raises(SchemaRegistryUnavailable):
+        wrong.get_version(subject, 1)
+
+    create = ValidationRequest(
+        name=f"{ns}.Fresh", schema_type="AVRO", schema=valid_schema("AVRO", ns, "Fresh"),
+        compatibility="BACKWARD", references=[], previous_name=None, existing_names=[],
+    )
+    assert validate(create, wrong, config) == ValidationResult(False, "Error", messages.SR_UNREACHABLE)
