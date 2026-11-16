@@ -237,6 +237,19 @@ def test_protobuf_wrong_import_path(sr: FakeSchemaRegistry, run: Callable) -> No
     assert compat_calls(sr) == []
 
 
+def test_protobuf_syntax_error_has_no_d5(sr: FakeSchemaRegistry, run: Callable) -> None:
+    # The import line without its ";": protoc fails, so the import is not taken as used.
+    sr.add("com.acme.Address", load("PROTOBUF", "address"), "PROTOBUF")
+    schema = load("PROTOBUF", "customer").replace('import "com/acme/Address.proto";', 'import "com/acme/Address.proto"')
+    assert schema != load("PROTOBUF", "customer")
+    request = req("PROTOBUF", None, "com.acme.Customer", schema=schema, references=[address_row("PROTOBUF")])
+    result = run(request, sr)
+    assert result.validationType == "Error"
+    assert len(result.message.split("\n")) == 1
+    assert result.message.startswith("Invalid Protobuf schema: ")
+    assert compat_calls(sr) == []
+
+
 def test_protobuf_transitive(sr: FakeSchemaRegistry, run: Callable) -> None:
     sr.add("com.acme.Address", load("PROTOBUF", "address"), "PROTOBUF")
     mid = (

@@ -56,7 +56,8 @@ def parse_incompatibility(messages: Sequence[str]) -> Incompatibility:
         if version is not None:
             old_version = version
             continue
-        if message.startswith("{oldSchema:"):
+        # The registered schema's text: never shown, even if the format gains whitespace.
+        if message.lstrip().startswith("{oldSchema:"):
             continue
         if message.startswith("{validateFields"):
             match = _LEVEL.search(message)

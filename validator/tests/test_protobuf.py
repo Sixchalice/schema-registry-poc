@@ -143,7 +143,7 @@ B_IMPORTS_C = 'syntax = "proto3";\npackage a;\nimport "a/C.proto";\nmessage B { 
 def test_missing_transitive_import_is_invalid() -> None:
     result = run(P + 'import "a/B.proto";\nmessage Order { a.B b = 1; }', {"a/B.proto": B_IMPORTS_C})
     assert result.expected_name is None
-    assert result.external_refs == {"a/B.proto"}
+    assert result.external_refs is None
     assert len(result.errors) == 1
     assert result.errors[0].startswith("Invalid Protobuf schema: ")
     assert "a/C.proto" in result.errors[0]
@@ -155,7 +155,7 @@ def test_missing_own_and_transitive_imports_is_invalid() -> None:
         {"a/B.proto": B_IMPORTS_C},
     )
     assert result.expected_name is None
-    assert result.external_refs == {"x/Y.proto", "a/B.proto"}
+    assert result.external_refs is None
     assert len(result.errors) == 1
     assert result.errors[0].startswith("Invalid Protobuf schema: ")
     assert "a/C.proto" in result.errors[0]
@@ -197,7 +197,7 @@ def test_error_in_referenced_file_is_invalid() -> None:
         {"com/acme/Address.proto": P + "message Address { strin x = 1 }"},
     )
     assert result.expected_name is None
-    assert result.external_refs == {"com/acme/Address.proto"}
+    assert result.external_refs is None
     assert len(result.errors) == 1
     assert result.errors[0].startswith("Invalid Protobuf schema: ")
     assert "com/acme/Address.proto:" in result.errors[0]
@@ -301,6 +301,19 @@ def test_protoc_cannot_start(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.external_refs is None
     assert len(result.errors) == 1
     assert result.errors[0].startswith("Internal validator error: ")
+
+
+@pytest.mark.parametrize("stderr", ["", "\n", "__main__.proto: warning: x\n"], ids=["empty", "blank", "warnings-only"])
+def test_protoc_failure_without_message_is_internal(monkeypatch: pytest.MonkeyPatch, stderr: str) -> None:
+    # A crash or a signal: protoc exits non-zero without an error line.
+    def crashed(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=[], returncode=-9, stdout="", stderr=stderr)
+
+    monkeypatch.setattr(subprocess, "run", crashed)
+    result = run(P + "message M { string a = 1; }")
+    assert result.expected_name is None
+    assert result.external_refs is None
+    assert result.errors == ["Internal validator error: protoc exited with code -9 and no message"]
 
 
 def _fake_protoc(monkeypatch: pytest.MonkeyPatch, out: bytes | None) -> None:

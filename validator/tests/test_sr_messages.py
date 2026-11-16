@@ -144,6 +144,11 @@ def test_old_schema_dropped_even_when_malformed() -> None:
     assert parse_incompatibility(["{oldSchema: '{\"type\":\"record\""]) == Incompatibility((), None, None)
 
 
+def test_old_schema_with_leading_whitespace_dropped() -> None:
+    msgs = [" {oldSchema: '{\"a\":1}'}", "{oldSchemaVersion: 1}"]
+    assert parse_incompatibility(msgs) == Incompatibility((), 1, None)
+
+
 def test_huge_old_schema_version_does_not_raise() -> None:
     msg = "{oldSchemaVersion: " + "9" * 10_000 + "}"
     result = parse_incompatibility([msg])

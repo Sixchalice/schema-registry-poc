@@ -183,6 +183,46 @@ def test_refs_in_array_map_union() -> None:
     assert result.external_refs == {"a.X", "a.Y", "a.Z"}
 
 
+def test_unqualified_use_falls_back_to_null_namespace() -> None:
+    # Java Avro looks an unqualified name up in the enclosing namespace, then in the null one.
+    result = run(
+        rec(
+            "Order",
+            [field("inner", rec("Inner", [field("x", "string")], namespace="")), field("again", "Inner")],
+            namespace="com.acme",
+        )
+    )
+    assert result.external_refs == set()
+
+
+def test_enclosing_namespace_is_tried_first() -> None:
+    # Both com.acme.Inner and the null-namespace Inner exist: the use is local either way.
+    result = run(
+        rec(
+            "Order",
+            [
+                field("a", rec("Inner", [field("x", "string")], namespace="")),
+                field("b", rec("Inner", [field("y", "string")])),
+                field("c", "Inner"),
+            ],
+            namespace="com.acme",
+        )
+    )
+    assert result.external_refs == set()
+
+
+def test_qualified_use_has_no_null_namespace_fallback() -> None:
+    # Only an unqualified name falls back: "other.Inner" is not the null-namespace Inner.
+    result = run(
+        rec(
+            "Order",
+            [field("inner", rec("Inner", [field("x", "string")], namespace="")), field("again", "other.Inner")],
+            namespace="com.acme",
+        )
+    )
+    assert result.external_refs == {"other.Inner"}
+
+
 def test_nested_namespace() -> None:
     result = run(
         rec(

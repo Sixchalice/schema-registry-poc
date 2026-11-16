@@ -204,11 +204,11 @@ def test_rejected_42201():
     assert str(e.value) == "Invalid schema X"
 
 
-def test_rejected_uses_raw_text_without_json_message():
+def test_4xx_without_error_code_is_unavailable():
     session = StubSession(StubResponse(400, text="Bad request from proxy"))
-    with pytest.raises(SchemaRegistryRejected) as e:
+    with pytest.raises(SchemaRegistryUnavailable) as e:
         client_for(session).check_compatibility("a.B", "S", "AVRO", [])
-    assert str(e.value) == "Bad request from proxy"
+    assert "proxy" not in str(e.value)
 
 
 def test_404_on_level_and_compatibility_is_rejected():
@@ -352,24 +352,47 @@ def test_unexpected_status_is_unavailable():
 # ---- untrusted error bodies --------------------------------------------------
 
 @pytest.mark.parametrize("text", [
-    json.dumps(["Invalid schema X"]),
-    json.dumps("Invalid schema X"),
     json.dumps({"error_code": 42201, "message": 5}),
     json.dumps({"error_code": 42201, "message": None}),
     json.dumps({"error_code": 42201, "message": ["Invalid schema X"]}),
     json.dumps({"error_code": 42201}),
-    "<html>bad request</html>",
 ])
-def test_odd_4xx_body_is_still_rejected_with_raw_text(text):
+def test_odd_4xx_body_with_error_code_is_still_rejected_with_raw_text(text):
     with pytest.raises(SchemaRegistryRejected) as e:
         client_for(StubSession(StubResponse(422, text=text))).check_compatibility("a.B", "S", "AVRO", [])
     assert str(e.value) == text
 
 
-def test_empty_4xx_body_is_rejected_with_status():
-    with pytest.raises(SchemaRegistryRejected) as e:
-        client_for(StubSession(StubResponse(422, text=""))).check_compatibility("a.B", "S", "AVRO", [])
-    assert str(e.value) == "HTTP 422"
+@pytest.mark.parametrize("text", [
+    json.dumps(["Invalid schema X"]),
+    json.dumps("Invalid schema X"),
+    json.dumps({"message": "Invalid schema X"}),
+    json.dumps({"error_code": "42201", "message": "Invalid schema X"}),
+    json.dumps({"error_code": True, "message": "Invalid schema X"}),
+    json.dumps({"error_code": None, "message": "Invalid schema X"}),
+    "<html>bad request</html>",
+])
+def test_odd_4xx_body_without_error_code_is_unavailable(text):
+    with pytest.raises(SchemaRegistryUnavailable) as e:
+        client_for(StubSession(StubResponse(422, text=text))).check_compatibility("a.B", "S", "AVRO", [])
+    assert "Invalid schema" not in str(e.value)
+
+
+def test_empty_4xx_body_is_unavailable():
+    for call in call_all(client_for(StubSession(StubResponse(422, text="")))):
+        with pytest.raises(SchemaRegistryUnavailable):
+            call()
+
+
+@pytest.mark.parametrize("status, text", [
+    (407, "<html>Proxy auth required for user bob</html>"),
+    (429, ""),
+])
+def test_proxy_4xx_without_error_code_is_unavailable(status, text):
+    for call in call_all(client_for(StubSession(StubResponse(status, text=text)))):
+        with pytest.raises(SchemaRegistryUnavailable) as e:
+            call()
+        assert "bob" not in str(e.value)
 
 
 @pytest.mark.parametrize("status,exc_class", [

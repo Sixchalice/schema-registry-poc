@@ -176,6 +176,41 @@ def test_ref_inside_enum_or_default_ignored() -> None:
         )
     )
     assert result.external_refs == set()
+    assert result.errors == []
+
+
+def test_ref_under_dependencies_is_collected() -> None:
+    # The keys of "dependencies" are property names, so "default" here is not the keyword.
+    result = run(schema(dependencies={"default": {"$ref": "x.json"}}))
+    assert result.external_refs == {"x.json"}
+    assert result.errors == []
+
+
+def test_non_string_ref_is_not_a_reference() -> None:
+    result = run(schema(properties={"a": {"$ref": 5}}))
+    assert result.external_refs == set()
+    assert len(result.errors) == 1
+    assert result.errors[0].startswith("Invalid JSON schema: ")
+
+
+def test_non_string_schema_keyword() -> None:
+    result = run(schema(**{"$schema": 7}))
+    assert result.errors == ["Unsupported JSON Schema draft '7'."]
+
+
+def test_non_string_title() -> None:
+    # The meta-schema check also rejects the title, so there are two messages.
+    result = run({"title": 5, "type": "object"})
+    assert result.errors == [TITLE_MISSING, "Invalid JSON schema: 5 is not of type 'string'"]
+    assert result.expected_name is None
+
+
+def test_deeply_nested_json_is_not_json() -> None:
+    # json.loads raises RecursionError, not ValueError, past about 1000 levels.
+    result = analyse("[" * 3000 + "]" * 3000, {}, cfg)
+    assert len(result.errors) == 1
+    assert result.errors[0].startswith("Schema is not valid JSON: ")
+    assert result.external_refs is None
 
 
 def test_javatype_allowed() -> None:

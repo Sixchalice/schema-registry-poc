@@ -84,7 +84,7 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
 
         # Step 5
         if completed.returncode != 0:
-            return _failure(schema_text, referenced, completed.stderr, tmp, config)
+            return _failure(schema_text, referenced, completed, tmp, config)
 
         # Step 6
         try:
@@ -126,17 +126,29 @@ def _is_safe_path(path: object) -> bool:
 
 
 def _failure(
-    schema_text: str, referenced: dict[str, str], stderr: str, tmp: str, config: ValidatorConfig
+    schema_text: str,
+    referenced: dict[str, str],
+    completed: subprocess.CompletedProcess[str],
+    tmp: str,
+    config: ValidatorConfig,
 ) -> FormatAnalysis:
-    """Result for a non-zero protoc exit. A missing import of the schema itself is left to stage D4."""
+    """Result for a non-zero protoc exit. A missing import of the schema itself is left to stage D4.
+
+    Any other failure means the text could not be analysed: external_refs is None, so
+    D4/D5 are skipped (spec section 4, stage B).
+    """
     imports = _imports(schema_text)
-    external_refs = imports - config.builtin_proto_imports
-    lines = stderr.splitlines()
+    lines = completed.stderr.splitlines()
     missing = {m.group(1) for line in lines if (m := _NOT_FOUND.fullmatch(line))}
     # Stage D4 only names the schema's own imports, so a file missing further down is reported here.
     if missing and missing <= imports and not missing & referenced.keys():
-        return FormatAnalysis(None, external_refs, [])
-    return FormatAnalysis(None, external_refs, [messages.PROTO_INVALID.format(err=_clean_stderr(lines, tmp))])
+        return FormatAnalysis(None, imports - config.builtin_proto_imports, [])
+    error = _clean_stderr(lines, tmp)
+    if not error:
+        # A crash or a signal: there is nothing to show as a schema error.
+        return FormatAnalysis(None, None, [messages.INTERNAL_ERROR.format(
+            err=f"protoc exited with code {completed.returncode} and no message")])
+    return FormatAnalysis(None, None, [messages.PROTO_INVALID.format(err=error)])
 
 
 def _imports(schema_text: str) -> set[str]:

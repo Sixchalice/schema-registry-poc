@@ -39,7 +39,7 @@ class SchemaRegistryError(Exception):
 
 
 class SchemaRegistryUnavailable(SchemaRegistryError):
-    """Timeout, connection error, 5xx or unreadable body (E3)."""
+    """Timeout, connection error, 5xx, unreadable body, or a 4xx not from Schema Registry (E3)."""
 
 
 class SchemaRegistryUnauthorized(SchemaRegistryError):
@@ -178,12 +178,16 @@ class HttpSchemaRegistryClient:
             raise SchemaRegistryUnauthorized(f"{where}: HTTP {status}")
         if status >= 500:
             raise SchemaRegistryUnavailable(f"{where}: HTTP {status}")
-        if status == 404 and _error_code(response) not in _NOT_FOUND_CODES:
-            # Not Schema Registry's own "not found": a wrong URL or a proxy, on every call.
-            raise SchemaRegistryUnavailable(f"{where}: HTTP 404 without a not-found error_code")
         if 400 <= status < 500:
+            code = _error_code(response)
+            if status == 404 and code not in _NOT_FOUND_CODES:
+                # Not Schema Registry's own "not found": a wrong URL or a proxy, on every call.
+                raise SchemaRegistryUnavailable(f"{where}: HTTP 404 without a not-found error_code")
             if status == 404 and not_found_ok:
                 return _NOT_FOUND
+            if code is None:
+                # Schema Registry always sends an error_code: this answer is from something else.
+                raise SchemaRegistryUnavailable(f"{where}: HTTP {status} without an error_code")
             raise SchemaRegistryRejected(_error_message(response))
         if not 200 <= status < 300:
             raise SchemaRegistryUnavailable(f"{where}: HTTP {status}")
@@ -220,13 +224,16 @@ def _error_code(response: requests.Response) -> int | None:
 
 
 def _error_message(response: requests.Response) -> str:
-    """The `message` of a Schema Registry error body, else the raw text."""
+    """The `message` of a Schema Registry error body, else the raw text.
+
+    Only called for a body with an integer error_code, so the raw text is never empty.
+    """
     body = _json_or_none(response)
     if isinstance(body, dict):
         message = body.get("message")
         if isinstance(message, str) and message:
             return message
-    return response.text or f"HTTP {response.status_code}"
+    return response.text
 
 
 def _parse_version(body: object) -> SchemaVersion | None:

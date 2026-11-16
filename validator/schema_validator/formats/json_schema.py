@@ -14,7 +14,9 @@ from schema_validator.models import FormatAnalysis, ValidatorConfig
 _TITLE_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+")
 
 # Keywords whose value maps names (not keywords) to subschemas.
-_NAME_MAPS = frozenset({"properties", "patternProperties", "definitions", "$defs", "dependentSchemas"})
+_NAME_MAPS = frozenset(
+    {"properties", "patternProperties", "definitions", "$defs", "dependentSchemas", "dependencies"}
+)
 # Keywords whose value is data, not a schema.
 _DATA_KEYWORDS = frozenset({"enum", "const", "default", "examples"})
 
@@ -24,7 +26,7 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
     # Step 1
     try:
         schema = json.loads(schema_text)
-    except ValueError as e:
+    except (ValueError, RecursionError) as e:
         return FormatAnalysis(None, None, [messages.NOT_JSON.format(err=e)])
     if not isinstance(schema, dict):
         return FormatAnalysis(None, None, [messages.JSON_TOP_LEVEL])

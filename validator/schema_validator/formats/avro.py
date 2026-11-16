@@ -70,16 +70,31 @@ def _full_name(name: str, namespace: str | None) -> str:
 
 
 def _external_refs(schema: dict[str, Any]) -> set[str]:
-    """Names used in type positions that the text does not define itself."""
+    """Names used in type positions that the text does not define itself.
+
+    An unqualified name is looked up in the enclosing namespace first, then in the
+    null namespace (as Java Avro's Names.get does).
+    """
+    defined, used = _names(schema)
+    return {full for full, bare in used if full not in defined and bare not in defined}
+
+
+def _names(schema: Any) -> tuple[set[str], set[tuple[str, str | None]]]:
+    """The full names a text defines, and the names it uses in type positions.
+
+    Each used name is (full name, bare name); the bare name is None when the use was
+    qualified or had no enclosing namespace, so there is no fallback to try.
+    """
     defined: set[str] = set()
-    used: set[str] = set()
+    used: set[tuple[str, str | None]] = set()
     # Each entry is a value in a type position and the namespace enclosing it.
     pending: list[tuple[Any, str | None]] = [(schema, None)]
     while pending:
         node, namespace = pending.pop()
         if isinstance(node, str):
             if node not in _BUILTIN_TYPES:
-                used.add(_full_name(node, namespace))
+                full = _full_name(node, namespace)
+                used.add((full, node if full != node else None))
         elif isinstance(node, list):
             pending.extend((member, namespace) for member in node)
         elif isinstance(node, dict):
@@ -103,7 +118,7 @@ def _external_refs(schema: dict[str, Any]) -> set[str]:
                     pending.append((node["values"], namespace))
             elif kind is not None:
                 pending.append((kind, namespace))
-    return used - defined
+    return defined, used
 
 
 def _parse_error(schema: dict[str, Any], referenced: dict[str, str]) -> str | None:
