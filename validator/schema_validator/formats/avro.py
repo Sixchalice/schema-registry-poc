@@ -5,7 +5,7 @@ import json
 from typing import Any
 
 import fastavro
-from fastavro.schema import SchemaParseException, UnknownType
+from fastavro.schema import UnknownType
 
 from schema_validator import messages
 from schema_validator.models import FormatAnalysis, ValidatorConfig
@@ -82,7 +82,8 @@ def _external_refs(schema: dict[str, Any]) -> set[str]:
             pending.extend((member, namespace) for member in node)
         elif isinstance(node, dict):
             kind = node.get("type")
-            if kind in _NAMED_TYPES:
+            # `kind` may be a list or dict (pushed back below), so test str before hashing.
+            if isinstance(kind, str) and kind in _NAMED_TYPES:
                 name = node.get("name")
                 inner = namespace
                 if isinstance(name, str):
@@ -117,7 +118,7 @@ def _parse_error(schema: dict[str, Any], referenced: dict[str, str]) -> str | No
     except UnknownType:
         # A missing reference; stage D explains it. Caught first: it is not a SchemaParseException.
         return None
-    except (SchemaParseException, Exception) as e:
-        # fastavro also raises TypeError, ValueError etc. on malformed schemas.
+    except Exception as e:
+        # SchemaParseException, and also TypeError, ValueError etc. on malformed schemas.
         return str(e)
     return None

@@ -280,6 +280,46 @@ def test_name_not_a_string() -> None:
     assert result.errors[0].startswith("Invalid Avro schema: ")
 
 
+@pytest.mark.parametrize(
+    "type_",
+    [
+        pytest.param({"type": ["null", "q.Z"]}, id="type-is-list"),
+        pytest.param({"type": {"type": "array", "items": "q.Z"}}, id="type-is-dict"),
+        pytest.param({"type": "array", "items": {"type": ["a"]}}, id="items-type-is-list"),
+        pytest.param({"type": "map", "values": {"type": {"type": "string"}}}, id="values-type-is-dict"),
+    ],
+)
+def test_type_object_with_non_string_type(type_: Any) -> None:
+    result = run(rec("Order", [field("x", type_)], namespace="com.acme"))
+    assert len(result.errors) == 1
+    assert result.errors[0].startswith("Invalid Avro schema: ")
+
+
+@pytest.mark.parametrize("value", [5, True, None, ["a"], {"a": 1}], ids=repr)
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(lambda v: rec("Order", [field("x", {"type": v})], namespace="com.acme"), id="type"),
+        pytest.param(lambda v: rec("Order", [field("x", rec(v, []))], namespace="com.acme"), id="nested-name"),
+        pytest.param(lambda v: rec("Order", [field("x", rec("In", [], namespace=v))], namespace="com.acme"),
+                     id="nested-namespace"),
+        pytest.param(lambda v: rec("Order", [field("x", {"type": "array", "items": v})], namespace="com.acme"),
+                     id="items"),
+        pytest.param(lambda v: rec("Order", [field("x", {"type": "map", "values": v})], namespace="com.acme"),
+                     id="values"),
+        pytest.param(lambda v: rec("Order", [v], namespace="com.acme"), id="field-entry"),
+        pytest.param(lambda v: rec("Order", v, namespace="com.acme"), id="fields"),
+        pytest.param(lambda v: rec("Order", [field("x", {"type": "enum", "name": "E", "symbols": [v]})],
+                                   namespace="com.acme"), id="symbol"),
+        pytest.param(lambda v: {"type": "record", "name": v, "namespace": "com.acme", "fields": []}, id="name"),
+        pytest.param(lambda v: rec("Order", [], namespace=v), id="namespace"),
+    ],
+)
+def test_unexpected_json_types_do_not_raise(build: Any, value: Any) -> None:
+    result = run(build(value))
+    assert all(isinstance(e, str) for e in result.errors)
+
+
 def test_fastavro_recursion_error_is_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
     def overflow(*args: Any, **kwargs: Any) -> Any:
         raise RecursionError("maximum recursion depth exceeded")
