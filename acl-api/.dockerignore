@@ -3,6 +3,11 @@
 docker-compose*.yml
 config/
 stress/
+tests/
+requirements-dev.txt
+pyproject.toml
+STRESS_RESULTS.md
+*.sh
 README.md
 **/__pycache__
 **/.idea

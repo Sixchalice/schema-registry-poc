@@ -104,7 +104,7 @@ Writes barely slow reads down (p95 2.3 s → 2.7 s), because the two use separat
 |---|---|
 | Concurrent reads | No practical limit from the design. 500 tested, 0 errors, ~2.4 s each. |
 | Read throughput | ~0.43 req/s per waiting client. 210 req/s at 500 clients. |
-| Concurrent writes | 1 runs at a time. Up to 20 queued (`SR_ACL_MAX_PENDING_WRITES`), the rest get 503. |
+| Concurrent writes | 1 runs at a time. Up to 20 queued (`ACL_API_MAX_PENDING_WRITES`), the rest get 503. |
 | Write throughput | ~0.7/s (~40/min, ~2,500/hour) |
 | Resources to give it | 2 CPUs and 512 MiB is comfortable (peak was 2 cores, ~300 MiB) |
 
@@ -117,6 +117,22 @@ to a single one.
 - **Batch queued writes into one CLI call.** The CLI accepts several `-p/-s/-o`, but it applies their
   cross product, so only requests with the same shape can be merged.
 - **Return 202 without the read-back.** That saves ~1 s of latency, but not throughput.
+
+## Re-check after the refactor into the `acl_api/` package
+
+The same container and limits, with a shorter run (15–20 s per level):
+
+| Load | Before refactor | After refactor |
+|---|---|---|
+| reads, 1 client | 0.89 req/s, p95 1.17 s | 0.87 req/s, p95 1.20 s |
+| reads, 100 clients | 41.3 req/s, p95 2.33 s | 43.1 req/s, p95 2.37 s |
+| reads, 500 clients | 210 req/s, p95 2.45 s | 212 req/s, p95 2.41 s |
+| writes, 5 clients | 0.66 writes/s, p95 8.0 s | 0.64 writes/s, p95 8.3 s |
+| writes, 40 clients | 0.72 writes/s + fast 503s, 0 left over | 0.72 writes/s + fast 503s, 0 left over |
+| mixed, 50 R + 10 W | 11.5 reads/s, 0.76 writes/s | 12.3 reads/s, 0.76 writes/s |
+| peak memory | ~300 MiB | ~283 MiB |
+
+Same behavior. The differences are within run-to-run noise.
 
 ## Re-running
 

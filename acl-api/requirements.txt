@@ -1,2 +1,5 @@
+# Runtime dependencies. Installed offline from wheels/ (see Dockerfile); after changing a version,
+# re-download the wheels for both platforms (README, "Updating dependencies").
 fastapi==0.115.6
 uvicorn==0.34.0
+pydantic-settings==2.16.3

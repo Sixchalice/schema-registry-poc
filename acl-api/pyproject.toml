@@ -1,0 +1,9 @@
+[project]
+name = "acl-api"
+version = "2.0.0"
+description = "REST API for sr-acl-cli"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

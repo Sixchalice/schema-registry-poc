@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# acl-api: FastAPI service that runs the real sr-acl-cli for every request (see app.py).
+# acl-api: FastAPI service that runs the real sr-acl-cli (see README.md).
 # Self-contained for air-gapped builds: the CLI + jars (sr-acl-cli/) and the Python wheels (wheels/)
 # are in this directory. The only things pulled are the two base images below; point the build args
 # at your internal registry if needed:
@@ -31,9 +31,9 @@ RUN pip install --no-cache-dir --no-index --find-links /tmp/wheels -r requiremen
  && rm -rf /tmp/wheels \
  && chmod 0755 /opt/sr-acl-cli/bin/* \
  && useradd --system --uid 10001 --no-create-home acl
-COPY app.py .
+COPY acl_api/ acl_api/
 
 USER acl
 EXPOSE 8087
-# One worker: writes are serialized and reads coalesced in-process (see app.py).
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8087", "--workers", "1"]
+# One worker: writes are serialized and reads coalesced in-process (acl_api/services/).
+CMD ["uvicorn", "--factory", "acl_api.main:create_app", "--host", "0.0.0.0", "--port", "8087", "--workers", "1"]

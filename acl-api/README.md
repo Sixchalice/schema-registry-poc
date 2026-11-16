@@ -9,22 +9,24 @@ This directory is self-contained, so you can copy just `acl-api/` to an air-gapp
 
 | Path | What |
 |---|---|
-| `app.py`, `requirements.txt` | the service |
-| `wheels/` | Python wheels for linux amd64 + arm64 (the build runs `pip install --no-index`) |
-| `sr-acl-cli/` | the CLI scripts and the 4 jar directories on its classpath (277 MB) |
+| `acl_api/` | the service (layout below) |
+| `requirements.txt`, `wheels/` | runtime dependencies, as wheels for linux amd64 + arm64 (the build runs `pip install --no-index`) |
+| `sr-acl-cli/` | the CLI scripts and the 4 jar directories on its classpath (277 MB, not in git: `./fetch-cli-jars.sh`) |
 | `tools-log4j.properties` | CLI logging to stderr (stdout carries only CLI output) |
 | `config/sr-acl-cli.properties` | **edit this**: Kafka connection + ACL topic, same values as your registry's |
 | `Dockerfile`, `docker-compose.yml`, `.env.example` | build and run |
 | `save-base-images.sh` | run *before* moving: saves the 2 base images to `images/base-images.tar` |
-| `stress/stress.py` | load test (stdlib only) |
+| `tests/`, `requirements-dev.txt`, `pyproject.toml` | unit and API tests |
+| `stress/stress.py`, `STRESS_RESULTS.md` | load test (stdlib only) and its results |
 
 ## Run
 
 ```bash
+./fetch-cli-jars.sh                      # only after a fresh git clone (jars aren't in git)
 ./save-base-images.sh linux/amd64        # on a machine with internet, before copying
 # --- on the air-gapped host ---
 docker load -i images/base-images.tar
-cp .env.example .env                     # set ACL_SERVICE_PASSWORD
+cp .env.example .env                     # set ACL_API_PASSWORD
 vi config/sr-acl-cli.properties          # your Kafka bootstrap servers / SASL settings
 docker compose up -d --build
 ```
@@ -32,10 +34,72 @@ docker compose up -d --build
 If your internal registry already mirrors the base images, skip the tar and pass
 `--build-arg PYTHON_IMAGE=... --build-arg JRE_IMAGE=...` instead.
 
+## Configuration
+
+These are environment variables, read and validated at startup by `acl_api/settings.py`
+(pydantic-settings). An invalid value stops the service with a message naming the field.
+
+| Variable | Default | |
+|---|---|---|
+| `ACL_API_PASSWORD` | — (required) | HTTP Basic password |
+| `ACL_API_USER` | `acl-admin` | HTTP Basic user |
+| `ACL_API_CLI_PATH` | `/opt/sr-acl-cli/bin/sr-acl-cli` | must exist and be executable |
+| `ACL_API_CLI_CONFIG` | `/etc/acl-api/sr-acl-cli.properties` | must exist |
+| `ACL_API_CLI_TIMEOUT` | `60` | seconds before a CLI run is killed (→ 504) |
+| `ACL_API_MAX_PENDING_WRITES` | `20` | running + waiting writes; more get 503 |
+| `ACL_API_LOG_LEVEL` | `INFO` | |
+
+## Code layout
+
+```
+acl_api/
+  main.py               create_app(): wires settings, backend, service, routes
+  settings.py           Settings (pydantic-settings, ACL_API_*)
+  errors.py             errors below the HTTP layer
+  domain/
+    operations.py       Operation enum, resolve_operations() (case, alias, '*')
+    models.py           AclChange (request), AclSnapshot (ACL state), AclListing/SubjectAcl/GlobalAcl (responses)
+  cli/
+    sr_acl_cli.py       SrAclCli: runs the CLI, builds its arguments, classifies its failures
+    list_output.py      parses `--list` output (Java Map.toString) into an AclSnapshot
+  services/
+    acl_service.py      AclService (use cases) and AclBackend, the protocol SrAclCli implements
+    coalescer.py        Coalescer: one shared read at a time, never stale
+    write_queue.py      WriteQueue: one write at a time, bounded
+  api/
+    routes.py           endpoints
+    dependencies.py     auth, service lookup, body parsing
+    error_handlers.py   error -> status code + {"error": ...}
+    schemas.py          HTTP-only bodies (Health, OperationCatalog, ErrorBody)
+```
+
+Dependencies point inward: `api` → `services` → `domain`. `services` only knows the `AclBackend`
+protocol, and `cli` implements it, so tests (and any future backend) plug in through
+`create_app(settings, backend)`.
+
+## Development
+
+```bash
+pip install -r requirements-dev.txt && python -m pytest       # Python 3.12
+# or without a local Python:
+docker run --rm -v "$PWD:/w:ro" -w /w python:3.12-slim sh -c "pip install -q -r requirements-dev.txt && python -m pytest -q -p no:cacheprovider"
+```
+
+**Updating dependencies:** change `requirements.txt`, then re-download the wheels for both platforms:
+
+```bash
+for p in manylinux2014_x86_64 manylinux2014_aarch64; do
+  docker run --rm -v "$PWD:/w" -w /w python:3.12-slim pip download -r requirements.txt -d wheels \
+    --only-binary=:all: --platform $p --python-version 3.12 --implementation cp
+done
+```
+
+Remove the wheels of old versions afterwards.
+
 ## API
 
-HTTP Basic auth (`ACL_SERVICE_USER` / `ACL_SERVICE_PASSWORD`) on everything except `/health`.
-Whoever has the credential can grant anything.
+HTTP Basic auth (`ACL_API_USER` / `ACL_API_PASSWORD`) on everything except `/health`. Whoever has
+the credential can grant anything. Interactive docs are at `/docs`.
 
 ```
 GET    /health[?deep=true]          liveness; deep=true also runs --list (checks Kafka)
