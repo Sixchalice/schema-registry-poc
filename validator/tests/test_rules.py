@@ -110,6 +110,14 @@ def test_json_rows_without_ref_string_are_not_duplicates() -> None:
     assert result.references_ok is True
 
 
+def test_json_rows_with_empty_ref_string_are_not_duplicates() -> None:
+    # "" means "not filled in", like None: stage D reports D6 for each row.
+    refs = [ReferenceInput("a.B", ""), ReferenceInput("a.C", "")]
+    result = check_input(req(schema_type="JSON", references=refs), CONFIG)
+    assert result.errors == []
+    assert result.references_ok is True
+
+
 def test_value_repeated_three_times_reports_once() -> None:
     refs = [ReferenceInput("a.B", "b.json"), ReferenceInput("a.B", "c.json"),
             ReferenceInput("a.B", "d.json")]

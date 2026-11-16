@@ -45,7 +45,7 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
             errors.append(messages.AVRO_NAMESPACE)
 
     # Step 6
-    external_refs = _external_refs(schema)
+    external_refs = _external_refs(schema, referenced)
 
     # Step 7
     error = _parse_error(schema, referenced)
@@ -69,14 +69,52 @@ def _full_name(name: str, namespace: str | None) -> str:
     return f"{namespace}.{name}"
 
 
-def _external_refs(schema: dict[str, Any]) -> set[str]:
+def _external_refs(schema: dict[str, Any], referenced: dict[str, str]) -> set[str]:
     """Names used in type positions that the text does not define itself.
 
     An unqualified name is looked up in the enclosing namespace first, then in the
-    null namespace (as Java Avro's Names.get does).
+    null namespace (as Java Avro's Names.get does). A name defined inside a referenced
+    schema (an enum nested in a referenced record) is provided by that reference, so
+    it is reported as the reference's key.
     """
     defined, used = _names(schema)
-    return {full for full, bare in used if full not in defined and bare not in defined}
+    top_level, nested = _reference_names(referenced)
+    refs: set[str] = set()
+    for full, bare in used:
+        for name in (full, bare):
+            if name is None:
+                continue
+            if name in defined:
+                break
+            if name in top_level:
+                refs.add(name)
+                break
+            if name in nested:
+                refs.add(nested[name])
+                break
+        else:
+            refs.add(full)
+    return refs
+
+
+def _reference_names(referenced: dict[str, str]) -> tuple[set[str], dict[str, str]]:
+    """The referenced texts' own (top-level) full names, and every other name they
+    define mapped to the key of the first text that defines it."""
+    top_level: set[str] = set()
+    nested: dict[str, str] = {}
+    for key, text in referenced.items():
+        try:
+            root = json.loads(text)
+        except (TypeError, ValueError, RecursionError):
+            continue  # not this schema's error (see _parse_error)
+        defined, _ = _names(root)
+        own: str | None = None
+        if isinstance(root, dict) and isinstance(root.get("name"), str):
+            own = _full_name(root["name"], _own_namespace(root, None))
+            top_level.add(own)
+        for name in defined - {own}:
+            nested.setdefault(name, key)
+    return top_level, nested
 
 
 def _names(schema: Any) -> tuple[set[str], set[tuple[str, str | None]]]:

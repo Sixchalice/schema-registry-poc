@@ -223,6 +223,32 @@ def test_references_end_to_end(
     assert status == 200, body
 
 
+@pytest.mark.parametrize("uses_address", [True, False], ids=["both", "nested-only"])
+def test_avro_name_nested_in_a_reference(
+    client: HttpSchemaRegistryClient,
+    config: ValidatorConfig,
+    register: Register,
+    ns: str,
+    uses_address: bool,
+) -> None:
+    # The enum Country is defined inside Address: the row for Address provides it.
+    subject = f"{ns}.Address"
+    address_text = json.dumps({"type": "record", "name": "Address", "namespace": ns, "fields": [
+        {"name": "city", "type": "string"},
+        {"name": "country", "type": {"type": "enum", "name": "Country", "symbols": ["NL", "US"]}}]})
+    assert register(subject, address_text)[0] == 200
+    fields = [{"name": "country", "type": f"{ns}.Country"}]
+    if uses_address:
+        fields.insert(0, {"name": "addr", "type": subject})
+    text = json.dumps({"type": "record", "name": "Customer", "namespace": ns, "fields": fields})
+
+    result = validate(request(f"{ns}.Customer", "AVRO", text, [ReferenceInput(subject)]), client, config)
+
+    assert result == ValidationResult(True, "Warning", messages.PINNED_WARNING.format(list=f"{subject} v1"))
+    status, body = register(f"{ns}.Customer", text, "AVRO", [{"name": subject, "subject": subject, "version": 1}])
+    assert status == 200, body
+
+
 def test_level_warning_on_edit(
     client: HttpSchemaRegistryClient,
     config: ValidatorConfig,

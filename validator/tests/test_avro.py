@@ -309,6 +309,71 @@ def test_references_are_loaded() -> None:
     assert result.errors[0].startswith("Invalid Avro schema: ")
 
 
+COUNTRY = {"type": "enum", "name": "Country", "symbols": ["NL", "US"]}
+ADDRESS_WITH_COUNTRY = rec("Address", [field("street", "string"), field("country", COUNTRY)], namespace="com.acme")
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        pytest.param([field("addr", "com.acme.Address"), field("country", "com.acme.Country")], id="both"),
+        pytest.param([field("country", "com.acme.Country")], id="nested-only"),
+        pytest.param([field("country", "Country")], id="nested-unqualified"),
+    ],
+)
+def test_name_nested_in_a_reference_is_provided_by_it(fields: list[dict[str, Any]]) -> None:
+    result = run(
+        rec("Customer", fields, namespace="com.acme"),
+        referenced={"com.acme.Address": json.dumps(ADDRESS_WITH_COUNTRY)},
+    )
+    assert result == FormatAnalysis("com.acme.Customer", {"com.acme.Address"}, [])
+
+
+def test_nested_name_maps_to_the_reference_key() -> None:
+    # The key is the row's ref_string, whatever the referenced text calls itself.
+    result = run(
+        rec("Customer", [field("country", "com.acme.Country")], namespace="com.acme"),
+        referenced={"addr": json.dumps(ADDRESS_WITH_COUNTRY)},
+    )
+    assert result.external_refs == {"addr"}
+    assert result.errors == []
+
+
+def test_nested_name_without_its_reference_is_external() -> None:
+    result = run(rec("Customer", [field("country", "com.acme.Country")], namespace="com.acme"))
+    assert result.external_refs == {"com.acme.Country"}
+
+
+def test_top_level_name_of_a_reference_is_not_mapped() -> None:
+    # Only nested names map to the key; the referenced record itself still needs its own name.
+    result = run(
+        rec("Customer", [field("addr", "com.acme.Address")], namespace="com.acme"),
+        referenced={"addr": json.dumps(ADDRESS_WITH_COUNTRY)},
+    )
+    assert result.external_refs == {"com.acme.Address"}
+
+
+def test_local_definition_wins_over_a_reference() -> None:
+    local_country = {"type": "enum", "name": "Country", "symbols": ["X"]}
+    result = run(
+        rec("Customer", [field("c", local_country), field("again", "com.acme.Country")], namespace="com.acme"),
+        referenced={"com.acme.Address": json.dumps(ADDRESS_WITH_COUNTRY)},
+    )
+    assert result.external_refs == set()
+
+
+@pytest.mark.parametrize("text", [
+    json.dumps({"type": "record", "name": ["x"], "fields": []}),
+    json.dumps({"type": "record", "name": {"a": 1}, "namespace": [1], "fields": []}),
+    json.dumps([1, 2]),
+    json.dumps("string"),
+    "null",
+])
+def test_odd_reference_texts_do_not_raise(text: str) -> None:
+    result = run(rec("Order", [field("x", "com.acme.X")], namespace="com.acme"), referenced={"k": text})
+    assert result.external_refs == {"com.acme.X"}
+
+
 def test_broken_reference_text_is_ignored() -> None:
     result = run(
         rec("Order", [field("id", "string")], namespace="com.acme"),

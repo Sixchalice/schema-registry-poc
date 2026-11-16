@@ -226,6 +226,17 @@ def test_json_row_without_ref_string(sr: FakeSchemaRegistry, run: Callable) -> N
     assert messages.REF_STRING_REQUIRED.format(s="com.acme.Address") in result.message.split("\n")
 
 
+def test_json_row_with_empty_ref_string(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.add("com.acme.Address", load("JSON", "address"), "JSON")
+    request = req("JSON", "customer", "com.acme.Customer", references=[ReferenceInput("com.acme.Address", "")])
+    result = run(request, sr)
+    assert result.validationType == "Error"
+    lines = result.message.split("\n")
+    assert messages.REF_STRING_REQUIRED.format(s="com.acme.Address") in lines
+    assert messages.REF_UNUSED.format(x="") not in lines
+    assert compat_calls(sr) == []
+
+
 def test_protobuf_wrong_import_path(sr: FakeSchemaRegistry, run: Callable) -> None:
     sr.add("com.acme.Address", load("PROTOBUF", "address"), "PROTOBUF")
     schema = load("PROTOBUF", "customer").replace('"com/acme/Address.proto"', '"acme/address.proto"')
@@ -276,6 +287,25 @@ def test_avro_transitive(sr: FakeSchemaRegistry, run: Callable) -> None:
     request = req("AVRO", None, "com.acme.Top", schema=schema, references=[ReferenceInput("com.acme.Mid")])
     result = run(request, sr)
     assert result.validationType == "Warning", result.message
+
+
+ADDRESS_WITH_COUNTRY = json.dumps({"type": "record", "name": "Address", "namespace": "com.acme", "fields": [
+    {"name": "street", "type": "string"},
+    {"name": "country", "type": {"type": "enum", "name": "Country", "symbols": ["NL", "US"]}}]})
+
+
+@pytest.mark.parametrize("fields", [
+    pytest.param([{"name": "address", "type": "com.acme.Address"}, {"name": "country", "type": "com.acme.Country"}],
+                 id="both"),
+    pytest.param([{"name": "country", "type": "com.acme.Country"}], id="nested-only"),
+])
+def test_avro_name_nested_in_a_reference(fields: list[dict[str, Any]], sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.add("com.acme.Address", ADDRESS_WITH_COUNTRY)
+    schema = json.dumps({"type": "record", "name": "Customer", "namespace": "com.acme", "fields": fields})
+    request = req("AVRO", None, "com.acme.Customer", schema=schema, references=[address_row("AVRO")])
+    assert run(request, sr) == ValidationResult(True, "Warning", PINNED_ADDRESS)
+    assert compat_calls(sr) == [("check_compatibility", "com.acme.Customer", schema, "AVRO",
+                                 (SrReference("com.acme.Address", "com.acme.Address", 1),))]
 
 
 def test_duplicate_rows_skip_stage_d(sr: FakeSchemaRegistry, run: Callable) -> None:
@@ -365,6 +395,28 @@ def test_sr_says_invalid_takes_the_first_invalid_message(sr: FakeSchemaRegistry,
                                               "Invalid schema y, details: second"))
     result = run(req("AVRO", "order", "com.acme.Order"), sr)
     assert result.message == "Schema Registry rejected the schema: first"
+
+
+@pytest.mark.parametrize("message", [
+    'Invalid schema {subject=com.acme.Order,schema={"type":"record"}} with refs [] of type AVRO',
+    'Invalid schema {subject=com.acme.Order,schema={"type":"record"}} with refs [] of type AVRO, details: ',
+])
+def test_sr_says_invalid_without_details(message: str, sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.verdict = CompatibilityVerdict(False, (message,))
+    result = run(req("AVRO", "order", "com.acme.Order"), sr)
+    assert result == ValidationResult(False, "Error", messages.SR_REJECTED_NO_REASON)
+    assert "{subject=" not in result.message
+
+
+@pytest.mark.parametrize("message", [
+    'Invalid schema {subject=com.acme.Order,schema={"type":"record"}}',
+    'Invalid schema {subject=com.acme.Order,schema={"type":"record"}}, details:',
+])
+def test_sr_rejected_exception_without_details(message: str, sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.fail_with = SchemaRegistryRejected(message)
+    result = run(req("AVRO", "order", "com.acme.Order"), sr)
+    assert result == ValidationResult(False, "Error", messages.SR_REJECTED_NO_REASON)
+    assert "{subject=" not in result.message
 
 
 def test_sr_rejected_exception(sr: FakeSchemaRegistry, run: Callable) -> None:

@@ -20,12 +20,13 @@ _QUOTES = ("'", '"')
 
 def invalid_schema_reason(message: str) -> str | None:
     """None unless `message` is an "Invalid schema " message; otherwise the text after the
-    last "details: ", or the whole message when that is absent or empty."""
+    last "details: ", or "" when that is absent or blank. The rest of the message embeds
+    the submitted schema, so it is never returned."""
     if not isinstance(message, str) or not message.startswith(_INVALID_PREFIX):
         return None
     _, found, reason = message.rpartition(_DETAILS)
     if not found or not reason.strip():
-        return message
+        return ""
     return reason
 
 

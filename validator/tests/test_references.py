@@ -73,11 +73,14 @@ def test_normalise_avro_agrees_with_stage_a(ref_string: str | None) -> None:
     assert rows[0].ref_string == _effective_ref_string("AVRO", given) == "a.B"
 
 
-def test_normalise_json_empty_ref_string_agrees_with_stage_a() -> None:
-    given = row("a.B", "")
+@pytest.mark.parametrize("ref_string", [None, ""])
+def test_normalise_json_missing_ref_string_agrees_with_stage_a(ref_string: str | None) -> None:
+    # Stage A does not compare the row (None); stage D gives D6 and leaves it out.
+    given = row("a.B", ref_string)
     rows, errors = normalise_rows("JSON", [given])
-    assert errors == []
-    assert rows[0].ref_string == _effective_ref_string("JSON", given) == ""
+    assert _effective_ref_string("JSON", given) is None
+    assert rows == []
+    assert errors == ["Reference to 'a.B' needs the text used in the schema (the $ref value)."]
 
 
 # resolve (D1, D2, D3, depth)

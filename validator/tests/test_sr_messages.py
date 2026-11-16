@@ -3,6 +3,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+import pytest
+
 from schema_validator.sr_messages import Incompatibility, invalid_schema_reason, parse_incompatibility
 
 # Real Schema Registry 7.9.0 output.
@@ -71,7 +73,8 @@ def test_invalid_reason_json() -> None:
 
 
 def test_invalid_reason_without_details() -> None:
-    assert invalid_schema_reason("Invalid schema something") == "Invalid schema something"
+    # No reason given: "" (the pipeline shows a fixed text, never the raw message).
+    assert invalid_schema_reason("Invalid schema {subject=x,schema={\"type\":\"record\"}}") == ""
 
 
 def test_not_an_invalid_schema_message() -> None:
@@ -89,9 +92,9 @@ def test_invalid_reason_prefix_without_trailing_space() -> None:
     assert invalid_schema_reason("Invalid schema") is None
 
 
-def test_invalid_reason_empty_details_falls_back_to_whole_message() -> None:
-    msg = "Invalid schema {subject=x}, details: "
-    assert invalid_schema_reason(msg) == msg
+@pytest.mark.parametrize("msg", ["Invalid schema {subject=x}, details: ", "Invalid schema {subject=x}, details:   "])
+def test_invalid_reason_empty_details_is_empty(msg: str) -> None:
+    assert invalid_schema_reason(msg) == ""
 
 
 def test_invalid_reason_non_string() -> None:

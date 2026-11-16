@@ -103,7 +103,7 @@ def _verdict_errors(verdict: CompatibilityVerdict, compatibility: str) -> list[s
     for message in verdict.messages:
         reason = invalid_schema_reason(message)
         if reason is not None:
-            return [messages.SR_REJECTED.format(reason=reason)]
+            return [_rejected(reason)]
     incompatibility = parse_incompatibility(verdict.messages)
     sr_level = incompatibility.level or compatibility
     descriptions = "; ".join(incompatibility.descriptions)
@@ -125,7 +125,15 @@ def _sr_failure(err: Exception) -> str:
     if isinstance(err, SchemaRegistryUnauthorized):
         return messages.SR_UNAUTHORIZED
     text = str(err)
-    return messages.SR_REJECTED.format(reason=invalid_schema_reason(text) or text)
+    reason = invalid_schema_reason(text)
+    return _rejected(text if reason is None else reason)
+
+
+def _rejected(reason: str) -> str:
+    """E1 for a reason; "" (an "Invalid schema" message without one) gets the fixed text."""
+    if not reason:
+        return messages.SR_REJECTED_NO_REASON
+    return messages.SR_REJECTED.format(reason=reason)
 
 
 def _describe(err: Exception) -> str:

@@ -63,13 +63,14 @@ def _effective_ref_string(schema_type: str, ref: ReferenceInput) -> str | None:
 
     AVRO defaults a missing ref_string to schema_name. PROTOBUF derives it from
     schema_name, so the schema_name comparison already covers it. JSON (and an
-    unsupported type) uses the given value.
+    unsupported type) uses the given value; a missing one (None or "") is not
+    compared, and stage D reports D6 for it.
     """
     if schema_type == "PROTOBUF":
         return None
     if schema_type == "AVRO":
         return ref.ref_string or ref.schema_name
-    return ref.ref_string
+    return ref.ref_string or None
 
 
 def _reference_errors(
