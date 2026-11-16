@@ -137,6 +137,30 @@ def test_missing_import_left_to_stage_d() -> None:
     assert result == FormatAnalysis(None, {"com/acme/Address.proto"}, [])
 
 
+B_IMPORTS_C = 'syntax = "proto3";\npackage a;\nimport "a/C.proto";\nmessage B { C c = 1; }'
+
+
+def test_missing_transitive_import_is_invalid() -> None:
+    result = run(P + 'import "a/B.proto";\nmessage Order { a.B b = 1; }', {"a/B.proto": B_IMPORTS_C})
+    assert result.expected_name is None
+    assert result.external_refs == {"a/B.proto"}
+    assert len(result.errors) == 1
+    assert result.errors[0].startswith("Invalid Protobuf schema: ")
+    assert "a/C.proto" in result.errors[0]
+
+
+def test_missing_own_and_transitive_imports_is_invalid() -> None:
+    result = run(
+        P + 'import "x/Y.proto";\nimport "a/B.proto";\nmessage Order { a.B b = 1; x.Y y = 2; }',
+        {"a/B.proto": B_IMPORTS_C},
+    )
+    assert result.expected_name is None
+    assert result.external_refs == {"x/Y.proto", "a/B.proto"}
+    assert len(result.errors) == 1
+    assert result.errors[0].startswith("Invalid Protobuf schema: ")
+    assert "a/C.proto" in result.errors[0]
+
+
 def test_commented_import_ignored() -> None:
     result = run(
         P + '// import "old/x.proto";\n'

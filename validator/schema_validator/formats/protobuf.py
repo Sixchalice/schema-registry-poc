@@ -128,11 +128,13 @@ def _is_safe_path(path: object) -> bool:
 def _failure(
     schema_text: str, referenced: dict[str, str], stderr: str, tmp: str, config: ValidatorConfig
 ) -> FormatAnalysis:
-    """Result for a non-zero protoc exit. A missing import is left to stage D4."""
-    external_refs = _imports(schema_text) - config.builtin_proto_imports
+    """Result for a non-zero protoc exit. A missing import of the schema itself is left to stage D4."""
+    imports = _imports(schema_text)
+    external_refs = imports - config.builtin_proto_imports
     lines = stderr.splitlines()
     missing = {m.group(1) for line in lines if (m := _NOT_FOUND.fullmatch(line))}
-    if missing and not missing & referenced.keys():
+    # Stage D4 only names the schema's own imports, so a file missing further down is reported here.
+    if missing and missing <= imports and not missing & referenced.keys():
         return FormatAnalysis(None, external_refs, [])
     return FormatAnalysis(None, external_refs, [messages.PROTO_INVALID.format(err=_clean_stderr(lines, tmp))])
 
