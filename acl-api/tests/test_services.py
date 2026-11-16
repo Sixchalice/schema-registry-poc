@@ -1,12 +1,9 @@
 import asyncio
 
-import pytest
-
 from acl_api.domain.models import AclChange
-from acl_api.errors import CliFailed, WriteQueueFull
+from acl_api.errors import CliFailed
 from acl_api.services.acl_service import AclService
 from acl_api.services.coalescer import Coalescer
-from acl_api.services.write_queue import WriteQueue
 from tests.conftest import FakeBackend, run
 
 
@@ -64,38 +61,6 @@ def test_errors_reach_every_waiting_caller():
         return await asyncio.gather(*(coalescer.get() for _ in range(5)), return_exceptions=True)
 
     assert all(isinstance(result, CliFailed) for result in run(scenario()))
-
-
-def test_writes_never_overlap():
-    active, overlaps = 0, 0
-
-    async def write():
-        nonlocal active, overlaps
-        active += 1
-        overlaps += active > 1
-        await asyncio.sleep(0.01)
-        active -= 1
-
-    async def scenario():
-        queue = WriteQueue(max_pending=10)
-        await asyncio.gather(*(queue.run(write) for _ in range(10)))
-
-    run(scenario())
-
-    assert overlaps == 0
-
-
-def test_full_queue_rejects_new_writes():
-    async def scenario():
-        queue = WriteQueue(max_pending=1)
-        slow = asyncio.create_task(queue.run(lambda: asyncio.sleep(0.1)))
-        await asyncio.sleep(0.01)
-        with pytest.raises(WriteQueueFull):
-            await queue.run(lambda: asyncio.sleep(0))
-        await slow
-        await queue.run(lambda: asyncio.sleep(0))  # room again
-
-    run(scenario())
 
 
 def test_add_returns_touched_records_read_after_the_write():

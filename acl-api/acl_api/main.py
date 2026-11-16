@@ -19,7 +19,7 @@ def create_app(settings: Settings | None = None, backend: AclBackend | None = No
 
     app = FastAPI(title="acl-api", version="2.0", description="REST API for sr-acl-cli")
     app.state.settings = settings
-    app.state.acl_service = AclService(backend, settings.max_pending_writes)
+    app.state.acl_service = AclService(backend, settings.max_pending_writes, settings.write_batch_window)
     install_error_handlers(app)
     app.include_router(router)
     return app

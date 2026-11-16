@@ -18,7 +18,8 @@ services:
       ACL_API_PASSWORD: ${ACL_API_PASSWORD:?set ACL_API_PASSWORD (see .env.example)}
       ACL_API_CLI_CONFIG: /etc/acl-api/sr-acl-cli.properties
       ACL_API_CLI_TIMEOUT: ${ACL_API_CLI_TIMEOUT:-60}
-      ACL_API_MAX_PENDING_WRITES: ${ACL_API_MAX_PENDING_WRITES:-20}
+      ACL_API_MAX_PENDING_WRITES: ${ACL_API_MAX_PENDING_WRITES:-200}
+      ACL_API_WRITE_BATCH_WINDOW: ${ACL_API_WRITE_BATCH_WINDOW:-0.05}
       ACL_API_LOG_LEVEL: ${ACL_API_LOG_LEVEL:-INFO}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8087/health', timeout=3)"]

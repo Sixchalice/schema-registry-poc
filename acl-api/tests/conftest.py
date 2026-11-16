@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from acl_api.domain.models import AclChange, AclSnapshot
 from acl_api.domain.operations import resolve_operations
+from acl_api.errors import CliRejectedArguments
 from acl_api.main import create_app
 from acl_api.settings import Settings
 
@@ -15,11 +17,16 @@ USER, PASSWORD = "admin", "secret"
 class FakeBackend:
     """In-memory AclBackend with the CLI's merge rules for the cases the tests use."""
 
-    def __init__(self):
+    def __init__(self, write_delay: float = 0.0):
         self.subject_operations: dict[str, dict[str, list[str]]] = {}
         self.global_operations: dict[str, list[str]] = {}
         self.list_calls = 0
+        self.writes: list[tuple[str, AclChange]] = []  # every add/remove call, in order
+        self.write_delay = write_delay
+        self.active_writes = 0
+        self.max_active_writes = 0
         self.error: Exception | None = None  # raised by the next call, if set
+        self.reject: Callable[[AclChange], bool] = lambda change: False  # -> CliRejectedArguments
 
     async def list_acls(self) -> AclSnapshot:
         self.list_calls += 1
@@ -27,10 +34,22 @@ class FakeBackend:
         return AclSnapshot(subject_operations=self.subject_operations, global_operations=self.global_operations)
 
     async def add(self, change: AclChange) -> None:
-        self._apply(change, add=True)
+        await self._write("add", change)
 
     async def remove(self, change: AclChange) -> None:
-        self._apply(change, add=False)
+        await self._write("remove", change)
+
+    async def _write(self, action: str, change: AclChange) -> None:
+        self.writes.append((action, change))
+        self.active_writes += 1
+        self.max_active_writes = max(self.max_active_writes, self.active_writes)
+        try:
+            await asyncio.sleep(self.write_delay)
+            if self.reject(change):
+                raise CliRejectedArguments(f"rejected: {change.principals}")
+            self._apply(change, add=action == "add")
+        finally:
+            self.active_writes -= 1
 
     def _apply(self, change: AclChange, add: bool) -> None:
         self._raise_if_set()

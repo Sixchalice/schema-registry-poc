@@ -46,7 +46,8 @@ These are environment variables, read and validated at startup by `acl_api/setti
 | `ACL_API_CLI_PATH` | `/opt/sr-acl-cli/bin/sr-acl-cli` | must exist and be executable |
 | `ACL_API_CLI_CONFIG` | `/etc/acl-api/sr-acl-cli.properties` | must exist |
 | `ACL_API_CLI_TIMEOUT` | `60` | seconds before a CLI run is killed (→ 504) |
-| `ACL_API_MAX_PENDING_WRITES` | `20` | running + waiting writes; more get 503 |
+| `ACL_API_MAX_PENDING_WRITES` | `200` | unfinished writes (running + queued); more get 503 |
+| `ACL_API_WRITE_BATCH_WINDOW` | `0.05` | seconds to collect concurrent writes before each CLI call, so a burst merges |
 | `ACL_API_LOG_LEVEL` | `INFO` | |
 
 ## Code layout
@@ -59,13 +60,14 @@ acl_api/
   domain/
     operations.py       Operation enum, resolve_operations() (case, alias, '*')
     models.py           AclChange (request), AclSnapshot (ACL state), AclListing/SubjectAcl/GlobalAcl (responses)
+    batching.py         merge_changes(): which changes can share one CLI call (pure rules)
   cli/
     sr_acl_cli.py       SrAclCli: runs the CLI, builds its arguments, classifies its failures
     list_output.py      parses `--list` output (Java Map.toString) into an AclSnapshot
   services/
     acl_service.py      AclService (use cases) and AclBackend, the protocol SrAclCli implements
     coalescer.py        Coalescer: one shared read at a time, never stale
-    write_queue.py      WriteQueue: one write at a time, bounded
+    write_batcher.py    WriteBatcher: the single writer; queues writes, merges them, one CLI call at a time
   api/
     routes.py           endpoints
     dependencies.py     auth, service lookup, body parsing
@@ -129,6 +131,17 @@ Measured on one container capped at 2 CPUs / 2 GB. The full numbers, method and 
 [STRESS_RESULTS.md](STRESS_RESULTS.md).
 - **Reads:** concurrent reads are coalesced into one CLI run. Latency is ~2.3 s at any load, tested
   up to 500 concurrent clients (210 req/s, 0 errors).
-- **Writes:** serialized, ~0.7 writes/s. Past 20 queued writes, the service returns `503` + `Retry-After`.
+- **Writes:** queued and run one CLI call at a time (no lost updates). Each call takes the whole
+  queue and merges it into as few calls as possible:
+  - **Same subject, topic and operations:** requests from different principals become one call
+    with all of them, e.g. 20 principals asking for `SUBJECT_READ` on one subject.
+  - **Same principal and operations:** requests for different subjects become one call.
+  - **Never merged:** requests using `*`, and an add next to a remove.
+  - **Rejected merged call:** its requests are retried one by one, so only the invalid one gets the 400.
+- **Bursts:** 20, 50 or 100 principals on one subject at once all finish in ~3.7 s (before: 32 s
+  for 20). Sustained mergeable writes reach ~25 writes/s at 100 concurrent writers.
+- **Writes that share nothing** (different principal *and* subject or operations) still need a CLI
+  call each: ~0.7/s.
+- **Queue limit:** past 200 unfinished writes, the service returns `503` + `Retry-After`.
 - **Footprint:** at most 2 JVMs at once, peak ~300 MiB and 2 CPUs.
 - **Replicas:** run one, or send all writes to one (writes aren't serialized across replicas).

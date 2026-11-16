@@ -3,9 +3,16 @@
 **Summary:**
 - **Reads:** one container serves any number of concurrent reads, at a flat **~2.3 s** latency.
   Tested up to 500 concurrent clients (210 req/s, 0 errors).
-- **Writes:** run at **~0.7/s** whatever the concurrency, because each one is a JVM run of the real
-  CLI and they are serialized to avoid lost updates. Past 20 queued writes, the service returns `503`
-  at once instead of letting clients time out.
+- **Writes:** run one CLI call at a time, to avoid lost updates. Since write batching (see
+  [Write batching](#write-batching-bursts)), queued requests that can share a call are merged:
+  - **Bursts:** 20, 50 or 100 principals granted READ on the same subject at once all finish in
+    **~3.7 s**, down from 32 s for 20.
+  - **Sustained mergeable writes:** reach **~25 writes/s**.
+  - **Writes that share nothing:** still ~0.7/s.
+  - **Queue limit:** past 200 unfinished writes, the service returns `503` at once instead of letting
+    clients time out.
+  - **Earlier sections:** the numbers below describe the design *before* batching, when the queue
+    limit was 20.
 - **Footprint:** under every load, memory stayed under ~300 MiB and CPU under 2 cores. There were no
   OOMs, restarts, lost updates or leftover ACLs.
 
@@ -98,14 +105,73 @@ left **0**.
 
 Writes barely slow reads down (p95 2.3 s → 2.7 s), because the two use separate JVM slots.
 
+## Write batching (bursts)
+
+**The problem:** a burst like "give 20 principals READ on the same subject at once" took 20
+serialized CLI calls, about 32 s. Past the old 20-write queue limit, requests got `503`.
+
+**How it works now** (`services/write_batcher.py`, `domain/batching.py`):
+- **One writer:** a single writer still runs one CLI call at a time.
+- **Rounds:** each round waits `write_batch_window` (50 ms) so a burst arrives together, then takes
+  the whole queue and merges it. The CLI applies every combination of the principals, subjects and
+  operations it is given, so:
+  - requests with the same subjects, topics and operations become one call with all their principals;
+  - requests with the same principals and operations become one call with all their subjects and topics.
+- **Never merged:** requests using `*`, because the CLI reduces a list containing `*` to just `*`.
+  Adds and removes are merged only with consecutive requests of the same action, so their order is kept.
+- **Rejections:** if a merged call is rejected, its requests are retried one by one, so only the
+  invalid request gets the `400`.
+- **Queue limit:** raised from 20 to 200 unfinished writes.
+- **Verified by tests:** a randomized test checks that merging never changes the set of records
+  written, and others check ordering and error isolation.
+
+### Bursts (`stress.py burst`): N different principals ask for SUBJECT_READ on one subject at the same instant, then all remove it again
+
+| N | Before: all answered in | After: all answered in | After: CLI calls | Codes |
+|---|---|---|---|---|
+| 20 | 31.8 s | **3.7 s** | 1 | 20 × 200 |
+| 50 | 78.4 s | **3.7 s** | 1 | 50 × 200 |
+| 100 | — | **3.8 s** | 1 | 100 × 200 |
+| 200 | — | **4.8 s** | 2 | 200 × 200 |
+| 500 | — | **10.1 s** | ~5 | 500 × 200. 300 got a 503 first, then succeeded on their retry |
+
+The DELETE bursts took the same time. No lost updates (each POST's read-back showed its ACL), and
+0 ACLs were left over.
+
+About 3.7 s is the floor for any write: a 50 ms window, one CLI write (~1.5 s), then the coalesced
+read-back, which may have to wait out a read already in progress (up to ~2.2 s).
+
+### Sustained writes (`stress.py write`, 20 s per level)
+
+Each client loops POST then DELETE on a subject of its own, all under one principal, so concurrent
+requests merge.
+
+| Concurrent writers | Before: writes/s | After: writes/s | After: p50 / p95 | Errors |
+|---|---|---|---|---|
+| 1 | 0.44 | 0.40 | 2.5 s / 2.5 s | 0 |
+| 5 | 0.66 | 1.28 | 3.8 s / 4.4 s | 0 |
+| 20 | 0.66 | 5.1 | 3.8 s / 4.5 s | 0 |
+| 40 | 0.72 (+ 503s) | 10.2 | 3.8 s / 4.5 s | 0 |
+| 100 | — | **24.9** | 3.9 s / 4.5 s | 0 |
+
+Mixed load (50 readers + 10 writers): reads p95 2.4 s, writes p95 3.6 s, 0 errors. Reads alone at 100
+clients were unchanged at 41 req/s. Peak usage was 190 % CPU and ~280 MiB.
+
+**Not merged, and still ~0.7/s:** requests that share nothing. That means a different principal
+*and* a different subject or operation set, e.g. 20 unrelated grants each with its own principal and
+subject. They still need one CLI call each. Bursts of that shape weren't re-measured, because by
+construction they behave as before.
+
 ## How many requests can one container handle at once?
 
 | | Answer |
 |---|---|
 | Concurrent reads | No practical limit from the design. 500 tested, 0 errors, ~2.4 s each. |
 | Read throughput | ~0.43 req/s per waiting client. 210 req/s at 500 clients. |
-| Concurrent writes | 1 runs at a time. Up to 20 queued (`ACL_API_MAX_PENDING_WRITES`), the rest get 503. |
-| Write throughput | ~0.7/s (~40/min, ~2,500/hour) |
+| Write burst (same subject or same principal) | 100 at once in ~3.8 s, 500 at once in ~10 s |
+| Sustained writes that merge | ~25/s at 100 concurrent writers |
+| Sustained writes that share nothing | ~0.7/s (one CLI call each) |
+| Queued writes | Up to 200 (`ACL_API_MAX_PENDING_WRITES`), the rest get 503 + `Retry-After` |
 | Resources to give it | 2 CPUs and 512 MiB is comfortable (peak was 2 cores, ~300 MiB) |
 
 **Scaling out** adds read capacity, but not write capacity. Writes from different replicas aren't
@@ -114,9 +180,9 @@ moment can lose an update, the same as two concurrent CLI runs. Run **one replic
 to a single one.
 
 **Ways to get more write throughput, if ever needed (not done):**
-- **Batch queued writes into one CLI call.** The CLI accepts several `-p/-s/-o`, but it applies their
-  cross product, so only requests with the same shape can be merged.
-- **Return 202 without the read-back.** That saves ~1 s of latency, but not throughput.
+- **Parallel writes for different (principal, subject) pairs inside one pod.** Unrelated writes
+  don't conflict, so with more CPUs they could run side by side.
+- **Return 202 without the read-back.** That saves ~1–2 s of latency, but not throughput.
 
 ## Re-check after the refactor into the `acl_api/` package
 
@@ -140,6 +206,7 @@ Same behavior. The differences are within run-to-run noise.
 python3 stress/stress.py read  --levels 1,5,10,25,50,100,250,500 --duration 20
 python3 stress/stress.py write --levels 1,5,20,40 --duration 30
 python3 stress/stress.py mixed --levels 12,60 --duration 30
+python3 stress/stress.py burst --levels 20,50,100,200,500 --timeout 300
 # --url http://host:8087 --auth user:password for another deployment
 ```
 

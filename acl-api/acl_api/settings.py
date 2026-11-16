@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 
-from pydantic import Field, FilePath, PositiveFloat, PositiveInt, SecretStr, field_validator
+from pydantic import Field, FilePath, NonNegativeFloat, PositiveFloat, PositiveInt, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,7 +20,9 @@ class Settings(BaseSettings):
         description="Schema Registry properties for the CLI (Kafka connection, ACL topic)",
     )
     cli_timeout: PositiveFloat = Field(60.0, description="Seconds before a CLI run is killed")
-    max_pending_writes: PositiveInt = Field(20, description="Writes allowed to wait; more get 503")
+    max_pending_writes: PositiveInt = Field(200, description="Unfinished writes allowed; more get 503")
+    write_batch_window: NonNegativeFloat = Field(
+        0.05, description="Seconds to collect concurrent writes before a CLI call, so a burst is merged")
     log_level: str = Field("INFO", description="Python log level")
 
     @field_validator("password")

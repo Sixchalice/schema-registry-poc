@@ -4,6 +4,7 @@
     python3 stress.py read  --levels 1,5,10,25,50,100 --duration 20
     python3 stress.py write --levels 1,5,20,40 --duration 30
     python3 stress.py mixed --levels 12,60 --duration 30     # 1 writer per 6 clients
+    python3 stress.py burst --levels 20,100                  # N principals -> same subject at once
 
 At each concurrency level, N client threads send requests back to back for --duration seconds.
 Writers each POST then DELETE an ACL on a subject of their own (principal stress-<run>):
@@ -89,9 +90,46 @@ def run_level(args, n, mode, run_id):
               flush=True)
 
 
+def run_burst(args, n, run_id):
+    """N different principals ask for SUBJECT_READ on the same subject at the same instant, then all
+    remove it again at the same instant. Reports the time until the whole burst was answered."""
+    subject = f"burst-{run_id}-{n}"
+    for method in ("POST", "DELETE"):
+        barrier = threading.Barrier(n)
+        results = [None] * n
+
+        def worker(i):
+            call = client(args.url, args.auth, args.timeout)
+            body = {"principals": [f"burst-{run_id}-{n}-{i}"], "subjects": [subject], "operations": ["SUBJECT_READ"]}
+            barrier.wait()
+            while True:  # a 503 is retried after its Retry-After, like a well-behaved client
+                status, dt, data = call(method, "/acls", body)
+                if status != 503:
+                    break
+                time.sleep(1)
+            if status == 200 and method == "POST" and "SUBJECT_READ" not in json.loads(data)["subjectAcls"][0]["operations"]:
+                status = "lost"
+            results[i] = (status, time.perf_counter())
+
+        start = time.perf_counter()
+        threads = [threading.Thread(target=worker, args=(i,), daemon=True) for i in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        finish = sorted(done - start for _, done in results)
+        codes = Counter(status for status, _ in results)
+        print(f"burst n={n:<4} {method:6} all answered in {finish[-1]:6.2f}s  "
+              f"(p50 {pct(finish, 50):5.2f}s)  codes={dict(codes)}", flush=True)
+
+    status, _, data = client(args.url, args.auth, args.timeout)("GET", f"/acls?subject={subject}")
+    left = len(json.loads(data)["subjectAcls"]) if status == 200 else f"? (status {status})"
+    print(f"burst n={n:<4} leftover ACLs on {subject}: {left}")
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["read", "write", "mixed"])
+    ap.add_argument("mode", choices=["read", "write", "mixed", "burst"])
     ap.add_argument("--url", default="http://localhost:8087")
     ap.add_argument("--auth", default="acl-admin:acl-admin-secret")
     ap.add_argument("--levels", default="1,5,10,25,50")
@@ -101,9 +139,12 @@ def main():
     run_id = str(int(time.time()))
 
     for n in [int(x) for x in args.levels.split(",")]:
-        run_level(args, n, args.mode, run_id)
+        if args.mode == "burst":
+            run_burst(args, n, run_id)
+        else:
+            run_level(args, n, args.mode, run_id)
 
-    if args.mode != "read":
+    if args.mode in ("write", "mixed"):
         status, _, data = client(args.url, args.auth, args.timeout)("GET", f"/acls?principal=stress-{run_id}")
         left = len(json.loads(data)["subjectAcls"]) if status == 200 else f"? (status {status})"
         print(f"leftover ACLs for stress-{run_id}: {left}")
