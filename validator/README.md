@@ -86,7 +86,7 @@ The `HttpSchemaRegistryClient` takes its URL, credentials and timeout from the c
 | Field | Meaning |
 |---|---|
 | `schema_name` | The Schema deployment selected as the reference (its Schema Registry subject) |
-| `ref_string` | How the reference is written in the schema text. **JSON: required**, the `$ref` value without its `#fragment`. **AVRO: optional**, defaults to `schema_name` (the referenced record's full name). **PROTOBUF: ignored**, the import path is always derived from `schema_name` (see below) |
+| `ref_string` | How the reference is written in the schema text. **JSON: required**, the `$ref` value without its `#fragment` (an empty string counts as missing). **AVRO: optional**, defaults to `schema_name` (the referenced record's full name) when missing or empty. A named type defined inside the referenced record (for example a nested enum) is covered by the same row. **PROTOBUF: ignored**, the import path is always derived from `schema_name` (see below) |
 
 Reference versions are not part of the request. The validator uses the latest version of each referenced subject and names it in a warning; the registration step looks the versions up again itself.
 
@@ -94,25 +94,25 @@ The name each format derives (Confluent's RecordNameStrategy): Avro uses the rec
 
 ## The checks
 
-All errors are collected; a stage is skipped only when it depends on one that failed. Stage A1 or A2 failing stops at once; A5 failing skips stage D. A parse error in stage B skips C3, D4, D5 and E. Stage E runs only when A to D found no error. Placeholders in braces are filled in.
+All errors are collected; a stage is skipped only when it depends on one that failed. Stage A1 or A2 failing stops at once; A5 failing skips stage D. If the text cannot be analysed (Avro and JSON: not JSON, or the wrong top level; Protobuf: protoc fails), stage B reports the error and C3, D4, D5 and E are skipped. Exception: when protoc fails only because files the schema itself imports are missing, stage B reports nothing and D4/D5 run on the import statements found in the text. A local validity error (`Invalid Avro schema`, `Invalid JSON schema`) or a naming error does not skip C3, D4 or D5; it skips E. Stage E runs only when A to D found no error. Placeholders in braces are filled in.
 
 | Code | Checks | Message |
 |---|---|---|
 | A1 | `schema_type` is AVRO, JSON or PROTOBUF | `Unsupported schema format '{x}'. Use AVRO, JSON or PROTOBUF.` |
-| A2 | The schema is not empty and within `max_schema_bytes` | `Schema is empty.` / `Schema is too large ({n} bytes, limit {max}).` |
+| A2 | The schema is not empty or whitespace only, and its UTF-8 size is within `max_schema_bytes` | `Schema is empty.` / `Schema is too large ({n} bytes, limit {max}).` |
 | A3 | `compatibility` is a known level | `Unknown compatibility level '{x}'.` |
 | A4 | `name` is not empty, has no whitespace and does not start with `:` | `Schema name is invalid.` |
 | A5 | No two rows share a `schema_name` or a `ref_string`; no row references `name` | `Reference '{x}' is listed twice.` / `A schema cannot reference itself.` |
 | B, all | Avro and JSON text parses as JSON | `Schema is not valid JSON: {err}` |
 | B, Avro | The top level is one record | `The top level of an Avro schema must be a single record.` |
-| B, Avro | The full name has a namespace | `Avro schema needs a namespace, for example "namespace": "com.team.domain".` |
+| B, Avro | The full name has a namespace, and no dot-separated part of it is empty (`.Order`, `com..Order`) | `Avro schema needs a namespace, for example "namespace": "com.team.domain".` |
 | B, Avro | fastavro parses the schema, with its references | `Invalid Avro schema: {err}` |
 | B, JSON | The top level is an object with `"type": "object"` | `The top level of a JSON schema must have "type": "object".` |
 | B, JSON | `title` is present | `JSON schema needs a "title"; it becomes the schema name.` |
 | B, JSON | `title` matches `^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$` | `The "title" must be a dotted name made of letters, digits and underscores, for example "com.team.domain.Order".` |
 | B, JSON | `$schema`, if present, is in `allowed_json_drafts` | `Unsupported JSON Schema draft '{x}'.` |
 | B, JSON | The schema passes its draft's meta-schema (draft-07 when `$schema` is absent) | `Invalid JSON schema: {err}` |
-| B, Protobuf | Every reference's import path (derived, or read from Schema Registry) is relative and has no `..` or backslash | `Invalid import path '{x}'.` |
+| B, Protobuf | Every reference's import path (derived, or read from Schema Registry) is not empty, is relative, has no `..` path segment, contains no backslash or NUL character, and can be written (it does not collide with `__main__.proto` or another reference's directory) | `Invalid import path '{x}'.` |
 | B, Protobuf | protoc compiles the schema with its references | `Invalid Protobuf schema: {err}` / `Invalid Protobuf schema: the Protobuf compiler did not finish in 10 seconds.` |
 | B, Protobuf | `package` is set | `Protobuf schema needs a package, for example "package com.team.domain;".` |
 | B, Protobuf | Exactly one top-level message | `A Protobuf schema must define exactly one top-level message (found {n}). Nest the others inside it or move them to their own Schema.` |
@@ -125,13 +125,13 @@ All errors are collected; a stage is skipped only when it depends on one that fa
 | D3 | Following references from each referenced subject never reaches `name`, within 20 levels | `Reference cycle: '{s}' already depends on '{name}'.` / `References of '{s}' are nested more than 20 levels deep.` |
 | D4 | Every external name the schema uses has a row | `Your schema uses '{x}' but no reference is selected for it.` |
 | D5 | Every row is used in the schema | `'{x}' is selected as a reference but is not used in the schema.` (Protobuf: `'{s}' is selected as a reference but the schema does not import it. Write the import as: import "{path}";`) |
-| D6 | JSON: every row has a `ref_string` | `Reference to '{s}' needs the text used in the schema (the $ref value).` |
-| E1 | Schema Registry accepts the schema as valid | `Schema Registry rejected the schema: {reason}` |
+| D6 | JSON: every row has a non-empty `ref_string` | `Reference to '{s}' needs the text used in the schema (the $ref value).` |
+| E1 | Schema Registry accepts the schema as valid | `Schema Registry rejected the schema: {reason}` / `Schema Registry rejected the schema without giving a reason.` (an `Invalid schema` message with no reason) |
 | E2 | Schema Registry finds it compatible with the registered versions | `Not {sr_level}-compatible with version {n}: {descriptions}` (when the registry names no version: `Not {sr_level}-compatible with the existing versions: {descriptions}`) |
-| E3 | Schema Registry is reachable (timeouts, connection errors, 5xx, unreadable responses, a 404 that is not Schema Registry's "subject or version not found") | `Could not reach Schema Registry to validate. Try again.` |
+| E3 | Schema Registry is reachable (timeouts, connection errors, 5xx, unreadable responses, a 404 that is not Schema Registry's "subject or version not found", a 4xx without an error_code) | `Could not reach Schema Registry to validate. Try again.` |
 | E4 | Schema Registry accepts the validator's credentials (no 401 or 403) | `The validator is not allowed to query Schema Registry. Contact the platform team.` |
 
-E1 shows only the reason Schema Registry gives (the text after `details: `), and E2 only the extracted descriptions, because the registry's raw messages contain the whole schema text. E3 and E4 also apply to the reference lookups of stage D.
+E1 shows only the reason Schema Registry gives (the text after `details: `), and E2 only the extracted descriptions, because the registry's raw messages contain the whole schema text. When an `Invalid schema` message has no reason, E1 shows the fixed text above, never the raw message. E3 and E4 also apply to the reference lookups of stage D.
 
 Warnings, returned as `Warning` when there is no error:
 

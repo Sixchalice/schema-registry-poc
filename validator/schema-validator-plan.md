@@ -114,18 +114,18 @@ Collect all errors; do not stop at the first one. A stage is skipped only when i
 | Code | Check | Message template |
 |---|---|---|
 | A1 | `schema_type` is one of AVRO, JSON, PROTOBUF | `Unsupported schema format '{x}'. Use AVRO, JSON or PROTOBUF.` |
-| A2 | `schema` is non-empty and within `max_schema_bytes` | `Schema is empty.` / `Schema is too large ({n} bytes, limit {max}).` |
+| A2 | `schema` is not empty or whitespace only, and its UTF-8 size is within `max_schema_bytes` | `Schema is empty.` / `Schema is too large ({n} bytes, limit {max}).` |
 | A3 | `compatibility` is one of BACKWARD, BACKWARD_TRANSITIVE, FORWARD, FORWARD_TRANSITIVE, FULL, FULL_TRANSITIVE, NONE | `Unknown compatibility level '{x}'.` |
 | A4 | `name` is non-empty, has no whitespace, does not start with `:` | `Schema name is invalid.` |
 | A5 | No two reference rows share a `ref_string` or a `schema_name`; no row references `name` itself | `Reference '{x}' is listed twice.` / `A schema cannot reference itself.` |
 
-If A1 or A2 fails, stop and return.
+If A1 or A2 fails, stop and return. If A5 fails, stage D is skipped (no reference lookups, no D4/D5); stages B and C still run.
 
 ### Stage B: parse and structural rules (per format, section 5)
 
 Produces: `expected_name` and `external_refs` (the set of external names the schema text uses).
 
-If parsing fails, report the parse error and skip stages C3, D4, D5 and E.
+If the text cannot be analysed (Avro and JSON: not JSON, or the wrong top level; Protobuf: protoc fails), report the error and skip C3, D4, D5 and E. Exception: when protoc fails only because files the schema itself imports are missing, stage B reports nothing and D4/D5 run on the import statements found in the text (section 5.3). A local validity error (`Invalid Avro schema`, `Invalid JSON schema`) or a naming error does not skip C3, D4 or D5; it skips E.
 
 ### Stage C: name rules
 
@@ -143,10 +143,12 @@ On edit, if the user changed the namespace or record name inside the schema, C3 
 |---|---|---|
 | D1 | Each referenced `schema_name` exists in SR | `Referenced schema '{s}' is not registered in Schema Registry yet.` |
 | D2 | Referenced schema has the same format | `'{s}' is a {their_type} schema; a {my_type} schema can only reference {my_type} schemas.` |
-| D3 | No cycle: following references transitively from each referenced schema never reaches `name` | `Reference cycle: '{s}' already depends on '{name}'.` |
+| D3 | No cycle: following references transitively from each referenced schema never reaches `name` | `Reference cycle: '{s}' already depends on '{name}'.` / `References of '{s}' are nested more than 20 levels deep.` |
 | D4 | Every external name used in the schema text has a reference row | `Your schema uses '{x}' but no reference is selected for it.` |
 | D5 | Every reference row is actually used in the schema text | `'{x}' is selected as a reference but is not used in the schema.` PROTOBUF: `'{s}' is selected as a reference but the schema does not import it. Write the import as: import "{path}";` |
-| D6 | JSON: `ref_string` is present on every row | `Reference to '{s}' needs the text used in the schema (the $ref value).` |
+| D6 | JSON: `ref_string` is present and not empty on every row | `Reference to '{s}' needs the text used in the schema (the $ref value).` |
+
+A nested reference that is not registered gives D1 with the nested subject.
 
 For AVRO, a missing `ref_string` defaults to `schema_name`. For PROTOBUF, `ref_string` is always derived: `schema_name.replace(".", "/") + ".proto"`.
 
@@ -162,12 +164,12 @@ Run only if stages A to D produced no errors.
 
 | Code | Check | Message template |
 |---|---|---|
-| E1 | SR accepts the schema as valid | `Schema Registry rejected the schema: {reason}` |
+| E1 | SR accepts the schema as valid | `Schema Registry rejected the schema: {reason}` / `Schema Registry rejected the schema without giving a reason.` |
 | E2 | SR reports it compatible with existing versions | `Not {sr_level}-compatible with version {n}: {descriptions}` |
 | E3 | SR reachable | `Could not reach Schema Registry to validate. Try again.` (Error; fail closed) |
 | E4 | SR accepts the validator's credentials (no 401/403) | `The validator is not allowed to query Schema Registry. Contact the platform team.` (Error; fail closed) |
 
-E1 and E2 arrive in the same response shape and are told apart by the message text (section 7). SR's raw messages are not shown as they are: they embed the whole schema text.
+E1 and E2 arrive in the same response shape and are told apart by the message text (section 7). SR's raw messages are not shown as they are: they embed the whole schema text. An `Invalid schema` message without a `details:` part, or with an empty one, is shown as `Schema Registry rejected the schema without giving a reason.`
 
 Extra warning on edit: if the deployment's `compatibility` differs from the level SR currently has for the subject, add `Compatibility was checked using the current level '{sr_level}', not the new level '{compatibility}'.`
 
@@ -186,13 +188,14 @@ How Confluent derives the RecordNameStrategy subject (confirmed in Confluent doc
 3. Full name:
    - if `name` contains a dot, `name` is the full name and `namespace` is ignored;
    - otherwise full name = `namespace + "." + name`.
-4. Namespace required: the full name must contain at least one dot. `Avro schema needs a namespace, for example "namespace": "com.team.domain".`
+4. Namespace required: the full name must contain at least one dot. `Avro schema needs a namespace, for example "namespace": "com.team.domain".` Every dot-separated part of the full name must be non-empty (`.Order`, `com..Order` and namespace `com.acme.` get the same message).
 5. `expected_name` = full name.
 6. External references: walk the whole schema and collect
    - every named type **defined** (record, enum, fixed), resolving namespaces with Avro's inheritance rule (an unqualified name takes the nearest enclosing namespace);
    - every type name **used** as a string that is not a primitive (`null, boolean, int, long, float, double, bytes, string`) and not a complex-type keyword.
-   - `external_refs` = used full names minus defined full names. Unqualified used names resolve against the enclosing namespace first.
-7. Local validity: fetch each referenced schema's text from SR (recursively including its own references), parse them in dependency order into one dict with `fastavro.parse_schema(ref_schema, named_schemas=named)` (the dict is filled with full names as keys), then `fastavro.parse_schema(schema, named_schemas=named)`. A fastavro error becomes `Invalid Avro schema: {err}`. Skip this step if stage D found a missing reference (the D errors already explain it).
+   - `external_refs` = used full names minus defined full names. Unqualified used names resolve against the enclosing namespace first, then against the null namespace (as Java Avro does).
+   - A named type defined inside a referenced schema (an enum `com.acme.Country` nested in the referenced record `com.acme.Address`) is provided by that reference: its use counts as a use of that reference's `ref_string` (`com.acme.Address`), so it needs no row of its own (no D4) and the row is used (no D5).
+7. Local validity: fetch each referenced schema's text from SR (recursively including its own references), parse them in dependency order into one dict with `fastavro.parse_schema(ref_schema, named_schemas=named)` (the dict is filled with full names as keys), then `fastavro.parse_schema(schema, named_schemas=named)`. A fastavro error becomes `Invalid Avro schema: {err}`. A fastavro `UnknownType` (a missing reference) is not reported; the D errors explain it.
 
 fastavro and SR (Java Avro 1.11.4) do not agree on everything, which is fine because both run:
 
@@ -209,7 +212,7 @@ fastavro and SR (Java Avro 1.11.4) do not agree on everything, which is fine bec
 5. If `$schema` is present it must be in `allowed_json_drafts` (compare after removing a trailing `#`): `Unsupported JSON Schema draft '{x}'.`
 6. Meta-schema check: `jsonschema.validators.validator_for(schema, default=Draft7Validator).check_schema(schema)`. Failure: `Invalid JSON schema: {first line of err}`. The explicit default matters: without `$schema`, jsonschema would pick 2020-12, while Confluent's clients treat such a schema as draft-07. This local check is the only source of a useful message: SR answers every invalid JSON schema with just `Invalid JSON Schema`.
 7. `expected_name` = `title`.
-8. External references: walk the document, collect every `$ref` string that does not start with `#`. Strip any `#fragment` suffix. `external_refs` = that set. Internal refs (`#/definitions/...`, `#/$defs/...`) are allowed and ignored. Verified: SR resolves an external `$ref` when the reference `name` equals the `$ref` value without its fragment (`address.json#/definitions/Zip` works with name `address.json`), and rejects the schema when no reference has that name. `jsonschema` does not check that `$ref` targets exist; SR does, in stage E.
+8. External references: walk the schema keywords (map keys under `properties`, `patternProperties`, `definitions`, `$defs`, `dependentSchemas` and `dependencies` are names, not keywords; the values of `enum`, `const`, `default` and `examples` are data and are not walked), and collect every string `$ref` that does not start with `#`. An empty `$ref` is the document itself and is ignored. Strip any `#fragment` suffix. `external_refs` = that set. Internal refs (`#/definitions/...`, `#/$defs/...`) are allowed and ignored. Verified: SR resolves an external `$ref` when the reference `name` equals the `$ref` value without its fragment (`address.json#/definitions/Zip` works with name `address.json`), and rejects the schema when no reference has that name. `jsonschema` does not check that `$ref` targets exist; SR does, in stage E.
 9. A top-level `javaType` property is allowed (section 12). Verified: SR accepts it.
 
 ### 5.3 Protobuf
@@ -219,11 +222,11 @@ Parsing `.proto` text requires the protoc compiler shipped in `grpcio-tools`.
 1. Create a temporary directory (always cleaned up).
 2. Write the schema to `<tmp>/__main__.proto`.
 3. For each reference, fetch the schema text from SR and write it to `<tmp>/<derived path>` (`com.acme.Address` goes to `<tmp>/com/acme/Address.proto`). Do this recursively for the referenced schemas' own references, using the `name` field of their SR references as the path.
-   - **Security:** reject any path (derived, or read from an SR reference `name`) that is absolute, contains `..`, or contains a backslash, before writing: `Invalid import path '{x}'.`
+   - **Security:** reject any path (derived, or read from an SR reference `name`) that is empty, absolute, has a `..` path segment, contains a backslash or a NUL character, or cannot be written (it collides with `__main__.proto` or another reference's directory), before writing: `Invalid import path '{x}'.`
 4. Run protoc with a timeout (10 s) as a subprocess: `python -m grpc_tools.protoc -I <tmp> -I <grpc_tools/_proto> -I <schema_validator/_proto> --include_imports --descriptor_set_out=<tmp>/out.pb __main__.proto`.
    - `importlib.resources.files("grpc_tools") / "_proto"` provides `google/protobuf/*` (verified in grpcio-tools 1.85.1).
    - grpcio-tools ships nothing else. The `google/type/*` and `confluent/*` files in `builtin_proto_imports` must be bundled in the package under `schema_validator/_proto/`, copied from the SR 7.9.0 image (`proto-google-common-protos-2.22.1.jar` and `kafka-protobuf-types-7.9.0.jar` in `/usr/share/java/schema-registry`). Bundle only the listed files.
-5. Decide by exit code only. protoc also writes warnings to stderr on success (unused import; `No edition or syntax specified`). Non-zero exit: `Invalid Protobuf schema: {stderr, with temp paths stripped and "__main__.proto:" removed}`. If the failure is a missing import, prefer the D4 message. Error lines look like `__main__.proto:3:30: Expected ";".` and `nope/x.proto: File not found.`
+5. Decide by exit code only. protoc also writes warnings to stderr on success (unused import; `No edition or syntax specified`). Non-zero exit: `Invalid Protobuf schema: {stderr, with temp paths stripped and "__main__.proto:" removed}`. If every failure is a missing file that the schema itself imports and none of them is the path of a reference row, report nothing here (D4 names them). A missing file imported only by a referenced schema is reported as `Invalid Protobuf schema`. A protoc timeout gives `Invalid Protobuf schema: the Protobuf compiler did not finish in 10 seconds.` A non-zero exit with no error line (a crash or a signal) gives `Internal validator error: protoc exited with code {n} and no message`. Error lines look like `__main__.proto:3:30: Expected ";".` and `nope/x.proto: File not found.`
 
    protoc is the real validity check for Protobuf. SR's own parser accepted duplicate field numbers and a proto3 enum that does not start at 0. The other way round, SR rejects `edition = "2023"`, which protoc accepts; stage E reports that.
 6. Parse `out.pb` as `google.protobuf.descriptor_pb2.FileDescriptorSet`; take the entry for `__main__.proto`.
@@ -233,7 +236,7 @@ Parsing `.proto` text requires the protoc compiler shipped in `grpcio-tools`.
 9. `expected_name` = `package + "." + message_type[0].name`. The `java_package` and `java_outer_classname` options do not change it (verified).
 10. External references: `file.dependency` minus the paths in `builtin_proto_imports`. Each remaining path must equal the derived path of a reference row (D4/D5).
 
-If stage D found a missing reference, still attempt step 4 only to derive the name when possible; do not report protoc's "file not found" on top of the D4 error.
+When protoc fails, no name is derived (C3 is skipped). protoc's "File not found" for the schema's own import is not reported on top of the D4 error.
 
 ---
 
@@ -251,7 +254,7 @@ For AVRO, SR ignores the reference `name` entirely (any text works); the exact-m
 
 Algorithm:
 
-1. Normalise rows (AVRO: default `ref_string` to `schema_name`; PROTOBUF: set `ref_string` to `schema_name.replace(".", "/") + ".proto"`).
+1. Normalise rows (AVRO: a missing or empty `ref_string` defaults to `schema_name`; PROTOBUF: set `ref_string` to `schema_name.replace(".", "/") + ".proto"`).
 2. For each row, `GET /subjects/{schema_name}/versions/latest`. 404 gives D1. Otherwise keep `version`, `schemaType` (absent means AVRO), `schema` text and its `references`.
 3. D2 format check.
 4. D3 cycle check: depth-first walk over the referenced schemas' own `references` (fetch each `subject`/`version` from SR, memoised per request, max depth 20). If `name` is reached, report the cycle.
@@ -286,7 +289,7 @@ Compatibility request body:
 Response handling (observed on SR 7.9.0; the endpoint behaves the same for a subject that does not exist yet, so it is a full validity check on create):
 
 - `200` with `is_compatible: true`: pass.
-- `200` with `is_compatible: false` and a message starting with `Invalid schema `: E1. The message has the form `Invalid schema {subject=...,schema=<whole text>,...} with refs [...] of type AVRO, details: <reason>`. Show only the text after the last `details: `. Examples of `<reason>`: `"strin" is not a defined name...`, `Could not parse Protobuf - Syntax error in :3:31: expected ';' but was '}'`, `No schema reference found for subject "x" and version 1`, `Invalid JSON Schema`.
+- `200` with `is_compatible: false` and a message starting with `Invalid schema `: E1. The message has the form `Invalid schema {subject=...,schema=<whole text>,...} with refs [...] of type AVRO, details: <reason>`. Show only the text after the last `details: `. If there is no `details: ` part, or it is empty, show `Schema Registry rejected the schema without giving a reason.` instead, never the raw message. Examples of `<reason>`: `"strin" is not a defined name...`, `Could not parse Protobuf - Syntax error in :3:31: expected ';' but was '}'`, `No schema reference found for subject "x" and version 1`, `Invalid JSON Schema`.
 - `200` with `is_compatible: false` otherwise: E2. `messages` is a list of strings, not JSON:
   ```
   {errorType:'READER_FIELD_MISSING_DEFAULT_VALUE', description:'The field 'zip' at path '/fields/1' in the new schema has no default value and is missing in the old schema', additionalInfo:'zip'}
@@ -294,14 +297,14 @@ Response handling (observed on SR 7.9.0; the endpoint behaves the same for a sub
   {oldSchema: '<whole text>'}
   {validateFields: 'false', compatibility: 'BACKWARD'}
   ```
-  Extract every `description` (the quoting is `'` for Avro and `"` for JSON and Protobuf, and descriptions contain quotes, so match up to the closing `', additionalInfo:` / `'}` / `"}`), the `oldSchemaVersion` and the `compatibility` level. Drop `oldSchema`. A message without `errorType` (for example `Incompatible because of different schema type`) is shown as it is. If nothing can be extracted, fall back to the raw messages with any `{oldSchema: ...}` entry removed.
-- `422` with `error_code` 42201, or any other 4xx with an `error_code`: E1 with SR's `message`, cleaned the same way. Not observed on this endpoint, but registration and lookup return 42201, so handle it.
+  Extract every `description` (take the text after the first `, description:` up to the last `}`, cut it at the last `, additionalInfo:`, then remove one leading and one trailing quote, `'` or `"`; they do not always match: JSON opens with `"` and closes with `'`), the `oldSchemaVersion` and the `compatibility` level. Drop `oldSchema`. A message without `errorType` (for example `Incompatible because of different schema type`) is shown as it is. If nothing can be extracted, fall back to the raw messages with any `{oldSchema: ...}` entry removed.
+- `422` with `error_code` 42201, or any other 4xx with an `error_code`: E1 with SR's `message`, cleaned the same way. Not observed on this endpoint, but registration and lookup return 42201, so handle it. A 404 whose `error_code` is not 40401 or 40402 (a wrong URL prefix or a proxy) is E3 on every call. A 4xx without an integer `error_code` is E3.
 - `401` / `403`: E4.
-- Timeouts, connection errors, 5xx: E3.
+- Timeouts, connection errors, 5xx, and a `200` whose body is not the expected JSON (an HTML page, a missing `is_compatible`): E3.
 
 `GET /config/{subject}?defaultToGlobal=true` returns `200 {"compatibilityLevel": "..."}` for any subject, existing or not. Without the parameter it returns 404 (40408) when the subject has no level of its own.
 
-`GET /subjects/{subject}/versions/latest` returns 404 (40401) for a subject that does not exist or is soft-deleted.
+`GET /subjects/{subject}/versions/latest` returns 404 (40401) for a subject that does not exist or is soft-deleted. The client returns "not registered" only for a 404 with `error_code` 40401 or 40402.
 
 The 401/403 handling has not been tested against a registry with authentication and ACLs. Which ACL operations the validator's user needs in production is also not established; settle it when the validator is first deployed against the secured registry.
 
@@ -313,15 +316,18 @@ Provide a `SchemaRegistryClient` protocol so tests can inject a fake.
 
 ```
 schema_validator/
-  __init__.py          # exports validate, ValidationRequest, ReferenceInput, ValidationResult, ValidatorConfig
+  __init__.py          # exports validate, ValidationRequest, ReferenceInput, ValidationResult, ValidatorConfig, HttpSchemaRegistryClient, FormatAnalysis
   models.py            # dataclasses
   validator.py         # pipeline orchestration, message assembly
+  rules.py             # stage A and stage C
+  result.py            # errors and warnings to ValidationResult
   formats/
     avro.py            # parse, structure, expected name, external refs
     json_schema.py
     protobuf.py
   references.py        # stage D
   sr_client.py         # HTTP client + protocol
+  sr_messages.py       # parsing SR verdict messages
   messages.py          # all user-facing message templates in one place
   _proto/              # bundled google/type/*.proto and confluent/*.proto (section 5.3), shipped as package data
 integration/
@@ -331,13 +337,16 @@ integration/
 tests/
   fake_sr.py           # in-memory SR fake
   schemas/             # good and bad sample schemas per format
-  test_avro.py
+  test_rules.py
   test_json_schema.py
+  test_avro.py
   test_protobuf.py
-  test_names.py
   test_references.py
-  test_sr_verdict.py
-  test_result_shape.py
+  test_sr_messages.py
+  test_sr_client.py
+  test_validate.py
+  test_result.py
+  test_fake_sr.py
 README.md
 ```
 
@@ -345,7 +354,7 @@ Each format module exposes the same function:
 
 ```python
 def analyse(schema_text: str, referenced: dict[str, str], config) -> FormatAnalysis
-# FormatAnalysis: expected_name | None, external_refs: set[str], errors: list[str]
+# FormatAnalysis: expected_name | None, external_refs: set[str] | None (None when the text could not be analysed; D4/D5 are then skipped), errors: list[str]
 ```
 
 Type hints throughout, no global state, no network access outside `sr_client.py`.
@@ -416,7 +425,7 @@ Everything in this document ships as one release: all three formats, with refere
 7. Stage E: SR client and verdict handling.
 8. README: how to call `validate`, configuration, and the meaning of each error code.
 
-9. Integration tests against a real Schema Registry in Docker (section 10a), including the full `validate` pipeline, which is the one item of section 10 still open.
+9. Integration tests against a real Schema Registry in Docker (section 10a), including the full `validate` pipeline.
 
 Unit tests always run against the fake SR. The Docker-based tests are a separate, required step.
 
@@ -424,7 +433,7 @@ Unit tests always run against the fake SR. The Docker-based tests are a separate
 
 ## 10. What has been verified
 
-Verified on 2026-11-16 against `confluentinc/cp-schema-registry:7.9.0` (no auth) on `apache/kafka:3.8.1`, with confluent-kafka-python 2.16.1 and the Confluent 7.9.0 Java serializers. The checks are in `integration/tests/` (Python) and `integration/java/` (Java).
+Verified on 2026-11-16 against `confluentinc/cp-schema-registry:7.9.0` (no auth) on `apache/kafka:3.8.1`, with confluent-kafka-python 2.16.1 and the Confluent 7.9.0 Java serializers. The checks are in `integration/tests/` (Python) and `integration/java/` (Java). Rows 5a, 9, 10 and 11 were checked once by the earlier probe scripts (removed in ee54685; their code is in c1c116f) and have no rerunnable test.
 
 | # | Question | Result |
 |---|---|---|
@@ -443,7 +452,6 @@ Verified on 2026-11-16 against `confluentinc/cp-schema-registry:7.9.0` (no auth)
 
 Still open:
 
-- The full `validate` pipeline against the real registry (needs the code).
 - 401/403 handling and the ACL operations the validator's user needs (section 7).
 
 Confirmed from Confluent documentation:
@@ -457,7 +465,7 @@ Confirmed from Confluent documentation:
 
 ## 10a. Integration tests (Docker)
 
-The questions below were answered once by the probe scripts (section 10). Turn them into repeatable integration tests so a new Schema Registry version can be checked the same way.
+The questions below were first answered by probe scripts; the integration tests below repeat them, so a new Schema Registry version can be checked the same way.
 
 Setup:
 
@@ -473,7 +481,7 @@ What each test asserts (the expected results are the ones recorded in section 10
 3. **References end to end.** For each format: register a referenced schema, register a schema that references it with the payload the validator implies, and produce with a real client. JSON: `$ref` with and without `#fragment`. Protobuf: import path `com/acme/Address.proto` for subject `com.acme.Address`; the Java producer with `QualifiedReferenceSubjectNameStrategy` succeeds and with the default strategy fails (`probe.ProtoRefs`).
 4. **SR does not enforce the validator's own rules.** SR accepts: an unused reference row, a Protobuf reference name that differs from the import path, a Protobuf cycle, a JSON `title` with a space. If a future SR version starts rejecting these, the test fails and the plan is revisited.
 5. **Built-in Protobuf imports.** Every path in `builtin_proto_imports` registers with no references when its type is used, and compiles locally with the bundled `_proto` directory; `google/type/localized_text.proto` and `google/rpc/status.proto` do not register.
-6. **Validator against real SR.** Run the full `validate` pipeline against the container for the happy path and one failure per stage, using the real `sr_client` (no auth in the container; auth stays configurable). This is the item not yet done.
+6. **Validator against real SR.** Run the full `validate` pipeline against the container for the happy path and one failure per stage, using the real `sr_client` (no auth in the container; auth stays configurable).
 7. **Message formats.** The incompatibility and invalid-schema messages SR returns still parse with the extraction rules in section 7, for each format.
 
 Deliver `VERIFICATION.md` with one row per item: what was tested, the observed behaviour (status codes, messages), and what was changed in the code as a result. Where an observation contradicts this plan, the observation wins: fix the code and note the deviation.
