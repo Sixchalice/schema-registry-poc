@@ -1,0 +1,66 @@
+# Verification record
+
+Checked on 2026-11-16 against `confluentinc/cp-schema-registry:7.9.0` (no authentication) on `apache/kafka:3.8.1`, from `integration/docker-compose.yml`, with confluent-kafka-python 2.16.1 and the Confluent 7.9.0 Java serializers.
+
+```
+.venv/bin/python -m pytest -q                                   # 458 passed
+.venv/bin/python -m pytest integration/tests -m integration -q  # 75 passed, none skipped
+```
+
+Every integration test creates its subjects under a fresh namespace (`it` + 10 hex digits, shown below as `<ns>`), so the suite can be rerun against the same registry.
+
+## Spec §10a items
+
+| # | What was tested | Observed | Pinned by | Code change |
+|---|---|---|---|---|
+| 1 | `POST /compatibility/subjects/{s}/versions?verbose=true` on a subject that does not exist, all three formats; the lookups the validator relies on | Valid schema: `200 {"is_compatible": true, "messages": []}`. Invalid schema: `200`, `is_compatible: false`, one message starting `Invalid schema ` with a `details: ` part. Reasons: Avro `"strin" is not a defined name. The type of the "id" field must be a defined name or a {"type": ...} expression.`; JSON `Invalid JSON Schema`; Protobuf `Could not parse Protobuf - Syntax error in :3:31: expected ';' but was '}'`. Never 404 or 422. `GET /subjects/<ns>.none/versions/latest`: `404 {"error_code":40401,"message":"Subject '<ns>.none' not found."}`. `GET /subjects/<existing>/versions/99`: `404 {"error_code":40402,"message":"Version 99 not found."}`. So the client's "None only for a 404 with 40401 or 40402" rule matches the registry. `GET /config/<ns>.none?defaultToGlobal=true`: `200 {"compatibilityLevel":"BACKWARD"}` | `test_sr_behaviour.py`: `test_new_subject_valid`, `test_new_subject_invalid`, `test_get_latest_missing`, `test_get_version_missing`, `test_level_endpoint_for_missing_subject` | None |
+| 2 | Real producers look up the subject `validate` accepts. Python: `validate` first, then a serializer with `record_subject_name_strategy`, `auto.register.schemas=False`, `use.latest.version=True`; before registration it fails, after registration it serializes and the bytes are produced to Kafka (delivery acknowledged). Cases: Avro simple; Avro with `name` `<ns>.real.Dotted` and `namespace` `ignored.ns`; JSON simple; Protobuf simple; Protobuf importing `google/protobuf/timestamp.proto` | Before registration every serializer raises `SchemaRegistryError: Subject '<expected name>' not found. (HTTP status code 404, SR code 40401)`; the dotted Avro name looks up `<ns>.real.Dotted`. After registration the same serializer instance returns bytes. Java: see below | `test_python_clients.py`: `test_avro_simple`, `test_avro_dotted_name_wins_over_namespace`, `test_json_simple`, `test_protobuf_simple`, `test_protobuf_builtin_import`; Java `probe.Main` | None |
+| 3 | References end to end. Python: register the referenced schema, `validate` the referencing one (a `Warning` naming `<ns>.Address v1`), check the serializer fails naming the referencing subject, register it with `{name: ref_string, subject, version: 1}`, serialize and produce. Avro passes `Schema(text, "AVRO", [SchemaReference(...)])`; JSON uses `$ref` both with and without `#/definitions/Zip` and a row `address.json`; Protobuf imports `<ns>/Address.proto` (the derived path) | All three register with 200 and serialize. The JSON payload is validated through the reference by the client. Java `probe.ProtoRefs`: see below | `test_python_clients.py`: `test_avro_with_reference`, `test_json_with_external_ref`, `test_protobuf_import_of_another_schema`; `test_validate_real_sr.py::test_references_end_to_end`; Java `probe.ProtoRefs` | None |
+| 4 | The registry does not enforce the validator's own rules | `200` for: an unused reference row (all three formats); a Protobuf reference named `acme/other.proto` for `import "acme/address.proto"`; a Protobuf cycle (`Address` v2 importing `Customer`, which imports `Address`); a JSON schema with `title` `<ns>.My Order` under the subject `<ns>.My Order` | `test_sr_behaviour.py`: `test_sr_accepts_unused_reference_row`, `test_sr_accepts_protobuf_reference_name_mismatch`, `test_sr_accepts_protobuf_cycle`, `test_sr_accepts_json_title_with_space` | None |
+| 5 | Built-in Protobuf imports: each of the 29 paths in `DEFAULT_BUILTIN_PROTO_IMPORTS`, imported with one of its types used and no reference row | All 29 register with `200`, and each also compiles with the validator's own Protobuf analyser (bundled `_proto`) with no error and no external reference. `google/type/localized_text.proto` with `google.type.LocalizedText` and `google/rpc/status.proto` with `google.rpc.Status`: `422`, `error_code` 42201, `details: Could not resolve type: google.type.LocalizedText` / `google.rpc.Status` | `test_sr_behaviour.py`: `test_builtin_imports` (29 cases), `test_non_builtin_imports_rejected` | None |
+| 6 | The full `validate` pipeline with `HttpSchemaRegistryClient.from_config` against the registry | Create, all formats: `Ok`, then the same schema registers under `request.name` with 200. Stage A, empty schema: `Schema is empty.` Stage B, broken text: `Schema is not valid JSON: ...` (Avro, JSON) and `Invalid Protobuf schema: ...`, with no registry call made. Stage C: `The name must match the schema. It should be '<ns>.Order'.` Stage D, reference to an unregistered subject: exactly `Referenced schema '<ns>.Address' is not registered in Schema Registry yet.` Stage E1, Avro with field `a` twice (fastavro accepts it): `Schema Registry rejected the schema: Duplicate field a in record <ns>.Order: a type:INT pos:1 and a type:INT pos:0.` Stage E2, all formats: one line starting `Not BACKWARD-compatible with version 1: `, without the old schema text. References, all formats: `Warning` `References will be pinned to: <ns>.Address v1. ...`, then registering with that row gives 200. Edit with the subject level set to `FULL` by `PUT /config/{subject}` and `compatibility="BACKWARD"`: `Warning` `Compatibility was checked using the current level 'FULL', not the new level 'BACKWARD'.` Registry at `http://localhost:1`, 1 s timeout: `Could not reach Schema Registry to validate. Try again.` | `test_validate_real_sr.py` (18 tests) | None |
+| 7 | The incompatibility and invalid-schema messages still parse with `sr_messages`: register v1, check an incompatible v2 | Each format gives one description, `old_version == 1`, `level == "BACKWARD"`, no `oldSchema` text. Raw first messages: Avro `{errorType:'READER_FIELD_MISSING_DEFAULT_VALUE', description:'The field 'zip' at path '/fields/1' in the new schema has no default value and is missing in the old schema', additionalInfo:'zip'}`; JSON `{errorType:"TYPE_CHANGED", description:"A type at path '#/properties/id' is different between the new schema and the old schema'}` (opens with `"`, closes with `'`; the parser strips either); Protobuf `{errorType:"FIELD_SCALAR_KIND_CHANGED", description:"The kind of a SCALAR field at path '#/Order/1' in the new schema does not match its kind in the old schema"}` | `test_sr_behaviour.py::test_incompatible_messages_parse`, `test_new_subject_invalid` | None |
+
+No observation contradicted the code or a unit test, so no module of `schema_validator/` was changed in this task.
+
+## Java checks
+
+`integration/java`, run in `maven:3.9.9-eclipse-temurin-17` on the compose network (command in the README).
+
+`probe.Main` (the `after registering` lines):
+
+| Case | Result |
+|---|---|
+| AVRO simple (`p5java.Order`) | OK (7 bytes) |
+| AVRO dotted name + conflicting namespace (`p5java.real.Dotted`) | OK (7 bytes) |
+| AVRO with reference, Address inlined in the client's schema (`p5java.Customer`) | OK (9 bytes) |
+| JSON plain POJO, no annotations | Looks up `Plain Order` (not registered; shows the pitfall in spec §12) |
+| JSON POJO with `@JsonSchemaTitle` (`p5java.TitledOrder`) | Fails: `Incompatible schema` (the generated schema is compared with the registered one; see case [E] below) |
+| JSON POJO with Confluent `@Schema(value=...)` (`p5java.AnnotatedOrder`) | OK (15 bytes) |
+| JSON `JsonNode` + schema envelope (`p5java.EnvOrder`) | OK (15 bytes) |
+| JSON with external `$ref` (`p5java.JCustomer`) | OK (28 bytes); an invalid payload is rejected by the client through the reference |
+| PROTOBUF simple (`p5java.POrder`) | OK (9 bytes) |
+| PROTOBUF with `java_package` / `java_outer_classname` | OK (9 bytes), same subject `p5java.POrder` |
+| PROTOBUF importing `google/protobuf/timestamp.proto` (`p5java.PStamped`) | OK (6 bytes) |
+| PROTOBUF importing another Schema at `p5java/address.proto` (non-conforming path on purpose) | Fails: `Subject 'p5java/address.proto' not found.` |
+| PROTOBUF registered with a reference name different from the import path | Fails: `Subject 'p5java/address.proto' not found.` |
+| PROTOBUF file with two top-level messages | Looks up `p5java.Multi1` or `p5java.Multi2` depending on the message sent |
+
+`probe.ProtoRefs`:
+
+| Case | Result |
+|---|---|
+| [A] `import "p6/shop/PAddress.proto"`, `QualifiedReferenceSubjectNameStrategy` | OK (13 bytes), produced and deserialized |
+| [A] same, default strategy | Fails: `Subject 'p6/shop/PAddress.proto' not found.` |
+| [B] `import "p6.shop.PAddress"` (import path = subject name), default strategy | OK (13 bytes) |
+| [C] registered with a reference name different from the import path | Serializes, then fails to deserialize: `"PAddress" is not defined.` |
+| [D] transitive import (QCustomerDeep, QMid, PAddress), qualified strategy | OK (6 bytes) |
+| [E] JSON POJO with `@JsonSchemaTitle` and `latest.compatibility.strict=false` | OK (15 bytes) |
+
+`QualifiedReferenceSubjectNameStrategy` maps `p6/shop/PAddress.proto` to `p6.shop.PAddress`, as spec §6 says.
+
+## Not verified
+
+- 401 and 403 handling (E4) against a registry with authentication and ACLs. The test registry has no authentication; E4 is covered by unit tests only.
+- Which ACL operations the validator's Schema Registry user needs in production. Settle it when the validator is first deployed against the secured registry.
+- That a built wheel ships the 18 bundled `.proto` files under `schema_validator/_proto/`. The check was to be `python -m pip wheel . --no-deps --no-build-isolation`, but the project's virtual environment has no `pip` (`No module named pip`), so the wheel was not built. `pyproject.toml` declares `_proto/**/*.proto` as package data, and the 18 files are present in the source tree.

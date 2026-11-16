@@ -1,0 +1,250 @@
+"""The full `validate` pipeline with the real HTTP client against the real registry (spec §10a item 6)."""
+from __future__ import annotations
+
+import json
+from collections.abc import Callable, Sequence
+
+import pytest
+
+from schema_validator import (
+    HttpSchemaRegistryClient,
+    ReferenceInput,
+    ValidationRequest,
+    ValidationResult,
+    ValidatorConfig,
+    messages,
+    validate,
+)
+from schema_validator.models import proto_import_path
+
+FORMATS = ("AVRO", "JSON", "PROTOBUF")
+
+# (status code, parsed JSON body or raw text), from the conftest fixtures
+Response = tuple[int, object]
+Register = Callable[..., Response]
+
+
+@pytest.fixture
+def client(config: ValidatorConfig) -> HttpSchemaRegistryClient:
+    """The validator's own client, built the way the README shows."""
+    return HttpSchemaRegistryClient.from_config(config)
+
+
+class RecordingClient:
+    """Passes every call to the real client and records the method names."""
+
+    def __init__(self, inner: HttpSchemaRegistryClient) -> None:
+        self.inner = inner
+        self.calls: list[str] = []
+
+    def __getattr__(self, method: str) -> object:
+        self.calls.append(method)
+        return getattr(self.inner, method)
+
+
+def request(name: str, schema_type: str, schema: str, references: Sequence[ReferenceInput] = (),
+            previous_name: str | None = None, compatibility: str = "BACKWARD") -> ValidationRequest:
+    return ValidationRequest(
+        name=name, schema_type=schema_type, schema=schema, compatibility=compatibility,
+        references=list(references), previous_name=previous_name, existing_names=[],
+    )
+
+
+def order(schema_type: str, ns: str, name: str = "Order") -> str:
+    if schema_type == "AVRO":
+        return json.dumps({"type": "record", "name": name, "namespace": ns,
+                           "fields": [{"name": "id", "type": "string"}]})
+    if schema_type == "JSON":
+        return json.dumps({"$schema": "http://json-schema.org/draft-07/schema#", "title": f"{ns}.{name}",
+                           "type": "object", "properties": {"id": {"type": "string"}}})
+    return f'syntax = "proto3";\npackage {ns};\nmessage {name} {{ string id = 1; }}\n'
+
+
+def incompatible_order(schema_type: str, ns: str) -> str:
+    if schema_type == "AVRO":
+        return json.dumps({"type": "record", "name": "Order", "namespace": ns,
+                           "fields": [{"name": "id", "type": "string"}, {"name": "zip", "type": "string"}]})
+    if schema_type == "JSON":
+        return json.dumps({"$schema": "http://json-schema.org/draft-07/schema#", "title": f"{ns}.Order",
+                           "type": "object", "properties": {"id": {"type": "integer"}}})
+    return f'syntax = "proto3";\npackage {ns};\nmessage Order {{ int32 id = 1; }}\n'
+
+
+BROKEN = {
+    "AVRO": ("{not json", messages.NOT_JSON.split("{")[0]),
+    "JSON": ("{not json", messages.NOT_JSON.split("{")[0]),
+    "PROTOBUF": ('syntax = "proto3";\npackage x.y;\nmessage Order { strin id = 1 }\n',
+                 messages.PROTO_INVALID.split("{")[0]),
+}
+
+
+def assert_error(result: ValidationResult) -> None:
+    assert result.valid is False and result.validationType == "Error", result
+
+
+@pytest.mark.parametrize("schema_type", FORMATS)
+def test_create_ok(
+    client: HttpSchemaRegistryClient,
+    config: ValidatorConfig,
+    register: Register,
+    ns: str,
+    schema_type: str,
+) -> None:
+    schema = order(schema_type, ns)
+    req = request(f"{ns}.Order", schema_type, schema)
+
+    assert validate(req, client, config) == ValidationResult(True, "Ok", "")
+
+    status, body = register(req.name, schema, schema_type)
+    assert status == 200, body
+
+
+def test_stage_a_failure(client: HttpSchemaRegistryClient, config: ValidatorConfig, ns: str) -> None:
+    result = validate(request(f"{ns}.Order", "AVRO", ""), client, config)
+
+    assert result == ValidationResult(False, "Error", messages.SCHEMA_EMPTY)
+
+
+@pytest.mark.parametrize("schema_type", FORMATS)
+def test_stage_b_failure(
+    client: HttpSchemaRegistryClient,
+    config: ValidatorConfig,
+    ns: str,
+    schema_type: str,
+) -> None:
+    schema, prefix = BROKEN[schema_type]
+    recording = RecordingClient(client)
+
+    result = validate(request(f"{ns}.Order", schema_type, schema), recording, config)
+
+    assert_error(result)
+    assert result.message.startswith(prefix), result.message
+    assert recording.calls == []
+
+
+def test_stage_c_failure(client: HttpSchemaRegistryClient, config: ValidatorConfig, ns: str) -> None:
+    result = validate(request(f"{ns}.Wrong", "AVRO", order("AVRO", ns)), client, config)
+
+    assert result == ValidationResult(
+        False, "Error", messages.NAME_MISMATCH.format(expected_name=f"{ns}.Order"))
+
+
+def test_stage_d_failure(client: HttpSchemaRegistryClient, config: ValidatorConfig, ns: str) -> None:
+    customer = json.dumps({"type": "record", "name": "Customer", "namespace": ns,
+                           "fields": [{"name": "addr", "type": f"{ns}.Address"}]})
+
+    result = validate(request(f"{ns}.Customer", "AVRO", customer, [ReferenceInput(f"{ns}.Address")]),
+                      client, config)
+
+    assert result == ValidationResult(
+        False, "Error", messages.REF_NOT_REGISTERED.format(s=f"{ns}.Address"))
+
+
+def test_stage_e_invalid(client: HttpSchemaRegistryClient, config: ValidatorConfig, ns: str) -> None:
+    # fastavro accepts a duplicate field name; the registry does not.
+    schema = json.dumps({"type": "record", "name": "Order", "namespace": ns,
+                         "fields": [{"name": "a", "type": "int"}, {"name": "a", "type": "int"}]})
+
+    result = validate(request(f"{ns}.Order", "AVRO", schema), client, config)
+
+    assert_error(result)
+    assert result.message.startswith("Schema Registry rejected the schema: "), result.message
+    assert "Duplicate field a" in result.message
+
+
+@pytest.mark.parametrize("schema_type", FORMATS)
+def test_stage_e_incompatible(
+    client: HttpSchemaRegistryClient,
+    config: ValidatorConfig,
+    register: Register,
+    ns: str,
+    schema_type: str,
+) -> None:
+    name = f"{ns}.Order"
+    assert register(name, order(schema_type, ns), schema_type)[0] == 200
+
+    result = validate(request(name, schema_type, incompatible_order(schema_type, ns), previous_name=name),
+                      client, config)
+
+    assert_error(result)
+    assert result.message.startswith("Not BACKWARD-compatible with version 1: "), result.message
+    assert "\n" not in result.message
+    assert "oldSchema" not in result.message
+
+
+def address(schema_type: str, ns: str) -> str:
+    if schema_type == "JSON":
+        return json.dumps({"$schema": "http://json-schema.org/draft-07/schema#", "title": f"{ns}.Address",
+                           "type": "object", "properties": {"city": {"type": "string"}},
+                           "definitions": {"Zip": {"type": "string"}}})
+    if schema_type == "AVRO":
+        return json.dumps({"type": "record", "name": "Address", "namespace": ns,
+                           "fields": [{"name": "city", "type": "string"}]})
+    return f'syntax = "proto3";\npackage {ns};\nmessage Address {{ string city = 1; }}\n'
+
+
+def customer(schema_type: str, ns: str) -> tuple[str, ReferenceInput]:
+    """A Customer that uses Address, and the reference row a user would enter for it."""
+    subject = f"{ns}.Address"
+    if schema_type == "AVRO":
+        text = json.dumps({"type": "record", "name": "Customer", "namespace": ns,
+                           "fields": [{"name": "addr", "type": subject}]})
+        return text, ReferenceInput(subject)
+    if schema_type == "JSON":
+        # With and without a #fragment: both match the row without the fragment.
+        text = json.dumps({"$schema": "http://json-schema.org/draft-07/schema#", "title": f"{ns}.Customer",
+                           "type": "object",
+                           "properties": {"addr": {"$ref": "address.json"},
+                                          "zip": {"$ref": "address.json#/definitions/Zip"}}})
+        return text, ReferenceInput(subject, "address.json")
+    text = (f'syntax = "proto3";\npackage {ns};\nimport "{proto_import_path(subject)}";\n'
+            f'message Customer {{ Address addr = 1; }}\n')
+    return text, ReferenceInput(subject)
+
+
+@pytest.mark.parametrize("schema_type", FORMATS)
+def test_references_end_to_end(
+    client: HttpSchemaRegistryClient,
+    config: ValidatorConfig,
+    register: Register,
+    ns: str,
+    schema_type: str,
+) -> None:
+    subject = f"{ns}.Address"
+    assert register(subject, address(schema_type, ns), schema_type)[0] == 200
+    text, row = customer(schema_type, ns)
+
+    result = validate(request(f"{ns}.Customer", schema_type, text, [row]), client, config)
+
+    assert result == ValidationResult(True, "Warning", messages.PINNED_WARNING.format(list=f"{subject} v1"))
+    ref_name = proto_import_path(subject) if schema_type == "PROTOBUF" else (row.ref_string or subject)
+    status, body = register(f"{ns}.Customer", text, schema_type,
+                            [{"name": ref_name, "subject": subject, "version": 1}])
+    assert status == 200, body
+
+
+def test_level_warning_on_edit(
+    client: HttpSchemaRegistryClient,
+    config: ValidatorConfig,
+    register: Register,
+    set_subject_level: Callable[[str, str], Response],
+    ns: str,
+) -> None:
+    name = f"{ns}.Order"
+    assert register(name, order("AVRO", ns))[0] == 200
+    assert set_subject_level(name, "FULL")[0] == 200
+
+    result = validate(request(name, "AVRO", order("AVRO", ns), previous_name=name, compatibility="BACKWARD"),
+                      client, config)
+
+    assert result == ValidationResult(
+        True, "Warning", messages.LEVEL_WARNING.format(sr_level="FULL", compatibility="BACKWARD"))
+
+
+def test_unreachable(ns: str) -> None:
+    config = ValidatorConfig(sr_url="http://localhost:1", sr_timeout_seconds=1)
+
+    result = validate(request(f"{ns}.Order", "AVRO", order("AVRO", ns)),
+                      HttpSchemaRegistryClient.from_config(config), config)
+
+    assert result == ValidationResult(False, "Error", messages.SR_UNREACHABLE)
