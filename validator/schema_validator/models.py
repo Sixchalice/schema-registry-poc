@@ -1,7 +1,7 @@
 """Shared data models for the schema validator."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 SCHEMA_TYPES = ("AVRO", "JSON", "PROTOBUF")
 COMPATIBILITY_LEVELS = (
@@ -66,7 +66,7 @@ class ValidationResult:
 class ValidatorConfig:
     sr_url: str = ""
     sr_username: str | None = None
-    sr_password: str | None = None
+    sr_password: str | None = field(default=None, repr=False)
     sr_timeout_seconds: float = 10
     max_schema_bytes: int = 500_000
     allowed_json_drafts: tuple[str, ...] = DEFAULT_JSON_DRAFTS

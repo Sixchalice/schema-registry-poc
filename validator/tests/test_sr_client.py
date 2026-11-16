@@ -383,10 +383,30 @@ def test_odd_error_body_keeps_exception_class(status, exc_class, text):
             call()
 
 
-def test_404_with_odd_body_is_none_on_gets():
-    client = client_for(StubSession(StubResponse(404, text="<html>not found</html>")))
+@pytest.mark.parametrize("code", [40401, 40402])
+def test_sr_not_found_codes_are_none_on_both_gets(code):
+    client = client_for(StubSession(StubResponse(404, {"error_code": code, "message": "not found"})))
     assert client.get_latest("a.B") is None
     assert client.get_version("a.B", 1) is None
+
+
+@pytest.mark.parametrize("text", [
+    "<html>not found</html>",
+    "",
+    json.dumps({"message": "Subject 'a.B' not found."}),
+    json.dumps({"error_code": 40403, "message": "Schema not found"}),
+    json.dumps({"error_code": 404, "message": "HTTP 404 Not Found"}),
+    json.dumps({"error_code": "40401", "message": "not found"}),
+    json.dumps({"error_code": None}),
+    json.dumps([{"error_code": 40401}]),
+    json.dumps(40401),
+])
+def test_other_404_on_gets_is_unavailable(text):
+    client = client_for(StubSession(StubResponse(404, text=text)))
+    with pytest.raises(SchemaRegistryUnavailable):
+        client.get_latest("a.B")
+    with pytest.raises(SchemaRegistryUnavailable):
+        client.get_version("a.B", 1)
 
 
 # ---- secrets ------------------------------------------------------------------
@@ -408,23 +428,104 @@ def _basic_header(user: str, password: str) -> str:
 ], ids=["conn", "timeout", "401", "403", "503", "html", "shape", "422"])
 def test_errors_never_contain_the_password(session):
     client = client_for(session, username="u", password=PASSWORD)
-    secrets = (PASSWORD, _basic_header("u", PASSWORD), "Authorization")
     for call in call_all(client):
+        _assert_unavailable_or_other_clean_error(call, "u", PASSWORD, SchemaRegistryError)
+
+
+def _assert_unavailable_or_other_clean_error(call: Any, user: str, password: str,
+                                             expected: type[SchemaRegistryError]) -> None:
+    """call() raises `expected`, and nothing in it or its chain shows a secret."""
+    try:
+        call()
+    except expected as e:
+        texts = [str(e), repr(e), repr(e.args)]
+        # The cause chain is printed in tracebacks, so it must not leak either.
+        assert e.__cause__ is None
+        assert e.__context__ is None or e.__suppress_context__
+        secrets = [password, "Authorization"]
         try:
+            secrets.append(_basic_header(user, password))
+        except UnicodeEncodeError:
+            pass
+        for text in texts:
+            for secret in secrets:
+                assert secret not in text, (secret, text)
+    else:
+        pytest.fail("expected an error")
+
+
+@pytest.fixture
+def no_sockets(monkeypatch):
+    """Real requests.Session tests below must fail before any connection is opened."""
+    import socket
+
+    def refuse(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("unit test tried to open a network connection")
+
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    monkeypatch.setattr(socket, "create_connection", refuse)
+
+
+@pytest.mark.parametrize("user,password", [
+    ("u", "пароль-密码"),
+    ("пользователь", PASSWORD),
+    ("u", "pass\udc80word"),
+], ids=["cyrillic-cjk-password", "cyrillic-username", "surrogate-password"])
+def test_non_latin1_credentials_are_unavailable_without_leaking(no_sockets, user, password):
+    # requests encodes the Basic header as Latin-1 inside session.request and raises
+    # UnicodeEncodeError, which is not a RequestException and whose repr holds the password.
+    client = HttpSchemaRegistryClient("http://127.0.0.1:9", username=user, password=password)
+    for call in call_all(client):
+        _assert_unavailable_or_other_clean_error(call, user, password, SchemaRegistryUnavailable)
+
+
+def test_negative_timeout_is_unavailable(no_sockets):
+    # urllib3 rejects a timeout <= 0 with a ValueError before connecting.
+    client = HttpSchemaRegistryClient("http://127.0.0.1:9", timeout_seconds=-1)
+    for call in call_all(client):
+        with pytest.raises(SchemaRegistryUnavailable):
             call()
-        except SchemaRegistryError as e:
-            texts = [str(e), repr(e), repr(e.args)]
-            # The cause chain is printed in tracebacks, so it must not leak either.
-            assert e.__cause__ is None
-            assert e.__context__ is None or e.__suppress_context__
-            for text in texts:
-                for secret in secrets:
-                    assert secret not in text, (secret, text)
-        else:
-            pytest.fail("expected an error")
+
+
+def test_lone_surrogate_subject_is_unavailable():
+    # urllib.parse.quote encodes the subject as strict UTF-8.
+    session = StubSession(StubResponse(200, AVRO_BODY))
+    client = client_for(session)
+    calls = [
+        lambda: client.get_latest("a\udc80b"),
+        lambda: client.get_version("a\udc80b", 1),
+        lambda: client.get_compatibility_level("a\udc80b"),
+        lambda: client.check_compatibility("a\udc80b", "S", "AVRO", []),
+    ]
+    for call in calls:
+        with pytest.raises(SchemaRegistryUnavailable):
+            call()
+    assert session.calls == []
+
+
+def test_request_body_is_ascii_json_even_for_surrogates_and_non_ascii():
+    # json.dumps escapes everything outside ASCII (ensure_ascii), so building the
+    # body cannot fail on a lone surrogate and the wire bytes are plain ASCII.
+    session = StubSession(StubResponse(200, {"is_compatible": True, "messages": []}))
+    schema = "a\udc80b \u00e9 \u5bc6"
+    refs = [SrReference("n\udc80", "s\u00e9", 1)]
+    client_for(session).check_compatibility("a.B", schema, "AVRO", refs)
+    data = session.last[2]["data"]
+    assert data.isascii()
+    assert json.loads(data) == {
+        "schema": schema, "schemaType": "AVRO",
+        "references": [{"name": "n\udc80", "subject": "s\u00e9", "version": 1}],
+    }
 
 
 def test_repr_does_not_contain_the_password():
     client = HttpSchemaRegistryClient(BASE, username="u", password=PASSWORD)
     assert PASSWORD not in repr(client)
     assert PASSWORD not in str(client)
+
+
+def test_config_repr_does_not_contain_the_password():
+    config = ValidatorConfig(sr_url=BASE, sr_username="u", sr_password="s3cret")
+    assert "s3cret" not in repr(config)
+    assert "s3cret" not in str(config)
+    assert config.sr_password == "s3cret"

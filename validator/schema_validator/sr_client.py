@@ -74,6 +74,8 @@ _CONTENT_TYPE = "application/vnd.schemaregistry.v1+json"
 
 # Returned by _call for a 404 when the caller asked for it; distinct from a JSON `null` body.
 _NOT_FOUND = object()
+# Schema Registry's 404 error codes: subject not found, version not found.
+_NOT_FOUND_CODES = (40401, 40402)
 
 # Exception texts below are diagnostics, not user-facing messages: stage E maps
 # each exception class to its constant in messages.py. They name the method and
@@ -99,14 +101,14 @@ class HttpSchemaRegistryClient:
         return cls(config.sr_url, config.sr_username, config.sr_password, config.sr_timeout_seconds)
 
     def get_latest(self, subject: str) -> SchemaVersion | None:
-        return self._get_version(f"/subjects/{_quote(subject)}/versions/latest")
+        return self._get_version("/subjects/{s}/versions/latest", subject)
 
     def get_version(self, subject: str, version: int) -> SchemaVersion | None:
-        return self._get_version(f"/subjects/{_quote(subject)}/versions/{version}")
+        return self._get_version(f"/subjects/{{s}}/versions/{version}", subject)
 
     def get_compatibility_level(self, subject: str) -> str:
-        path = f"/config/{_quote(subject)}?defaultToGlobal=true"
-        body = self._call("GET", path)
+        path = "/config/{s}?defaultToGlobal=true"
+        body = self._call("GET", path, subject)
         level = body.get("compatibilityLevel") if isinstance(body, dict) else None
         if not isinstance(level, str):
             raise _bad_body("GET", path)
@@ -124,8 +126,8 @@ class HttpSchemaRegistryClient:
             request["references"] = [
                 {"name": r.name, "subject": r.subject, "version": r.version} for r in references
             ]
-        path = f"/compatibility/subjects/{_quote(subject)}/versions?verbose=true"
-        body = self._call("POST", path, request)
+        path = "/compatibility/subjects/{s}/versions?verbose=true"
+        body = self._call("POST", path, subject, request)
         if not isinstance(body, dict):
             raise _bad_body("POST", path)
         is_compatible = body.get("is_compatible")
@@ -137,8 +139,8 @@ class HttpSchemaRegistryClient:
             raise _bad_body("POST", path)
         return CompatibilityVerdict(is_compatible, tuple(messages))
 
-    def _get_version(self, path: str) -> SchemaVersion | None:
-        body = self._call("GET", path, not_found_ok=True)
+    def _get_version(self, path: str, subject: str) -> SchemaVersion | None:
+        body = self._call("GET", path, subject, not_found_ok=True)
         if body is _NOT_FOUND:
             return None
         version = _parse_version(body)
@@ -146,21 +148,30 @@ class HttpSchemaRegistryClient:
             raise _bad_body("GET", path)
         return version
 
-    def _call(self, method: str, path: str, request: object = None,
+    def _call(self, method: str, path: str, subject: str, request: object = None,
               not_found_ok: bool = False) -> object:
-        """Send the request and return the parsed 2xx body, or _NOT_FOUND for a 404
-        when `not_found_ok`. Raises a SchemaRegistryError for every other outcome."""
+        """Send the request and return the parsed 2xx body, or _NOT_FOUND for a
+        Schema Registry "subject/version not found" 404 when `not_found_ok`.
+
+        `path` holds a `{s}` placeholder for the URL-encoded subject; diagnostics
+        show the placeholder, not the subject. Raises a SchemaRegistryError for
+        every other outcome.
+        """
         where = f"{method} {path}"
         try:
+            # Inside the guard: quoting raises UnicodeEncodeError on a lone surrogate.
+            url = self._url + path.replace("{s}", _quote(subject))
             response = self._session.request(
                 method,
-                self._url + path,
+                url,
                 headers={"Content-Type": _CONTENT_TYPE},
                 auth=self._auth,
                 timeout=self._timeout,
                 data=None if request is None else json.dumps(request),
             )
-        except requests.RequestException as e:
+        except (requests.RequestException, ValueError) as e:
+            # ValueError covers UnicodeEncodeError from requests' Latin-1 Basic header
+            # (its repr holds the password) and urllib3's timeout <= 0 check.
             raise SchemaRegistryUnavailable(f"{where}: {type(e).__name__}") from None
         status = response.status_code
         if status in (401, 403):
@@ -169,7 +180,9 @@ class HttpSchemaRegistryClient:
             raise SchemaRegistryUnavailable(f"{where}: HTTP {status}")
         if 400 <= status < 500:
             if status == 404 and not_found_ok:
-                return _NOT_FOUND
+                if _error_code(response) in _NOT_FOUND_CODES:
+                    return _NOT_FOUND
+                raise SchemaRegistryUnavailable(f"{where}: HTTP 404 without a not-found error_code")
             raise SchemaRegistryRejected(_error_message(response))
         if not 200 <= status < 300:
             raise SchemaRegistryUnavailable(f"{where}: HTTP {status}")
@@ -191,12 +204,23 @@ def _bad_body(method: str, path: str) -> SchemaRegistryUnavailable:
     return SchemaRegistryUnavailable(f"{method} {path}: unexpected response body")
 
 
+def _json_or_none(response: requests.Response) -> object:
+    try:
+        return response.json()
+    except (ValueError, RecursionError):
+        return None
+
+
+def _error_code(response: requests.Response) -> int | None:
+    """The integer `error_code` of a Schema Registry error body, if it has one."""
+    body = _json_or_none(response)
+    code = body.get("error_code") if isinstance(body, dict) else None
+    return code if _is_int(code) else None
+
+
 def _error_message(response: requests.Response) -> str:
     """The `message` of a Schema Registry error body, else the raw text."""
-    try:
-        body = response.json()
-    except (ValueError, RecursionError):
-        body = None
+    body = _json_or_none(response)
     if isinstance(body, dict):
         message = body.get("message")
         if isinstance(message, str) and message:
