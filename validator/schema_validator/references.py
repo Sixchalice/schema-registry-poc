@@ -1,0 +1,157 @@
+"""Stage D: reference rows, their resolution in Schema Registry and the cross-check."""
+from __future__ import annotations
+
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
+
+from schema_validator import messages
+from schema_validator.models import ReferenceInput, proto_import_path
+from schema_validator.sr_client import SchemaRegistryClient, SchemaVersion, SrReference
+
+# Levels below the referenced row's own schema (which is level 0).
+_MAX_DEPTH = 20
+
+
+def normalise_rows(
+    schema_type: str, references: Sequence[ReferenceInput]
+) -> tuple[list[ReferenceInput], list[str]]:
+    """Fill in each row's ref_string. Returns (rows, D6 errors).
+
+    Gives the same value as `rules._effective_ref_string`, so stages A and D agree:
+    AVRO defaults a missing (None or empty) ref_string to schema_name, PROTOBUF always
+    derives it from schema_name, and JSON keeps the given value. A JSON row without a
+    ref_string (None) gets D6 and is left out. Stage A stops unsupported types before
+    this stage, so anything that is not AVRO or PROTOBUF is handled as JSON.
+    """
+    rows: list[ReferenceInput] = []
+    errors: list[str] = []
+    for ref in references:
+        if schema_type == "PROTOBUF":
+            rows.append(ReferenceInput(ref.schema_name, proto_import_path(ref.schema_name)))
+        elif schema_type == "AVRO":
+            rows.append(ReferenceInput(ref.schema_name, ref.ref_string or ref.schema_name))
+        elif ref.ref_string is None:
+            errors.append(messages.REF_STRING_REQUIRED.format(s=ref.schema_name))
+        else:
+            rows.append(ref)
+    return rows, errors
+
+
+@dataclass(frozen=True)
+class Resolution:
+    # One per row that passed D1 and D2: (name=ref_string, subject=schema_name, version=latest).
+    resolved: list[SrReference]
+    # Reference name -> schema text, direct and transitive, dependencies first.
+    # The first text stored under a name is kept.
+    referenced: dict[str, str]
+    errors: list[str]  # D1, D2, D3, REF_TOO_DEEP
+
+
+def resolve(
+    name: str, schema_type: str, rows: Sequence[ReferenceInput], sr: SchemaRegistryClient
+) -> Resolution:
+    """Spec §6 steps 2 to 4. `rows` come from `normalise_rows`.
+
+    Every `SchemaRegistryError` raised by `sr` propagates to the caller.
+    """
+    resolved: list[SrReference] = []
+    referenced: dict[str, str] = {}
+    errors: list[str] = []
+    # Every (subject, version) fetched during this call, None when not registered.
+    fetched: dict[tuple[str, int], SchemaVersion | None] = {}
+
+    def report(error: str) -> None:
+        if error not in errors:
+            errors.append(error)
+
+    for row in rows:
+        latest = sr.get_latest(row.schema_name)
+        if latest is None:
+            report(messages.REF_NOT_REGISTERED.format(s=row.schema_name))
+            continue
+        if latest.schema_type != schema_type:
+            report(messages.REF_WRONG_FORMAT.format(
+                s=row.schema_name, their_type=latest.schema_type, my_type=schema_type))
+            continue
+        key = row.ref_string if row.ref_string is not None else row.schema_name
+        resolved.append(SrReference(key, row.schema_name, latest.version))
+        fetched.setdefault((row.schema_name, latest.version), latest)
+        error = _walk(name, row.schema_name, key, latest, sr, fetched, referenced, report)
+        if error is not None:
+            report(error)
+
+    return Resolution(resolved=resolved, referenced=referenced, errors=errors)
+
+
+def _walk(
+    name: str,
+    row_subject: str,
+    root_key: str,
+    root: SchemaVersion,
+    sr: SchemaRegistryClient,
+    fetched: dict[tuple[str, int], SchemaVersion | None],
+    referenced: dict[str, str],
+    report: Callable[[str], None],
+) -> str | None:
+    """Depth-first walk of one row's references, adding texts to `referenced` post-order.
+
+    Returns the error that stopped the walk (D3 or REF_TOO_DEEP), or None. A missing
+    nested schema (D1) is passed to `report` and the walk goes on with the others.
+    A schema is walked again only when reached at a deeper level than before, so the
+    depth limit applies to the longest path and the walk ends even on cycles that do
+    not involve `name` (at most _MAX_DEPTH + 1 walks of each schema).
+    """
+    if row_subject == name:
+        return messages.REF_CYCLE.format(s=row_subject, name=name)
+    deepest: dict[tuple[str, int], int] = {(row_subject, root.version): 0}
+    stack: list[tuple[str, SchemaVersion, int, Iterator[SrReference]]] = [
+        (root_key, root, 0, iter(root.references))
+    ]
+    while stack:
+        key, schema, depth, children = stack[-1]
+        child = next(children, None)
+        if child is None:
+            stack.pop()
+            referenced.setdefault(key, schema.schema)
+            continue
+        if child.subject == name:
+            return messages.REF_CYCLE.format(s=row_subject, name=name)
+        child_depth = depth + 1
+        if child_depth > _MAX_DEPTH:
+            return messages.REF_TOO_DEEP.format(s=row_subject)
+        node = (child.subject, child.version)
+        if deepest.get(node, -1) >= child_depth:
+            continue
+        if node not in fetched:
+            fetched[node] = sr.get_version(child.subject, child.version)
+        found = fetched[node]
+        if found is None:
+            report(messages.REF_NOT_REGISTERED.format(s=child.subject))
+            continue
+        deepest[node] = child_depth
+        stack.append((child.name, found, child_depth, iter(found.references)))
+    return None
+
+
+def cross_check(
+    schema_type: str, rows: Sequence[ReferenceInput], external_refs: set[str]
+) -> list[str]:
+    """D4 (sorted) then D5 (row order). Exact string match on ref_string."""
+    ref_strings = {row.ref_string for row in rows}
+    errors = [
+        messages.REF_MISSING_ROW.format(x=x) for x in sorted(external_refs - ref_strings)
+    ]
+    for row in rows:
+        if row.ref_string in external_refs:
+            continue
+        if schema_type == "PROTOBUF":
+            errors.append(messages.REF_UNUSED_PROTOBUF.format(
+                s=row.schema_name, path=row.ref_string))
+        else:
+            errors.append(messages.REF_UNUSED.format(x=row.ref_string))
+    return errors
+
+
+def pinned_warning(resolved: Sequence[SrReference]) -> str:
+    pinned = ", ".join(f"{ref.subject} v{ref.version}" for ref in resolved)
+    return messages.PINNED_WARNING.format(list=pinned)
