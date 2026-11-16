@@ -1,0 +1,9 @@
+.env
+.env.example
+docker-compose*.yml
+config/
+stress/
+README.md
+**/__pycache__
+**/.idea
+**/.DS_Store

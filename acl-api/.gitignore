@@ -1,0 +1,6 @@
+# The CLI jars (277 MB) are not kept in git; ./fetch-cli-jars.sh restores them.
+sr-acl-cli/share/
+images/
+.env
+__pycache__/
+.pytest_cache/

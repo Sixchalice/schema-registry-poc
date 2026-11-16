@@ -1,0 +1,26 @@
+# acl-api on its own: `docker compose up -d --build` in this directory.
+# Needs only network access to Kafka (config/sr-acl-cli.properties). Credentials come from .env
+# (copy .env.example). To join an existing compose network where Kafka runs, add e.g.
+#   networks: { default: { name: sr-acl-poc_default, external: true } }
+name: acl-api
+
+services:
+  acl-api:
+    build: .
+    image: acl-api:7.9.0
+    restart: unless-stopped
+    ports:
+      - "${ACL_API_PORT:-8087}:8087"
+    volumes:
+      - ./config:/etc/acl-api:ro
+    environment:
+      ACL_SERVICE_USER: ${ACL_SERVICE_USER:-acl-admin}
+      ACL_SERVICE_PASSWORD: ${ACL_SERVICE_PASSWORD:?set ACL_SERVICE_PASSWORD (see .env.example)}
+      SR_ACL_CLI_CONFIG: /etc/acl-api/sr-acl-cli.properties
+      SR_ACL_CLI_TIMEOUT: ${SR_ACL_CLI_TIMEOUT:-60}
+      SR_ACL_MAX_PENDING_WRITES: ${SR_ACL_MAX_PENDING_WRITES:-20}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8087/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
