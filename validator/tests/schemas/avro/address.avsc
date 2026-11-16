@@ -1,0 +1,6 @@
+{
+  "type": "record",
+  "name": "Address",
+  "namespace": "com.acme",
+  "fields": [{"name": "city", "type": "string"}]
+}

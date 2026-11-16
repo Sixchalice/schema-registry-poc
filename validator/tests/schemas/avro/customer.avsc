@@ -1,0 +1,6 @@
+{
+  "type": "record",
+  "name": "Customer",
+  "namespace": "com.acme",
+  "fields": [{"name": "address", "type": "com.acme.Address"}]
+}

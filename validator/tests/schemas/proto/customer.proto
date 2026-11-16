@@ -1,0 +1,8 @@
+syntax = "proto3";
+package com.acme;
+
+import "com/acme/Address.proto";
+
+message Customer {
+  com.acme.Address address = 1;
+}
