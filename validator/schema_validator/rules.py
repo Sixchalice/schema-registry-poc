@@ -48,7 +48,7 @@ def check_input(request: ValidationRequest, config: ValidatorConfig) -> InputChe
         errors.append(messages.NAME_INVALID)
 
     # A5
-    reference_errors = _reference_errors(request.name, request.references)
+    reference_errors = _reference_errors(request.name, request.schema_type, request.references)
     errors.extend(reference_errors)
 
     return InputCheck(errors=errors, fatal=fatal, references_ok=not reference_errors)
@@ -58,25 +58,42 @@ def _name_is_valid(name: str) -> bool:
     return bool(name) and not any(c.isspace() for c in name) and not name.startswith(":")
 
 
-def _reference_errors(name: str, references: list[ReferenceInput]) -> list[str]:
+def _effective_ref_string(schema_type: str, ref: ReferenceInput) -> str | None:
+    """The ref_string that will be sent to the registry, or None if it is not compared.
+
+    AVRO defaults a missing ref_string to schema_name. PROTOBUF derives it from
+    schema_name, so the schema_name comparison already covers it. JSON (and an
+    unsupported type) uses the given value.
+    """
+    if schema_type == "PROTOBUF":
+        return None
+    if schema_type == "AVRO":
+        return ref.ref_string or ref.schema_name
+    return ref.ref_string
+
+
+def _reference_errors(
+    name: str, schema_type: str, references: list[ReferenceInput]
+) -> list[str]:
     errors: list[str] = []
     seen_names: set[str] = set()
     seen_ref_strings: set[str] = set()
-    reported: set[tuple[str, str]] = set()
+    # One message per repeated text, even if it repeats as both schema_name and ref_string.
+    reported: set[str] = set()
     self_reference = False
 
     for ref in references:
         if ref.schema_name == name:
             self_reference = True
-        for kind, value, seen in (
-            ("schema_name", ref.schema_name, seen_names),
-            ("ref_string", ref.ref_string, seen_ref_strings),
+        for value, seen in (
+            (ref.schema_name, seen_names),
+            (_effective_ref_string(schema_type, ref), seen_ref_strings),
         ):
             if value is None:
                 continue
-            if value in seen and (kind, value) not in reported:
+            if value in seen and value not in reported:
                 errors.append(messages.REFERENCE_DUPLICATE.format(x=value))
-                reported.add((kind, value))
+                reported.add(value)
             seen.add(value)
 
     if self_reference:

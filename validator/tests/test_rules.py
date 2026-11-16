@@ -83,6 +83,51 @@ def test_self_reference() -> None:
     assert result.references_ok is False
 
 
+def test_avro_ref_string_defaults_to_schema_name() -> None:
+    refs = [ReferenceInput("a.B"), ReferenceInput("a.C", "a.B")]
+    result = check_input(req(references=refs), CONFIG)
+    assert result.errors == ["Reference 'a.B' is listed twice."]
+    assert result.references_ok is False
+
+
+def test_avro_same_row_twice_reports_once() -> None:
+    refs = [ReferenceInput("a.B"), ReferenceInput("a.B")]
+    result = check_input(req(references=refs), CONFIG)
+    assert result.errors == ["Reference 'a.B' is listed twice."]
+
+
+def test_protobuf_ref_string_is_ignored() -> None:
+    refs = [ReferenceInput("a.B", "x.proto"), ReferenceInput("a.C", "x.proto")]
+    result = check_input(req(schema_type="PROTOBUF", references=refs), CONFIG)
+    assert result.errors == []
+    assert result.references_ok is True
+
+
+def test_json_rows_without_ref_string_are_not_duplicates() -> None:
+    refs = [ReferenceInput("a.B"), ReferenceInput("a.C")]
+    result = check_input(req(schema_type="JSON", references=refs), CONFIG)
+    assert result.errors == []
+    assert result.references_ok is True
+
+
+def test_value_repeated_three_times_reports_once() -> None:
+    refs = [ReferenceInput("a.B", "b.json"), ReferenceInput("a.B", "c.json"),
+            ReferenceInput("a.B", "d.json")]
+    result = check_input(req(schema_type="JSON", references=refs), CONFIG)
+    assert result.errors == ["Reference 'a.B' is listed twice."]
+
+
+def test_unsupported_format_still_reports_references() -> None:
+    refs = [ReferenceInput("a.B"), ReferenceInput("a.B")]
+    result = check_input(req(schema_type="XML", references=refs), CONFIG)
+    assert result.errors == [
+        "Unsupported schema format 'XML'. Use AVRO, JSON or PROTOBUF.",
+        "Reference 'a.B' is listed twice.",
+    ]
+    assert result.fatal is True
+    assert result.references_ok is False
+
+
 def test_collects_all_non_fatal() -> None:
     result = check_input(req(compatibility="STRICT", name="a b"), CONFIG)
     assert result.errors == [
@@ -132,6 +177,24 @@ def test_fullname_changed_on_edit() -> None:
     assert check_name(request, "com.acme.Order2") == [
         "The schema's full name changed from 'com.acme.Order' to 'com.acme.Order2'. "
         "A schema's name cannot change; revert the namespace/name or create a new Schema."
+    ]
+
+
+def test_fullname_changed_with_duplicate_name() -> None:
+    request = req(previous_name="com.acme.Order", existing_names=["Com.Acme.Order"])
+    assert check_name(request, "com.acme.Order2") == [
+        "The schema's full name changed from 'com.acme.Order' to 'com.acme.Order2'. "
+        "A schema's name cannot change; revert the namespace/name or create a new Schema.",
+        "A Schema named 'com.acme.Order' already exists "
+        "(names are compared case-insensitively).",
+    ]
+
+
+def test_rename_on_edit_without_expected_name() -> None:
+    request = req(previous_name="com.acme.Old", name="com.acme.New")
+    assert check_name(request, None) == [
+        "A schema's name cannot change after creation (was 'com.acme.Old'). "
+        "Create a new Schema instead."
     ]
 
 
