@@ -93,6 +93,17 @@ def test_empty_namespace_is_no_namespace() -> None:
     assert result.expected_name is None
 
 
+@pytest.mark.parametrize(
+    "name, namespace",
+    [(".Order", None), ("com..Order", None), ("com.acme.", None), ("Order", "com.acme."), ("Order", ".com")],
+)
+def test_empty_name_part_is_no_namespace(name: str, namespace: str | None) -> None:
+    extra = {} if namespace is None else {"namespace": namespace}
+    result = run(rec(name, [field("id", "string")], **extra))
+    assert result.errors == NAMESPACE
+    assert result.expected_name is None
+
+
 def test_dotted_name_wins() -> None:
     result = run(rec("com.real.Order", [field("id", "string")], namespace="ignored.ns"))
     assert result == FormatAnalysis("com.real.Order", set(), [])

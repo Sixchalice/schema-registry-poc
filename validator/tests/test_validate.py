@@ -147,6 +147,13 @@ def test_name_mismatch_reports_expected_name(schema_type: str, sr: FakeSchemaReg
     assert compat_calls(sr) == []
 
 
+def test_avro_empty_name_part_is_not_passed(sr: FakeSchemaRegistry, run: Callable) -> None:
+    schema = json.dumps({"type": "record", "name": ".Order", "fields": [{"name": "id", "type": "string"}]})
+    result = run(req("AVRO", None, ".Order", schema=schema), sr)
+    assert result == ValidationResult(False, "Error", messages.AVRO_NAMESPACE)
+    assert compat_calls(sr) == []
+
+
 def test_duplicate_name(sr: FakeSchemaRegistry, run: Callable) -> None:
     result = run(req("AVRO", "order", "com.acme.Order", existing_names=["com.acme.order"]), sr)
     assert result == ValidationResult(False, "Error", messages.NAME_EXISTS.format(name="com.acme.Order"))

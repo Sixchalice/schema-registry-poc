@@ -37,7 +37,9 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
     name = schema.get("name")
     if isinstance(name, str):
         full_name = _full_name(name, _own_namespace(schema, None))
-        if "." in full_name:
+        # Every dotted part must be non-empty: ".Order" or "com..Order" has no usable namespace.
+        parts = full_name.split(".")
+        if len(parts) > 1 and all(parts):
             expected_name = full_name
         else:
             errors.append(messages.AVRO_NAMESPACE)
