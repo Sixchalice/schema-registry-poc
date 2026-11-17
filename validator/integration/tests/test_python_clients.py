@@ -233,9 +233,17 @@ def test_two_versions_of_one_type_corrupt_data(
     java_view = fastavro.parse_schema({**order, "fields": [
         {"name": "line", "type": {**line_schema, "fields": [{"name": "price", "type": money1}]}},
         {"name": "total", "type": money}]})
+    assert data[5:] == bytes.fromhex("0a06555344" "0e06555344")
     decoded = fastavro.schemaless_reader(io.BytesIO(data[5:]), java_view)
-    assert isinstance(decoded, dict)
-    assert decoded["total"]["amount"] != 7
+    # Money v1 has only `amount`, so `total` starts at the currency's length byte 0x06 (zigzag 3).
+    assert decoded == {"line": {"price": {"amount": 5}}, "total": {"amount": 3}}
+
+    # The same bytes read with Money v2 everywhere give the original values back,
+    # so the version difference is the cause.
+    v2_view = fastavro.parse_schema({**order, "fields": [
+        {"name": "line", "type": {**line_schema, "fields": [{"name": "price", "type": money2}]}},
+        {"name": "total", "type": money}]})
+    assert fastavro.schemaless_reader(io.BytesIO(data[5:]), v2_view) == value
 
 
 @pytest.mark.parametrize("fields", [
