@@ -352,3 +352,19 @@ def test_empty_descriptor_entry(monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_protoc(monkeypatch, bytes.fromhex("0a100a0e5f5f6d61696e5f5f2e70726f746f"))
     result = run(P + "message M { string a = 1; }")
     assert result == FormatAnalysis(None, set(), NO_PACKAGE + message_count(0))
+
+
+def _nested_messages(levels: int) -> str:
+    text = "int32 x = 1;"
+    for n in range(levels - 1, -1, -1):
+        text = f"message M{n} {{ {text} }}"
+    return P + text
+
+
+def test_protobuf_nesting_limit_is_protocs() -> None:
+    # protoc stops at 31 nested message definitions; the registry would accept 500.
+    assert run(_nested_messages(31)).errors == []
+    result = run(_nested_messages(32))
+    assert len(result.errors) == 1
+    assert result.errors[0].startswith("Invalid Protobuf schema: ")
+    assert "Reached maximum recursion limit for nested messages." in result.errors[0]

@@ -91,7 +91,42 @@
   - VERIFICATION: one entry with the three examples, what each client does with them, and the tests that pin them.
 - [ ] **Step 8: Commit**: `validator: JSON $id and $schema only at the top level; $schema required`.
 
-### Task 2: Verification
+### Task 2: Maximum nesting depth (owner decision 2026-11-17: 100)
+
+Measured on 2026-11-17 against the test registry and the local libraries. Depth counts nested JSON objects and arrays, with the root at 1.
+- **JSON Schema:** the registry accepts depth 601, but jsonschema's `check_schema` (also run by the Python client) raises `RecursionError` somewhere between 322 and 601.
+- **Registry and parser limit:** the registry rejects JSON and Avro from depth ~1000 (`422 Invalid schema`), and so does Python's `json.loads`.
+- **Avro:** fastavro is fine up to depth 990.
+- **Protobuf:** protoc stops at 31 nested message definitions (`Reached maximum recursion limit for nested messages.`), while the registry accepts 500. A chain of 5,000 separate messages compiles. So Protobuf gets no new limit, only a test that pins protoc's.
+
+**Files:**
+- Modify: `schema_validator/models.py` (`ValidatorConfig`), `schema_validator/messages.py`, `schema_validator/formats/avro.py`, `schema_validator/formats/json_schema.py`
+- Test: `tests/test_avro.py`, `tests/test_json_schema.py`, `tests/test_protobuf.py`, `integration/tests/test_python_clients.py`
+- Docs: spec §3 (config), §5.1 step 1, §5.2 step 1, §5.3 (protoc's nesting limit), `README.md` (message and config), `VERIFICATION.md` (the measurements above)
+
+**Interfaces:**
+- Produces:
+  - `ValidatorConfig.max_nesting_depth: int = 100`.
+  - `SCHEMA_TOO_DEEP = "Schema is nested more than {max} levels deep."`
+  - `json_depth(value: Any, limit: int) -> int` in a new module `schema_validator/formats/_depth.py`. It is iterative and returns as soon as the depth passes `limit`. A scalar is 0, an object or array is 1 plus its deepest child, so `{"type": "string"}` is 1.
+- The rule: in the Avro and JSON analysers, right after `json.loads` succeeds and before every other step, a depth above `config.max_nesting_depth` returns `FormatAnalysis(None, None, [SCHEMA_TOO_DEEP])`. A `RecursionError` from `json.loads` returns the same, instead of `NOT_JSON`; a `ValueError` stays `NOT_JSON`. `JSON_TOO_DEEP` stays for a configured limit above jsonschema's own.
+
+- [ ] **Step 1: Write the failing tests.**
+  - `test_json_depth`: `json_depth("x", 5) == 0`, `json_depth({"a": [1]}, 5) == 2`, and a 10-deep value with limit 3 returns a number above 3.
+  - For each of AVRO and JSON:
+    - `test_depth_at_limit_passes_the_depth_check`: depth exactly 100 gives no `SCHEMA_TOO_DEEP`.
+    - `test_depth_above_limit_is_an_error`: depth 101 gives exactly `["Schema is nested more than 100 levels deep."]`, and `external_refs is None`.
+    - `test_parser_recursion_is_too_deep`: a text 5,000 levels deep gives `SCHEMA_TOO_DEEP`, not `NOT_JSON`.
+    - `test_configured_limit_is_used`: `max_nesting_depth=5` with depth 6 gives the message with `5`.
+  - `test_json_too_deep_still_reported_above_the_configured_limit`: `max_nesting_depth=10_000` and a JSON schema of depth 661 (330 nested `properties` levels) gives `JSON_TOO_DEEP`.
+  - `test_protobuf_nesting_limit_is_protocs`: 32 levels of nested message definitions give a `PROTO_INVALID` error containing `Reached maximum recursion limit for nested messages.`, and 31 levels compile.
+- [ ] **Step 2: Run them and check that they fail.**
+- [ ] **Step 3: Implement it.** Add `_depth.py`, call it from both analysers, split the `except` after `json.loads`, and add the message and the config field.
+- [ ] **Step 4: Run the unit suite and coverage.** Expected: pass, 100%. Raise the limit in any existing test that needs a deeper schema, and say which tests in the report.
+- [ ] **Step 5: Add the integration test** `test_json_deeper_than_the_python_client_can_check_is_rejected`: a JSON schema of depth 601 (300 nested `properties` levels), which the registry accepts (pin that with a direct registration). `validate` gives `SCHEMA_TOO_DEEP`, and the Python `JSONSerializer` (or `Draft7Validator.check_schema`, which it runs) raises `RecursionError`. Run the integration suite. Expected: pass.
+- [ ] **Step 6: Update the docs and commit**: `validator: maximum nesting depth for Avro and JSON schemas (100)`.
+
+### Task 3: Verification
 
 **Files:**
 - Modify: `VERIFICATION.md` (test counts, coverage figures, one differential line)

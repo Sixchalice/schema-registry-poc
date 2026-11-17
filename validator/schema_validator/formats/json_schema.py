@@ -10,6 +10,7 @@ from jsonschema.exceptions import SchemaError
 from jsonschema.validators import Draft7Validator, validator_for
 
 from schema_validator import messages
+from schema_validator.formats._depth import json_depth
 from schema_validator.models import FormatAnalysis, ValidatorConfig
 
 _TITLE_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+")
@@ -22,7 +23,9 @@ _NAME_MAPS = frozenset(
 _DATA_KEYWORDS = frozenset({"enum", "const", "default", "examples"})
 _DRAFT_04 = "http://json-schema.org/draft-04/schema"
 # Drafts in which a "$ref" makes its sibling keywords, the id among them, ignored.
-_REF_SIBLINGS_IGNORED = frozenset({_DRAFT_04, "http://json-schema.org/draft-06/schema", "http://json-schema.org/draft-07/schema"})
+_REF_SIBLINGS_IGNORED = frozenset(
+    {_DRAFT_04, "http://json-schema.org/draft-06/schema", "http://json-schema.org/draft-07/schema"}
+)
 
 
 class _BadUri(Exception):
@@ -49,8 +52,12 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
     # Step 1
     try:
         schema = json.loads(schema_text)
-    except (ValueError, RecursionError) as e:
+    except RecursionError:
+        return FormatAnalysis(None, None, [messages.SCHEMA_TOO_DEEP.format(max=config.max_nesting_depth)])
+    except ValueError as e:
         return FormatAnalysis(None, None, [messages.NOT_JSON.format(err=e)])
+    if json_depth(schema, config.max_nesting_depth) > config.max_nesting_depth:
+        return FormatAnalysis(None, None, [messages.SCHEMA_TOO_DEEP.format(max=config.max_nesting_depth)])
     if not isinstance(schema, dict):
         return FormatAnalysis(None, None, [messages.JSON_TOP_LEVEL])
 

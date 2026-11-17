@@ -69,6 +69,7 @@ class ValidatorConfig:
     sr_password: str | None = field(default=None, repr=False)
     sr_timeout_seconds: float = 10
     max_schema_bytes: int = 500_000
+    max_nesting_depth: int = 100
     allowed_json_drafts: tuple[str, ...] = DEFAULT_JSON_DRAFTS
     builtin_proto_imports: frozenset[str] = DEFAULT_BUILTIN_PROTO_IMPORTS
 

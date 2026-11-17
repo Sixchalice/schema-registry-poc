@@ -71,6 +71,7 @@ Configuration (constructor arguments or environment, not per request):
 
 - `sr_url`, `sr_username`, `sr_password`, `sr_timeout_seconds` (default 10)
 - `max_schema_bytes` (default 500_000)
+- `max_nesting_depth` (default 100): the deepest nesting of JSON objects and arrays an Avro or JSON schema may have, the root counting as 1. Measured 2026-11-17: the registry takes JSON of depth 601, but `jsonschema`'s `check_schema` (the Python client runs it) overflows the stack between depth 322 and 601; the registry and Python's `json.loads` give up from about 1000 (`422 Invalid schema`); fastavro copes up to 990.
 - `allowed_json_drafts` (default: draft-04, draft-06, draft-07, 2019-09, 2020-12). This is platform policy only: SR 7.9 accepts any `$schema` value, including unknown URLs.
 - `builtin_proto_imports`: the exact set of import paths SR 7.9.0 resolves without a reference (a prefix list is wrong: SR does not resolve `google/type/localized_text.proto` or `google/rpc/*`). Default:
   - `google/protobuf/`: `any`, `api`, `descriptor`, `duration`, `empty`, `field_mask`, `source_context`, `struct`, `timestamp`, `type`, `wrappers` (each `.proto`)
@@ -186,7 +187,7 @@ How Confluent derives the RecordNameStrategy subject (confirmed in Confluent doc
 
 ### 5.1 Avro
 
-1. `json.loads` the text. Failure: `Schema is not valid JSON: {err}`.
+1. `json.loads` the text. Failure: `Schema is not valid JSON: {err}`. Then the depth check, before everything else: nested deeper than `max_nesting_depth`, or so deep that `json.loads` raises `RecursionError`, gives `Schema is nested more than {max} levels deep.` and nothing more. The check is on the submitted text only, not on referenced texts.
 2. Top level must be a JSON object with `"type"` `record`, `enum` or `fixed`. A shared enum or fixed is a Schema of its own, which records reference. Reject top-level unions (JSON arrays), primitives, arrays and maps: `The top level of an Avro schema must be a single record, enum or fixed.` Steps 3 to 7 apply to an enum or fixed as to a record (it has no fields, so no external references of its own).
 3. Full name:
    - if `name` contains a dot, `name` is the full name and `namespace` is ignored;
@@ -208,7 +209,7 @@ fastavro and SR (Java Avro 1.11.4) do not agree on everything, which is fine bec
 
 ### 5.2 JSON Schema
 
-1. `json.loads`. Must be a JSON object.
+1. `json.loads`, then the same depth check as Avro step 1 (`Schema is nested more than {max} levels deep.`). Must be a JSON object. `JSON schema is nested too deeply.` (step 6) remains for a `max_nesting_depth` set above what `check_schema` can follow.
 2. `title` must be a non-empty string: `JSON schema needs a "title"; it becomes the schema name.`
 3. Namespace required and characters restricted: `title` must match `^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$`: `The "title" must be a dotted name made of letters, digits and underscores, for example "com.team.domain.Order".`
 4. Top level must have `"type": "object"`: `The top level of a JSON schema must have "type": "object".`
@@ -239,6 +240,8 @@ Parsing `.proto` text requires the protoc compiler shipped in `grpcio-tools`.
    - `importlib.resources.files("grpc_tools") / "_proto"` provides `google/protobuf/*` (verified in grpcio-tools 1.85.1).
    - grpcio-tools ships nothing else. The `google/type/*` and `confluent/*` files in `builtin_proto_imports` must be bundled in the package under `schema_validator/_proto/`, copied from the SR 7.9.0 image (`proto-google-common-protos-2.22.1.jar` and `kafka-protobuf-types-7.9.0.jar` in `/usr/share/java/schema-registry`). Bundle only the listed files.
 5. Decide by exit code only. protoc also writes warnings to stderr on success (unused import; `No edition or syntax specified`). Non-zero exit: `Invalid Protobuf schema: {stderr, with temp paths stripped and "__main__.proto:" removed}`. If every failure is a missing file that the schema itself imports and none of them is the path of a reference row, report nothing here (D4 names them). A missing file imported only by a referenced schema is reported as `Invalid Protobuf schema`. A protoc timeout gives `Invalid Protobuf schema: the Protobuf compiler did not finish in 10 seconds.` A non-zero exit with no error line (a crash or a signal) gives `Internal validator error: protoc exited with code {n} and no message`. Error lines look like `__main__.proto:3:30: Expected ";".` and `nope/x.proto: File not found.`
+
+   protoc also limits nesting itself: 32 nested message definitions fail with `Reached maximum recursion limit for nested messages.` (31 compile), while the registry accepts 500. A chain of 5,000 separate messages compiles. So Protobuf gets no depth limit of its own; `test_protobuf_nesting_limit_is_protocs` pins protoc's.
 
    protoc is the real validity check for Protobuf. SR's own parser accepted duplicate field numbers and a proto3 enum that does not start at 0. The other way round, SR rejects `edition = "2023"`, which protoc accepts; stage E reports that.
 6. Parse `out.pb` as `google.protobuf.descriptor_pb2.FileDescriptorSet`; take the entry for `__main__.proto`.

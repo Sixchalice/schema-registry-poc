@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from schema_validator import ValidationRequest, ValidationResult, messages, validate
+from schema_validator.formats._depth import json_depth
 from schema_validator.formats.json_schema import analyse
 from schema_validator.models import DEFAULT_JSON_DRAFTS, FormatAnalysis, ValidatorConfig
 from tests.fake_sr import FakeSchemaRegistry
@@ -211,12 +212,45 @@ def test_non_string_title() -> None:
     assert result.expected_name is None
 
 
-def test_deeply_nested_json_is_not_json() -> None:
-    # json.loads raises RecursionError, not ValueError, past about 1000 levels.
-    result = analyse("[" * 3000 + "]" * 3000, {}, cfg)
-    assert len(result.errors) == 1
-    assert result.errors[0].startswith("Schema is not valid JSON: ")
+def test_json_depth() -> None:
+    assert json_depth("x", 5) == 0
+    assert json_depth({"a": [1]}, 5) == 2
+    assert json_depth({"type": "string"}, 5) == 1
+    ten: Any = 1
+    for _ in range(10):
+        ten = [ten]
+    assert json_depth(ten, 3) > 3
+    assert json_depth(ten, 10) == 10
+
+
+def nested(depth: int) -> str:
+    return "[" * depth + "]" * depth
+
+
+TOO_DEEP = ["Schema is nested more than 100 levels deep."]
+
+
+def test_depth_at_limit_passes_the_depth_check() -> None:
+    result = analyse(nested(100), {}, cfg)
+    assert messages.SCHEMA_TOO_DEEP.format(max=100) not in result.errors
+
+
+def test_depth_above_limit_is_an_error() -> None:
+    result = analyse(nested(101), {}, cfg)
+    assert result.errors == TOO_DEEP
     assert result.external_refs is None
+
+
+def test_parser_recursion_is_too_deep() -> None:
+    # json.loads raises RecursionError, not ValueError, at about 1000 levels.
+    result = analyse(nested(5000), {}, cfg)
+    assert result.errors == TOO_DEEP
+    assert result.external_refs is None
+
+
+def test_configured_limit_is_used() -> None:
+    result = analyse(nested(6), {}, ValidatorConfig(max_nesting_depth=5))
+    assert result.errors == ["Schema is nested more than 5 levels deep."]
 
 
 def test_javatype_allowed() -> None:
@@ -282,11 +316,13 @@ def test_https_draft07_rejected() -> None:
     assert run(schema(**{"$schema": draft})).errors == [f"Unsupported JSON Schema draft '{draft}'."]
 
 
-def test_deep_schema_gives_too_deep() -> None:
+def test_json_too_deep_still_reported_above_the_configured_limit() -> None:
+    # Depth 661: 330 nested "properties" levels, deeper than jsonschema's check_schema can follow.
     node: dict[str, Any] = {"type": "string"}
-    for _ in range(200):
-        node = {"type": "object", "properties": {"p": node}}
-    result = run(schema(properties={"p": node}))
+    for _ in range(330):
+        node = {"properties": {"p": node}}
+    text = json.dumps(schema(**node))
+    result = analyse(text, {}, ValidatorConfig(max_nesting_depth=10_000))
     assert result.errors == ["JSON schema is nested too deeply."]
 
 
@@ -308,6 +344,7 @@ ROOT = "https://acme.example/o.json"
 A = "https://acme.example/a.json"
 DRAFT_07 = D7
 DRAFT_04 = "http://json-schema.org/draft-04/schema#"
+DRAFT_06 = "http://json-schema.org/draft-06/schema#"
 DRAFT_2020 = "https://json-schema.org/draft/2020-12/schema"
 
 
@@ -375,7 +412,7 @@ def test_long_nested_id_chain_is_one_error_and_fast() -> None:
     d = schema(**{"x-defs": siblings, "x-chain": chain})
     total = 2000 + 100
     start = time.perf_counter()
-    result = run(d)
+    result = analyse(json.dumps(d), {}, ValidatorConfig(max_nesting_depth=200))
     assert time.perf_counter() - start < 1
     assert len(result.errors) == 1
     assert result.errors[0].startswith("Only the top level of a JSON schema may have \"$id\". Remove it from '/")
@@ -388,18 +425,32 @@ def test_more_than_three_paths_are_summarised() -> None:
     assert run(d).errors == [nested_id("'/x-defs/n0', '/x-defs/n1', '/x-defs/n2' and 2 more")]
 
 
+def test_exactly_three_paths_have_no_summary() -> None:
+    d = schema(**{"x-defs": {f"n{i}": {"$id": f"n{i}/"} for i in range(3)}})
+    assert run(d).errors == [nested_id("'/x-defs/n0', '/x-defs/n1', '/x-defs/n2'")]
+
+
+def test_exactly_four_paths_are_summarised_as_one_more() -> None:
+    d = schema(**{"x-defs": {f"n{i}": {"$id": f"n{i}/"} for i in range(4)}})
+    assert run(d).errors == [nested_id("'/x-defs/n0', '/x-defs/n1', '/x-defs/n2' and 1 more")]
+
+
 def test_paths_are_json_pointers() -> None:
     d = schema(**{"x-defs": {"a/b": {"$id": "x/"}, "c~d": {"$id": "y/"}}, "allOf": [{"$id": "z/"}]})
     assert run(d).errors == [nested_id("'/allOf/0', '/x-defs/a~1b', '/x-defs/c~0d'")]
 
 
-def test_root_id_beside_root_ref_in_draft07_is_an_error() -> None:
-    d = schema(**{"$id": ROOT, "$ref": "#/definitions/O", "definitions": {"O": {"type": "object"}}})
-    assert run(d).errors == [messages.JSON_ROOT_ID_WITH_REF.format(kw="$id")]
+@pytest.mark.parametrize("draft", [DRAFT_04, DRAFT_06, DRAFT_07])
+def test_root_id_beside_root_ref_up_to_draft07_is_an_error(draft: str) -> None:
+    keyword = "id" if draft == DRAFT_04 else "$id"
+    d = schema(**{"$schema": draft, keyword: ROOT, "$ref": "#/definitions/O", "definitions": {"O": {"type": "object"}}})
+    assert run(d).errors == [messages.JSON_ROOT_ID_WITH_REF.format(kw=keyword)]
     assert run(d).external_refs is None
-    assert run({**d, "$schema": DRAFT_2020}).errors == []
-    d04 = {**d, "$schema": DRAFT_04, "id": ROOT}
-    assert run(d04).errors == [messages.JSON_ROOT_ID_WITH_REF.format(kw="id")]
+
+
+def test_root_id_beside_root_ref_in_2020_12_is_fine() -> None:
+    d = schema(**{"$schema": DRAFT_2020, "$id": ROOT, "$ref": "#/definitions/O", "definitions": {"O": {"type": "object"}}})
+    assert run(d).errors == []
 
 
 def test_keyword_names_as_property_names_or_data_are_not_flagged() -> None:

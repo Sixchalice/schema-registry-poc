@@ -41,12 +41,34 @@ def test_not_json() -> None:
     assert result.external_refs is None
 
 
-def test_deeply_nested_json_is_not_json() -> None:
-    # json.loads raises RecursionError, not ValueError, at about 1000 levels.
-    result = analyse("[" * 100_000, {}, ValidatorConfig())
-    assert len(result.errors) == 1
-    assert result.errors[0].startswith("Schema is not valid JSON: ")
+def nested(depth: int) -> str:
+    return "[" * depth + "]" * depth
+
+
+TOO_DEEP = ["Schema is nested more than 100 levels deep."]
+
+
+def test_depth_at_limit_passes_the_depth_check() -> None:
+    result = analyse(nested(100), {}, ValidatorConfig())
+    assert messages.SCHEMA_TOO_DEEP.format(max=100) not in result.errors
+
+
+def test_depth_above_limit_is_an_error() -> None:
+    result = analyse(nested(101), {}, ValidatorConfig())
+    assert result.errors == TOO_DEEP
     assert result.external_refs is None
+
+
+def test_parser_recursion_is_too_deep() -> None:
+    # json.loads raises RecursionError, not ValueError, at about 1000 levels.
+    result = analyse(nested(5000), {}, ValidatorConfig())
+    assert result.errors == TOO_DEEP
+    assert result.external_refs is None
+
+
+def test_configured_limit_is_used() -> None:
+    result = analyse(nested(6), {}, ValidatorConfig(max_nesting_depth=5))
+    assert result.errors == ["Schema is nested more than 5 levels deep."]
 
 
 def test_top_level_union() -> None:

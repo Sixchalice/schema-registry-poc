@@ -8,6 +8,7 @@ import fastavro
 from fastavro.schema import UnknownType
 
 from schema_validator import messages
+from schema_validator.formats._depth import json_depth
 from schema_validator.models import FormatAnalysis, ValidatorConfig
 
 # Type strings that are not names: primitives and complex-type keywords.
@@ -23,8 +24,12 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
     # Step 1
     try:
         schema = json.loads(schema_text)
-    except (ValueError, RecursionError) as e:
+    except RecursionError:
+        return FormatAnalysis(None, None, [messages.SCHEMA_TOO_DEEP.format(max=config.max_nesting_depth)])
+    except ValueError as e:
         return FormatAnalysis(None, None, [messages.NOT_JSON.format(err=e)])
+    if json_depth(schema, config.max_nesting_depth) > config.max_nesting_depth:
+        return FormatAnalysis(None, None, [messages.SCHEMA_TOO_DEEP.format(max=config.max_nesting_depth)])
 
     # Step 2
     if not isinstance(schema, dict) or not isinstance(schema.get("type"), str) or schema["type"] not in _NAMED_TYPES:

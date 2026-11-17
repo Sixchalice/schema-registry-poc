@@ -474,6 +474,55 @@ def test_json_nested_schema_keyword_is_rejected(
         serializer({"p": {"t": {"street": "x"}}}, CTX)
 
 
+def test_python_client_ignores_root_id_beside_root_ref_in_draft07(
+    ck_client: SchemaRegistryClient, register: Register, config: ValidatorConfig, ns: str,
+) -> None:
+    # The claim behind JSON_ROOT_ID_WITH_REF: in draft-07 the root "$id" next to the root "$ref" is
+    # ignored, so a relative "$ref" below it is not resolved against that "$id".
+    address = register_address(register, ns)
+
+    def root_schema(title: str) -> str:
+        return json.dumps({
+            "$schema": DRAFT_07, "$id": "https://acme.example/o.json", "title": f"{ns}.{title}", "type": "object",
+            "$ref": "#/definitions/O",
+            "definitions": {"O": {"type": "object", "properties": {"a": {"$ref": "a.json"}}}}})
+
+    result = validated(f"{ns}.RootA", root_schema("RootA"), config, [ReferenceInput(address, "a.json")])
+    assert result.validationType == "Error"
+    assert result.message == messages.JSON_ROOT_ID_WITH_REF.format(kw="$id")
+
+    # Each variant has its own subject, because the client caches the latest version of a subject.
+    for title, name, resolves in (("RootA", "a.json", True), ("RootB", "https://acme.example/a.json", False)):
+        schema = root_schema(title)
+        refs = [{"name": name, "subject": address, "version": 1}]
+        registrar(register, f"{ns}.{title}", schema, "JSON", refs)()
+        serializer = JSONSerializer(Schema(schema, "JSON", [SchemaReference(**refs[0])]), ck_client, conf=CONF)
+        if resolves:
+            serializer({"a": {"street": "x"}}, CTX)
+        else:
+            with pytest.raises(Exception, match="Unresolvable"):
+                serializer({"a": {"street": "x"}}, CTX)
+
+
+def test_json_deeper_than_the_python_client_can_check_is_rejected(
+    ck_client: SchemaRegistryClient, register: Register, config: ValidatorConfig, ns: str,
+) -> None:
+    # Depth 601: 300 nested "properties" levels. The registry accepts it; jsonschema's check_schema,
+    # which the Python serializer runs, overflows the stack.
+    node: dict[str, object] = {"type": "string"}
+    for _ in range(300):
+        node = {"type": "object", "properties": {"p": node}}
+    schema = json.dumps({"$schema": DRAFT_07, "title": f"{ns}.Deep", "type": "object", "properties": {"p": node}})
+    result = validated(f"{ns}.Deep", schema, config, [])
+    assert result.validationType == "Error"
+    assert result.message == messages.SCHEMA_TOO_DEEP.format(max=100)
+
+    status, body = register(f"{ns}.Deep", schema, "JSON")
+    assert status == 200, body
+    with pytest.raises(RecursionError):
+        JSONSerializer(schema, ck_client, conf=CONF)({}, CTX)
+
+
 def test_python_client_reads_https_draft07_as_2020_12(config: ValidatorConfig, ns: str) -> None:
     # jsonschema does not know the https spelling of draft-07: it validates with 2020-12 and warns
     # that this will become an error. That is why the validator rejects it (JSON_DRAFT).

@@ -100,6 +100,7 @@ JSON_ROOT_ID_WITH_REF = (
     'Move the "$ref" into "allOf".'
 )
 JSON_TOO_DEEP = "JSON schema is nested too deeply."
+SCHEMA_TOO_DEEP = "Schema is nested more than {max} levels deep."
 
 # Protobuf (5.3)
 PROTO_IMPORT_PATH = "Invalid import path '{x}'."
