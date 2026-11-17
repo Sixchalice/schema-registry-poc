@@ -175,7 +175,7 @@ Tested: `test_slow_body_hits_deadline` (unit); the reviewer's fake registry `t13
 
 Observed: a registry sending one byte every 0.5 s with `sr_timeout_seconds=2` held the call for 10.6 s and then passed; `requests`' `timeout` bounds each read, not the whole response.
 
-Code changed: requests are streamed and the body is read one byte at a time (urllib3 only returns a chunk when complete, so `chunk_size=None` and larger chunks still waited out the drip), with a wall-clock check after each byte against start + `sr_timeout_seconds`. An overrun is E3. After the change `drip` ends in 2.0 s with "Could not reach". Reading 1 MB byte by byte takes about 1.2 s. Spec 7 and README updated.
+Code changed: requests are streamed and the body is read with `response.raw.read1(65536, decode_content=True)` until it returns `b""`, with a wall-clock check after each call against start + `sr_timeout_seconds`; an overrun is E3. `iter_content(chunk_size=None)` was tried first and did not help, because urllib3 reads a whole non-chunked body in one call (`drip` still took 10.6 s). Without `raw.read1` (urllib3 1.x) the client falls back to `iter_content(chunk_size=1)`. Measured with urllib3 2.8.0: `slow` and `drip` of `t13_failures.py` both end in 2.0 s with "Could not reach"; a 1 MB body reads in 0.0001 s with `read1` (about 1.2 s with `chunk_size=1`). Spec 7 and README updated.
 
 ## No redirects (audit L2)
 

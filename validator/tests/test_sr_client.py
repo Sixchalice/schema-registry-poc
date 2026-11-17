@@ -22,11 +22,31 @@ PASSWORD = "s3cret-Pa55"
 CONTENT_TYPE = "application/vnd.schemaregistry.v1+json"
 
 
+class StubRaw:
+    """urllib3 2.x raw response: read1 returns one piece, then b"" at the end."""
+
+    def __init__(self, data: bytes, piece: int = 7) -> None:
+        self._all = data
+        self._data = data
+        self._piece = piece
+        self.sizes: list[int | None] = []
+        self.decode: list[object] = []
+
+    def read1(self, amt: int | None = None, decode_content: bool | None = None) -> bytes:
+        self.sizes.append(amt)
+        self.decode.append(decode_content)
+        out, self._data = self._data[:self._piece], self._data[self._piece:]
+        if not out:
+            self._data = self._all  # a stub response may be read by several calls
+        return out
+
+
 class StubResponse:
     def __init__(self, status_code: int, body: Any = None, text: str | None = None) -> None:
         self.status_code = status_code
         self.text = text if text is not None else ("" if body is None else json.dumps(body))
         self.closed = False
+        self.raw = StubRaw(self.text.encode())
 
     def iter_content(self, chunk_size: int | None = None):
         yield self.text.encode()
@@ -589,16 +609,34 @@ def test_config_repr_does_not_contain_the_password():
 
 # ---- deadline, redirects, raw bodies (audit L1-L3) ---------------------------
 
+class SlowRaw:
+    def read1(self, amt: int | None = None, decode_content: bool | None = None) -> bytes:
+        return b" "
+
+
 class SlowResponse(StubResponse):
+    def __init__(self) -> None:
+        super().__init__(200, VERSION_BODY)
+        self.raw = SlowRaw()
+
+
+class NoRead1Response(StubResponse):
+    """urllib3 1.x: `raw` has no read1, only iter_content is used."""
+
+    def __init__(self, status: int, body: Any = None) -> None:
+        super().__init__(status, body)
+        self.raw = object()
+        self.chunk_sizes: list[int | None] = []
+
     def iter_content(self, chunk_size: int | None = None):
-        for _ in range(5):
-            yield b" "
+        self.chunk_sizes.append(chunk_size)
+        yield from (bytes([b]) for b in self.text.encode())
 
 
 def test_slow_body_hits_deadline(monkeypatch):
     clock = iter(range(100))
     monkeypatch.setattr("schema_validator.sr_client.time.monotonic", lambda: float(next(clock)))
-    response = SlowResponse(200, VERSION_BODY)
+    response = SlowResponse()
     with pytest.raises(SchemaRegistryUnavailable) as e:
         client_for(StubSession(response), timeout_seconds=2).get_latest("a.B")
     assert "longer than the timeout" in str(e.value)
@@ -628,3 +666,25 @@ def test_response_is_closed_on_every_outcome():
         with pytest.raises(SchemaRegistryError) if response.status_code != 200 else _nullcontext():
             client_for(StubSession(response)).get_latest("a.B")
         assert response.closed
+
+
+def test_body_is_read_in_pieces_with_read1():
+    response = StubResponse(200, VERSION_BODY)
+    result = client_for(StubSession(response)).get_latest("a.B")
+    assert result is not None and result.version == 3
+    assert set(response.raw.sizes) == {65536}
+    assert set(response.raw.decode) == {True}
+
+
+def test_fallback_to_iter_content_without_read1():
+    response = NoRead1Response(200, VERSION_BODY)
+    result = client_for(StubSession(response)).get_latest("a.B")
+    assert result is not None and result.version == 3
+    assert response.chunk_sizes == [1]
+
+
+def test_fallback_hits_deadline_too(monkeypatch):
+    clock = iter(range(1000))
+    monkeypatch.setattr("schema_validator.sr_client.time.monotonic", lambda: float(next(clock)))
+    with pytest.raises(SchemaRegistryUnavailable):
+        client_for(StubSession(NoRead1Response(200, VERSION_BODY)), timeout_seconds=2).get_latest("a.B")

@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import time
 import urllib.parse
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -185,11 +185,9 @@ class HttpSchemaRegistryClient:
                 )
                 # `timeout` bounds connect and each read, not the whole response: a
                 # server that trickles bytes would hold the call open, so check the
-                # clock after every chunk. One byte per chunk, because urllib3 waits
-                # for a whole chunk (or the end of the body) before returning it, so
-                # a larger chunk would delay the check by as long as the drip lasts.
+                # clock after every piece of the body.
                 chunks = []
-                for chunk in response.iter_content(chunk_size=1):
+                for chunk in _pieces(response):
                     chunks.append(chunk)
                     if time.monotonic() > started + self._timeout:
                         raise SchemaRegistryUnavailable(
@@ -240,6 +238,27 @@ def _bad_body(method: str, path: str) -> SchemaRegistryUnavailable:
 
 
 _UNPARSEABLE = object()
+_READ_SIZE = 65536
+
+
+def _pieces(response: requests.Response) -> Iterator[bytes]:
+    """The body in pieces, each handed over as soon as it arrives.
+
+    urllib3 2.x `read1` returns what one underlying read gives, so a server that
+    drips bytes yields small pieces and the caller's deadline check runs between
+    them. `iter_content` waits for a full chunk (or the end of the body) before it
+    returns, so it only works piece by piece at chunk_size=1; that is the fallback
+    for urllib3 1.x, which has no `read1`.
+    """
+    read1 = getattr(response.raw, "read1", None)
+    if read1 is None:
+        yield from response.iter_content(chunk_size=1)
+        return
+    while True:
+        piece = read1(_READ_SIZE, decode_content=True)
+        if not piece:
+            return
+        yield piece
 
 
 def _parse(raw: bytes) -> object:
