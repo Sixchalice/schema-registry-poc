@@ -5,8 +5,10 @@ from typing import Any
 
 import pytest
 
+from schema_validator import ValidationRequest, ValidationResult, messages, validate
 from schema_validator.formats.json_schema import analyse
 from schema_validator.models import DEFAULT_JSON_DRAFTS, FormatAnalysis, ValidatorConfig
+from tests.fake_sr import FakeSchemaRegistry
 
 cfg = ValidatorConfig()
 
@@ -273,8 +275,11 @@ def test_fragment_id_keeps_the_base() -> None:
 
 
 def test_fragment_id_without_root_id_keeps_the_empty_base() -> None:
-    result = run(schema(properties={"s": {"$id": "#foo", "properties": {"a": {"$ref": "a.json"}}}}))
+    sub = {"s": {"$id": "#foo", "properties": {"a": {"$ref": "a.json"}}}}
+    result = run(schema(**{"$schema": "http://json-schema.org/draft-07/schema#", "properties": sub}))
     assert result.external_refs == {"a.json"}
+    # Without $schema the 2020-12 reading (the Python client's) also applies: urljoin("#foo", "a.json").
+    assert run(schema(properties=sub)).external_refs == {"a.json", "/a.json"}
 
 
 def test_non_string_id_is_ignored() -> None:
@@ -316,6 +321,93 @@ def test_malformed_ref_is_an_error() -> None:
     result = run(schema(properties={"a": {"$ref": "http://[x"}}))
     assert result.errors == ["Invalid JSON schema: the $ref 'http://[x' is not a valid URI"]
     assert result.external_refs is None
+
+
+ROOT = "https://acme.example/o.json"
+A = "https://acme.example/a.json"
+DRAFT_07 = "http://json-schema.org/draft-07/schema#"
+# Audit-fix review F-I1: an $id the Python client (`referencing`) does not register is not internal.
+UNREGISTERED_ID_SHAPES = {
+    "defs-in-draft-07": schema(**{"$schema": DRAFT_07, "$id": ROOT,
+                                  "$defs": {"A": {"$id": A, "type": "string"}},
+                                  "properties": {"p": {"$ref": A}}}),
+    "unknown-keyword": schema(**{"$id": ROOT, "x-defs": {"A": {"$id": A, "type": "string"}},
+                                 "properties": {"p": {"$ref": A}}}),
+    "id-beside-ref-draft-07": schema(**{"$schema": DRAFT_07, "$id": ROOT,
+                                        "properties": {"p": {"$id": "https://acme.example/sub/", "$ref": "a.json"}}}),
+}
+
+
+@pytest.mark.parametrize("shape", UNREGISTERED_ID_SHAPES)
+def test_id_the_client_does_not_register_is_external(shape: str) -> None:
+    result = run(UNREGISTERED_ID_SHAPES[shape])
+    assert result.errors == []
+    assert result.external_refs == {A}
+
+
+@pytest.mark.parametrize("shape", UNREGISTERED_ID_SHAPES)
+def test_id_the_client_does_not_register_needs_a_reference(shape: str) -> None:
+    request = ValidationRequest(name="com.acme.Order", schema_type="JSON",
+                                schema=json.dumps(UNREGISTERED_ID_SHAPES[shape]), compatibility="BACKWARD",
+                                references=[], previous_name=None, existing_names=[])
+    sr = FakeSchemaRegistry()
+    assert validate(request, sr, cfg) == ValidationResult(False, "Error", messages.REF_MISSING_ROW.format(x=A))
+    assert sr.calls == []
+
+
+def test_id_beside_ref_moves_the_base_from_2019_09() -> None:
+    result = run(schema(**{"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": ROOT,
+                           "properties": {"p": {"$id": "https://acme.example/sub/", "$ref": "a.json"}}}))
+    assert result.external_refs == {"https://acme.example/sub/a.json"}
+
+
+def test_without_schema_keyword_both_readings_need_a_reference() -> None:
+    # Confluent reads such a schema as draft-07; the Python client's validator class is 2020-12.
+    result = run(schema(**{"$id": ROOT, "properties": {"p": {"$id": "https://acme.example/sub/", "$ref": "a.json"}}}))
+    assert result.external_refs == {A, "https://acme.example/sub/a.json"}
+    assert run(schema(**{"$id": ROOT, "$defs": {"A": {"$id": A}}, "properties": {"p": {"$ref": A}}})).external_refs \
+        == {A}
+
+
+def test_base_under_an_unknown_keyword_depends_on_how_the_ref_is_reached() -> None:
+    # Through "#/x-defs/A" the client applies q's $id; through a pointer straight to r it does not.
+    result = run(schema(**{"$id": "https://x/root.json",
+                           "x-defs": {"A": {"properties": {"q": {"$id": "https://y/",
+                                                                 "properties": {"r": {"$ref": "b.json"}}}}}}}))
+    assert result.external_refs == {"https://x/b.json", "https://y/b.json"}
+
+
+def test_same_document_ref_under_an_unregistered_id_is_external() -> None:
+    result = run(schema(**{"$schema": DRAFT_07, "$id": ROOT,
+                           "x-defs": {"A": {"properties": {"q": {"$id": "https://y/", "$ref": "#/definitions/z"},
+                                                           "r": {"$id": "https://z/",
+                                                                 "items": {"$ref": "#/definitions/z"}}}}}}))
+    # q's $id is ignored beside its $ref, so its ref stays in the document; r's $id is not registered.
+    assert result.external_refs == {"https://z/"}
+
+
+def test_id_under_a_nested_schema_keyword_is_not_internal() -> None:
+    # referencing reads a subschema with its own $schema by that draft, which can drop the $id.
+    result = run(schema(**{"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": ROOT,
+                           "properties": {"s": {"$schema": DRAFT_07, "$id": A, "$ref": "#/$defs/z",
+                                                "properties": {"t": {"$id": "t.json"}}},
+                                          "u": {"$ref": A}, "v": {"$ref": "https://acme.example/t.json"}},
+                           "$defs": {"z": {"type": "string"}}}))
+    assert result.external_refs == {A, "https://acme.example/t.json"}
+
+
+def test_id_with_a_fragment_is_registered_with_it() -> None:
+    # Draft-07 keeps the fragment of a subschema $id, and lookups drop the fragment of the $ref.
+    result = run(schema(**{"$schema": DRAFT_07, "$id": ROOT,
+                           "definitions": {"x": {"$id": A + "#frag", "type": "string"}},
+                           "properties": {"p": {"$ref": A}}}))
+    assert result.external_refs == {A}
+
+
+def test_keyword_of_the_wrong_type_for_one_reading_does_not_raise() -> None:
+    # Without $schema, "$defs": 5 is fine in draft-07 and wrong in 2020-12.
+    assert run(schema(**{"$defs": 5, "properties": {"p": {"$ref": "a.json"}}})) == FormatAnalysis(
+        "com.acme.Order", {"a.json"}, [])
 
 
 def test_id_in_data_or_as_a_property_name_does_not_move_the_base() -> None:

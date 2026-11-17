@@ -413,6 +413,25 @@ def test_json_internal_id_ref_works(
                  registrar(register, f"{ns}.O5", schema, "JSON"), producer)
 
 
+def test_json_id_under_a_keyword_the_draft_does_not_know_is_external(
+    ck_client: SchemaRegistryClient, register: Register, config: ValidatorConfig, ns: str,
+) -> None:
+    # Audit-fix review F-I1: draft-07 has "definitions", not "$defs", so the Python client
+    # (referencing) never registers the $id under "$defs" and cannot resolve a $ref to it.
+    target = "https://acme.example/a.json"
+    schema = json.dumps({"$schema": DRAFT_07, "$id": "https://acme.example/o.json", "title": f"{ns}.OD",
+                         "type": "object", "$defs": {"A": {"$id": target, "type": "string"}},
+                         "properties": {"p": {"$ref": target}}})
+    result = validated(f"{ns}.OD", schema, config, [])
+    assert result.validationType == "Error"
+    assert result.message == f"Your schema uses '{target}' but no reference is selected for it."
+
+    # The registry accepts the schema; the serializer cannot use it.
+    registrar(register, f"{ns}.OD", schema, "JSON")()
+    with pytest.raises(Exception, match=f"Unresolvable: {re.escape(target)}"):
+        JSONSerializer(schema, ck_client, conf=CONF)({"p": "x"}, CTX)
+
+
 def test_python_client_reads_https_draft07_as_2020_12(config: ValidatorConfig, ns: str) -> None:
     # jsonschema does not know the https spelling of draft-07: it validates with 2020-12 and warns
     # that this will become an error. That is why the validator rejects it (JSON_DRAFT).
