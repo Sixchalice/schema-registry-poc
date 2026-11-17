@@ -23,8 +23,10 @@ _PROTOC_ERRORS_SHOWN = 5
 _PROTOC_MESSAGE_LIMIT = 1000
 
 # String literals are matched too, so that "//" inside a string is not taken for a comment.
+# An unclosed string runs to the end of its line and an unclosed comment to the end of the
+# text, so each match is tried once from each start and the scan is linear.
 _STRING_OR_COMMENT = re.compile(
-    r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|//[^\n]*|/\*.*?(?:\*/|\Z)', re.DOTALL
+    r'"(?:\\.|[^"\\\n])*"?|\'(?:\\.|[^\'\\\n])*\'?|//[^\n]*|/\*.*?(?:\*/|\Z)', re.DOTALL
 )
 _IMPORT = re.compile(r'\bimport\s+(?:(?:public|weak)\s+)?(?:"([^"\n]*)"|\'([^\'\n]*)\')\s*;')
 _NOT_FOUND = re.compile(r"(.+): File not found\.")

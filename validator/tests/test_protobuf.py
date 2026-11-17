@@ -389,6 +389,33 @@ def test_imports_scan_is_linear() -> None:
     assert time.monotonic() - started < 1
 
 
+@pytest.mark.parametrize("quote", ['"', "'"], ids=["double", "single"])
+def test_unclosed_escaped_strings_are_fast(quote: str) -> None:
+    # An unclosed string of escaped quotes: 80 KB took 10 s with the old pattern, 480 KB about 6 min.
+    text = 'syntax = "proto3";\npackage a.b;\nimport "a/b.proto";\nmessage M { int32 x = 1; }\n'
+    text += quote + ("\\" + quote) * 240000
+    started = time.monotonic()
+    assert _imports(text) == {"a/b.proto"}
+    assert time.monotonic() - started < 1
+    started = time.monotonic()
+    result = analyse(text, {}, ValidatorConfig())
+    assert time.monotonic() - started < 10
+    assert len(result.errors) == 1 and result.errors[0].startswith("Invalid Protobuf schema: ")
+    assert result.external_refs is None
+
+
+def test_closed_strings_are_unchanged_by_the_scan() -> None:
+    # A closed string, also one continued with a backslash at the end of a line, hides "//" and "/*".
+    assert _imports('option o = "a // b";\nimport "a/b.proto";') == {"a/b.proto"}
+    assert _imports("option o = 'a /* b';\nimport \"a/b.proto\";") == {"a/b.proto"}
+    assert _imports('option o = "a \\\n /* b";\nimport "a/b.proto";') == {"a/b.proto"}
+    assert _imports('option o = "a \\" /* b";\nimport "a/b.proto";') == {"a/b.proto"}
+
+
+def test_unclosed_string_ends_at_the_end_of_its_line() -> None:
+    assert _imports('option o = "a /* b\nimport "a/b.proto";') == {"a/b.proto"}
+
+
 def test_import_after_a_closed_comment_is_found() -> None:
     assert _imports('/* import "x/y.proto"; */ import "a/b.proto";') == {"a/b.proto"}
 
