@@ -213,6 +213,10 @@ def test_older_pinned_version_registers_and_produces(
     serializer = AvroSerializer(ck_client, Schema(schema, "AVRO", [SchemaReference(**refs[0])]), conf=CONF)
     check_client(serializer, {"price": {"amount": 5}}, name,
                  registrar(register, name, schema, "AVRO", refs), producer)
+    # The bytes prove v1 was used: magic byte, 4-byte schema id, then amount 5 (long, zig-zag 0x0a) alone.
+    # With Money v2 there would be a currency string after it (a 7th byte).
+    data = serializer({"price": {"amount": 5}}, CTX)
+    assert isinstance(data, bytes) and data[5:] == b"\x0a"
 
 
 def test_avro_shared_enum(

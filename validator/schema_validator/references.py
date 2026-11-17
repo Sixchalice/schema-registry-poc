@@ -83,8 +83,10 @@ def resolve(
             report(messages.REF_NOT_REGISTERED.format(s=row.schema_name))
             continue
         latest_versions[row.schema_name] = latest.version
-        # Stage A guarantees an int >= 1 here.
-        version = row.version if row.version is not None else latest.version
+        # Stage A guarantees an int >= 1 here; without one, fail closed rather than guess.
+        if row.version is None:
+            raise ValueError("reference row without a version")
+        version = row.version
         if version == latest.version:
             chosen = latest
         else:

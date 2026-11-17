@@ -89,6 +89,13 @@ def _validate(request: ValidationRequest, sr: SchemaRegistryClient, config: Vali
                 latest = sr.get_latest(name)
                 # "Unchanged" also needs the same reference names on the same subjects at the same
                 # versions as the rows; the lookup then uses the rows' references.
+                if latest is not None:
+                    registered = [(r.name, r.subject, r.version) for r in latest.references]
+                    requested = [(r.name, r.subject, r.version) for r in resolution.resolved]
+                    if set(registered) == set(requested) and registered != requested:
+                        # The registry's lookup is order-sensitive: a reordered save would register a new version.
+                        return build_result([messages.LEVEL_REFERENCE_ORDER.format(
+                            order=", ".join(f"{s} v{v}" for _, s, v in registered))], [])
                 if latest is not None and (
                         {(r.name, r.subject, r.version) for r in latest.references}
                         != {(r.name, r.subject, r.version) for r in resolution.resolved}

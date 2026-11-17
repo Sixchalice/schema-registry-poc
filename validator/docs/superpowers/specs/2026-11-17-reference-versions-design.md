@@ -62,7 +62,7 @@ Choosing the version per row makes every save predictable: what the user sees in
 3. Send the version to `validate`, and register with exactly that version (no lookup of the latest at registration).
 4. Upgrade the validator library in the same release as the dropdown, because requests without versions now fail.
 
-**Producers and consumers:** no configuration change. They use the reference versions stored with the latest version of their own subject. A producer that builds its own copy of the schema (a Java Avro producer with referenced records copied in, or classes generated from a referenced subject) must build from those pinned versions, not from the referenced subject's latest. This goes into the client guidance (spec §12).
+**Producers and consumers:** no configuration change. Producers with `use.latest.version` use the references stored with the latest version of their own subject; consumers use the references of the writer schema's version (by schema id). A producer that builds its own copy of the schema (a Java Avro producer with referenced records copied in, or classes generated from a referenced subject) must build from those pinned versions, not from the referenced subject's latest. This goes into the client guidance (spec §12).
 
 ## Constraints
 

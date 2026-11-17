@@ -55,6 +55,10 @@ LEVEL_AND_SCHEMA_CHANGED = (
     "(now '{sr_level}'). Save the new level '{compatibility}' with the schema and its reference "
     "versions unchanged first, then change the schema."
 )
+LEVEL_REFERENCE_ORDER = (
+    "The references are listed in a different order than in the registered version ({order}). "
+    "Keep that order, so that only the compatibility level changes."
+)
 SR_UNAUTHORIZED = "The validator is not allowed to query Schema Registry. Contact the platform team."
 LEVEL_WARNING = (
     "Compatibility was checked using the current level '{sr_level}', "

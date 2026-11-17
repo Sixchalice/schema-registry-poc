@@ -417,6 +417,29 @@ def test_sr_stores_the_latest_version_for_reference_version_minus_one(
     assert [(r.name, r.subject, r.version) for r in latest.references] == [(address, address, 2)]
 
 
+def test_lookup_is_reference_order_sensitive(
+    register: Register, config: ValidatorConfig, ns: str
+) -> None:
+    # The registry's lookup (POST /subjects/{s}) compares the references in order: the same schema with
+    # its references reversed is not found, so registering it would add an identical new version.
+    one, two, main = f"{ns}.One", f"{ns}.Two", f"{ns}.Main"
+    assert register(one, _avro("One", ns, [{"name": "a", "type": "string"}]))[0] == 200
+    assert register(two, _avro("Two", ns, [{"name": "b", "type": "string"}]))[0] == 200
+    schema = _avro("Main", ns, [{"name": "x", "type": one}, {"name": "y", "type": two}])
+    refs = [{"name": one, "subject": one, "version": 1}, {"name": two, "subject": two, "version": 1}]
+    status, body = register(main, schema, "AVRO", refs)
+    assert status == 200, body
+
+    def lookup(references: list[dict[str, object]]) -> requests.Response:
+        return requests.post(
+            f"{config.sr_url}/subjects/{main}", headers=_JSON_HEADERS, timeout=20,
+            json={"schema": schema, "schemaType": "AVRO", "references": references})
+
+    assert lookup(refs).status_code == 200
+    reversed_lookup = lookup(list(reversed(refs)))
+    assert (reversed_lookup.status_code, reversed_lookup.json()["error_code"]) == (404, 40403)
+
+
 # Mode lookups (spec §7, E5)
 
 def test_mode_default_to_global(raw_get: Callable[[str], Response], ns: str) -> None:

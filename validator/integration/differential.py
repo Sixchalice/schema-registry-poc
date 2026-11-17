@@ -142,6 +142,18 @@ ADDRESS = {
     "PROTOBUF": 'syntax = "proto3";\npackage ADDR;\nmessage Address { string city = 1; }\n',
 }
 
+# A compatible second version of each Address (a field with a default, an annotation, a new field),
+# so that rows can select version 1 or 2.
+ADDRESS_V2 = {
+    "AVRO": json.dumps({"type": "record", "name": "Address", "namespace": "ADDR", "fields": [
+        {"name": "city", "type": "string"},
+        {"name": "country", "type": {"type": "enum", "name": "Country", "symbols": ["NL", "US"]}},
+        {"name": "zip", "type": "string", "default": ""}]}),
+    "JSON": json.dumps({"$schema": "http://json-schema.org/draft-07/schema#", "title": "ADDR.Address",
+                        "description": "version 2", "type": "object", "properties": {"city": {"type": "string"}}}),
+    "PROTOBUF": 'syntax = "proto3";\npackage ADDR;\nmessage Address { string city = 1; string zip = 2; }\n',
+}
+
 # --- Mutations of a JSON tree (Avro and JSON Schema) ------------------------------------
 
 _SCALARS: list[Any] = [None, 5, -1, 1.5, True, "", "string", "int", "long", "null", "bytes", "record", "enum",
@@ -276,7 +288,7 @@ def _place(text: str, ns: str, addr: str) -> str:
     return text.replace("ADDRPATH", proto_import_path(f"{addr}.Address")).replace("ADDR", addr).replace("NS", ns)
 
 
-def build_case(schema_type: str, ns: str, addr: str, rng: random.Random) -> tuple[str, list[ReferenceInput]]:
+def build_case(schema_type: str, ns: str, addr: str, rng: random.Random, version: int = 1) -> tuple[str, list[ReferenceInput]]:
     """A schema text and the reference rows a user would select for the unmutated seed."""
     mutations = rng.choice([0, 1, 1, 1, 2, 2, 3])
     if schema_type == "PROTOBUF":
@@ -291,7 +303,7 @@ def build_case(schema_type: str, ns: str, addr: str, rng: random.Random) -> tupl
     rows = []
     # Now and then the row is left out, or selected although the seed does not use it.
     if uses_address != (rng.random() < 0.1):
-        rows = [ReferenceInput(f"{addr}.Address", "address.json" if schema_type == "JSON" else None, 1)]
+        rows = [ReferenceInput(f"{addr}.Address", "address.json" if schema_type == "JSON" else None, version)]
     return _place(text, ns, addr), rows
 
 
@@ -300,7 +312,7 @@ def register(sr_url: str, subject: str, text: str, schema_type: str, rows: list[
     for row in rows:
         name = {"AVRO": row.schema_name, "PROTOBUF": proto_import_path(row.schema_name)}.get(schema_type) \
             or row.ref_string
-        references.append({"name": name, "subject": row.schema_name, "version": -1})
+        references.append({"name": name, "subject": row.schema_name, "version": row.version})
     body: dict[str, Any] = {"schema": text, "schemaType": schema_type}
     if references:
         body["references"] = references
@@ -346,9 +358,13 @@ def main() -> int:
         if status != 200:
             print(f"could not register the shared Address ({status}): {body}", file=sys.stderr)
             return 2
+        status, body = register(sr_url, f"{addr}.Address", ADDRESS_V2[schema_type].replace("ADDR", addr), schema_type, [])
+        if status != 200:
+            print(f"could not register the second Address version ({status}): {body}", file=sys.stderr)
+            return 2
         for i in range(args.cases):
             ns = f"{run_id}.c{i}"
-            text, rows = build_case(schema_type, ns, addr, rng)
+            text, rows = build_case(schema_type, ns, addr, rng, 1 + i % 2)  # alternate versions 1 and 2
             # The name a user would type: the one the schema itself gives, when it gives one.
             try:
                 derived = ANALYSERS[schema_type](text, {}, config).expected_name

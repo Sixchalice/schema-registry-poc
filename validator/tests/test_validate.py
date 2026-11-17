@@ -1043,3 +1043,23 @@ def test_result_invariant(sr: FakeSchemaRegistry, run: Callable, produced: list[
     for result in produced:
         assert result.valid == (result.validationType != "Error"), result
         assert (result.message == "") == (result.validationType == "Ok"), result
+
+
+def test_level_change_with_reordered_references_says_keep_the_order(sr: FakeSchemaRegistry, run: Callable) -> None:
+    # Same triples, other order: the registry's lookup is order-sensitive, so a save would register a new version.
+    one = '{"type":"record","name":"One","namespace":"a","fields":[]}'
+    two = '{"type":"record","name":"Two","namespace":"a","fields":[]}'
+    main = ('{"type":"record","name":"Main","namespace":"a","fields":'
+            '[{"name":"x","type":"a.One"},{"name":"y","type":"a.Two"}]}')
+    sr.add("a.One", one)
+    sr.add("a.Two", two)
+    sr.add("a.Main", main, references=[SrReference("a.One", "a.One", 1), SrReference("a.Two", "a.Two", 1)])
+    sr.levels["a.Main"] = "NONE"
+    request = ValidationRequest(
+        name="a.Main", schema_type="AVRO", schema=main, compatibility="FULL",
+        references=[ReferenceInput("a.Two", None, 1), ReferenceInput("a.One", None, 1)],
+        previous_name="a.Main", existing_names=[])
+    assert run(request, sr) == ValidationResult(False, "Error", messages.LEVEL_REFERENCE_ORDER.format(
+        order="a.One v1, a.Two v1"))
+    assert "is_registered" not in call_names(sr)
+    assert "check_compatibility" not in call_names(sr)

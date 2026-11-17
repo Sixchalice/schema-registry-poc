@@ -508,3 +508,9 @@ def test_wrong_format_of_an_older_pinned_version(sr: FakeSchemaRegistry) -> None
     sr.add("a.B", B1)
     bad = resolve(MAIN, "AVRO", [row("a.B", "a.B", 1)], sr)
     assert bad.errors == ["'a.B' is a JSON schema; a AVRO schema can only reference AVRO schemas."]
+
+
+def test_resolve_row_without_a_version_fails_closed(sr: FakeSchemaRegistry) -> None:
+    sr.add("a.B", B1)
+    with pytest.raises(ValueError, match="reference row without a version"):
+        resolve(MAIN, "AVRO", [ReferenceInput("a.B", "a.B", None)], sr)
