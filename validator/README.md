@@ -92,7 +92,7 @@ The `HttpSchemaRegistryClient` takes its URL, credentials and timeout from the c
 | Field | Meaning |
 |---|---|
 | `schema_name` | The Schema deployment selected as the reference (its Schema Registry subject) |
-| `ref_string` | How the reference is written in the schema text. **JSON: required**, the `$ref` value without its `#fragment` (an empty string counts as missing). **AVRO: optional**, defaults to `schema_name` (the referenced record's full name) when missing or empty. A named type defined inside the referenced record (for example a nested enum) is covered by the same row. **PROTOBUF: ignored**, the import path is always derived from `schema_name` (see below) |
+| `ref_string` | How the reference is written in the schema text. **JSON: required**, the `$ref` value without its `#fragment` (an empty string counts as missing). **AVRO: optional**, defaults to `schema_name` (the referenced record's full name) when missing or empty. A named type defined inside the referenced record (for example a nested enum) is covered by the same row, and so is a schema that the referenced record itself references. **PROTOBUF: ignored**, the import path is always derived from `schema_name` (see below) |
 
 Reference versions are not part of the request. The validator uses the latest version of each referenced subject and names it in a warning; the registration step looks the versions up again itself.
 
@@ -167,6 +167,12 @@ Unit tests (no network, no Docker; Schema Registry is faked):
 
 ```bash
 .venv/bin/python -m pytest -q
+```
+
+Coverage of the unit tests (line and branch; `coverage` is not a dependency, install it first with `uv pip install --python .venv/bin/python coverage`):
+
+```bash
+.venv/bin/python -m coverage run --branch --source=schema_validator -m pytest -q && .venv/bin/python -m coverage report -m
 ```
 
 Integration tests against a real Schema Registry 7.9.0 and Kafka in Docker. They need `confluent-kafka[schemaregistry,avro,json,protobuf]` (a test dependency only). Start the stack, then run the tests:

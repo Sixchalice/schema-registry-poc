@@ -4,7 +4,9 @@ from __future__ import annotations
 from schema_validator import messages
 from schema_validator.formats import ANALYSERS
 from schema_validator.models import ReferenceInput, ValidationRequest, ValidationResult, ValidatorConfig
-from schema_validator.references import Resolution, cross_check, normalise_rows, pinned_warning, resolve
+from schema_validator.references import (
+    Resolution, cross_check, normalise_rows, pinned_warning, resolve, through_rows,
+)
 from schema_validator.result import build_result
 from schema_validator.rules import check_input, check_name
 from schema_validator.sr_client import (
@@ -61,7 +63,10 @@ def _validate(request: ValidationRequest, sr: SchemaRegistryClient, config: Vali
 
     # Stage D, second part: rows against the names the text uses.
     if check.references_ok and analysis.external_refs is not None:
-        d.extend(cross_check(schema_type, rows, analysis.external_refs))
+        external_refs = analysis.external_refs
+        if schema_type == "AVRO":
+            external_refs = through_rows(rows, external_refs, resolution.provided_by)
+        d.extend(cross_check(schema_type, rows, external_refs))
 
     errors = a + b + c + d
     if errors or e:

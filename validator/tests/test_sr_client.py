@@ -204,6 +204,15 @@ def test_rejected_42201():
     assert str(e.value) == "Invalid schema X"
 
 
+@pytest.mark.parametrize("body", [{"error_code": 42201}, {"error_code": 42201, "message": ""},
+                                  {"error_code": 42201, "message": None}, {"error_code": 42201, "message": 5}])
+def test_rejected_without_a_message_keeps_the_raw_body(body):
+    session = StubSession(StubResponse(422, body))
+    with pytest.raises(SchemaRegistryRejected) as e:
+        client_for(session).check_compatibility("a.B", "S", "AVRO", [])
+    assert str(e.value) == json.dumps(body)
+
+
 def test_4xx_without_error_code_is_unavailable():
     session = StubSession(StubResponse(400, text="Bad request from proxy"))
     with pytest.raises(SchemaRegistryUnavailable) as e:

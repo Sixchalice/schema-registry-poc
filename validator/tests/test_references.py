@@ -91,7 +91,8 @@ def test_resolve_happy(sr: FakeSchemaRegistry) -> None:
     sr.add("a.B", B2)
     result = resolve(MAIN, "AVRO", [row("a.B", "a.B")], sr)
     assert result == Resolution(
-        resolved=[SrReference("a.B", "a.B", 2)], referenced={"a.B": B2}, errors=[]
+        resolved=[SrReference("a.B", "a.B", 2)], referenced={"a.B": B2}, errors=[],
+        provided_by={"a.B": "a.B"},
     )
 
 

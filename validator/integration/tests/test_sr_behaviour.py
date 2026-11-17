@@ -5,9 +5,11 @@ If a future registry version behaves differently, these tests fail and the plan 
 from __future__ import annotations
 
 import json
+import urllib.parse
 from collections.abc import Callable
 
 import pytest
+import requests
 
 from schema_validator import HttpSchemaRegistryClient, ValidationRequest, ValidationResult, ValidatorConfig, validate
 from schema_validator import messages
@@ -272,3 +274,110 @@ def test_404_from_a_wrong_base_url_is_not_not_found(
         compatibility="BACKWARD", references=[], previous_name=None, existing_names=[],
     )
     assert validate(create, wrong, config) == ValidationResult(False, "Error", messages.SR_UNREACHABLE)
+
+
+# --- Spec §10 rows 5a, 9, 10 and 11 (first answered by one-off probe scripts) -----------
+
+_JSON_HEADERS = {"Content-Type": "application/vnd.schemaregistry.v1+json"}
+
+
+def _avro(name: str, ns: str, fields: list[dict[str, object]]) -> str:
+    return json.dumps({"type": "record", "name": name, "namespace": ns, "fields": fields})
+
+
+@pytest.mark.parametrize("draft", [
+    "http://json-schema.org/draft-03/schema#",
+    "http://json-schema.org/draft-07/schema#",
+    "https://json-schema.org/draft/2020-12/schema",
+    "https://example.com/not-a-draft",
+])
+def test_sr_accepts_any_json_schema_draft(register: Register, ns: str, draft: str) -> None:
+    # Row 5a: the allowed drafts are the validator's policy, not the registry's.
+    text = json.dumps({"$schema": draft, "title": f"{ns}.Order", "type": "object",
+                       "properties": {"id": {"type": "string"}}})
+    status, body = register(f"{ns}.Order", text, "JSON")
+    assert status == 200, body
+
+
+def test_sr_subject_names_are_case_sensitive(register: Register, raw_get: Callable[[str], Response], ns: str) -> None:
+    # Row 9: X.Case and X.case are two subjects, so the platform compares names itself (C2).
+    assert register(f"{ns}.Case", _avro("Case", ns, [{"name": "a", "type": "string"}]))[0] == 200
+    assert register(f"{ns}.case", _avro("case", ns, [{"name": "b", "type": "int"}]))[0] == 200
+    status, subjects = raw_get(f"/subjects?subjectPrefix={ns}.")
+    assert status == 200
+    assert {f"{ns}.Case", f"{ns}.case"} <= set(subjects)  # type: ignore[arg-type]
+    assert raw_get(f"/subjects/{ns}.Case/versions")[1] == [1]
+    assert raw_get(f"/subjects/{ns}.case/versions")[1] == [1]
+
+
+@pytest.mark.parametrize("name", ["with space.Order", "ünï.Order", "a/b.Order", "9.Order", "x" * 300])
+def test_sr_accepts_odd_subject_names(register: Register, raw_get: Callable[[str], Response], ns: str,
+                                      name: str) -> None:
+    # Row 9: the registry accepts anything; A4 and C3 are the validator's own.
+    subject = f"{ns}.{name}"
+    assert register(subject, _avro("Order", ns, [{"name": "id", "type": "string"}]))[0] == 200
+    assert raw_get(f"/subjects/{urllib.parse.quote(subject, safe='')}/versions")[1] == [1]
+
+
+def test_sr_context_prefix_lands_in_another_context(
+    register: Register, raw_get: Callable[[str], Response], ns: str
+) -> None:
+    # Row 9: a name starting with ":.<ctx>:" is not a subject of the default context (A4 forbids ':').
+    context = f".{ns}"
+    status, body = register(f":{context}:{ns}.Order", _avro("Order", ns, [{"name": "id", "type": "string"}]))
+    assert status == 200, body
+    assert context in raw_get("/contexts")[1]  # type: ignore[operator]
+    assert raw_get(f"/subjects/{ns}.Order/versions")[0] == 404
+
+
+def test_sr_refuses_to_delete_a_referenced_subject(
+    register: Register, raw_get: Callable[[str], Response], config: ValidatorConfig, ns: str
+) -> None:
+    # Row 10: the delete fails with 422 (42206) and referencedby lists the schema ids.
+    address, customer = f"{ns}.Address", f"{ns}.Customer"
+    assert register(address, _avro("Address", ns, [{"name": "city", "type": "string"}]))[0] == 200
+    status, body = register(customer, _avro("Customer", ns, [{"name": "addr", "type": address}]), "AVRO",
+                            [{"name": address, "subject": address, "version": 1}])
+    assert status == 200, body
+    response = requests.delete(f"{config.sr_url}/subjects/{address}", headers=_JSON_HEADERS, timeout=20)
+    assert (response.status_code, response.json()["error_code"]) == (422, 42206)
+    assert raw_get(f"/subjects/{address}/versions/1/referencedby") == (200, [body["id"]])  # type: ignore[index]
+
+
+def test_soft_delete_drops_the_history_for_compatibility(
+    register: Register, sr: HttpSchemaRegistryClient, config: ValidatorConfig, ns: str
+) -> None:
+    # Row 10: after a soft delete an incompatible schema registers as the next version, and
+    # the validator sees the subject as not registered.
+    name = f"{ns}.Order"
+    v1 = _avro("Order", ns, [{"name": "id", "type": "string"}])
+    incompatible = _avro("Order", ns, [{"name": "id", "type": "string"}, {"name": "zip", "type": "string"}])
+    assert register(name, v1)[0] == 200
+    assert register(name, incompatible)[0] == 409
+    assert sr.check_compatibility(name, incompatible, "AVRO", ()).is_compatible is False
+
+    response = requests.delete(f"{config.sr_url}/subjects/{name}", headers=_JSON_HEADERS, timeout=20)
+    assert (response.status_code, response.json()) == (200, [1])
+
+    assert sr.get_latest(name) is None
+    assert sr.check_compatibility(name, incompatible, "AVRO", ()).is_compatible is True
+    status, _ = register(name, incompatible)
+    assert status == 200
+    latest = sr.get_latest(name)
+    assert latest is not None and latest.version == 2
+
+
+def test_sr_stores_the_latest_version_for_reference_version_minus_one(
+    register: Register, sr: HttpSchemaRegistryClient, ns: str
+) -> None:
+    # Row 11: -1 is accepted at registration and stored as the concrete latest version.
+    address, customer = f"{ns}.Address", f"{ns}.Customer"
+    assert register(address, _avro("Address", ns, [{"name": "city", "type": "string"}]))[0] == 200
+    assert register(address, _avro("Address", ns, [{"name": "city", "type": "string"},
+                                                   {"name": "zip", "type": "string", "default": ""}]))[0] == 200
+    status, body = register(customer, _avro("Customer", ns, [{"name": "addr", "type": address}]), "AVRO",
+                            [{"name": address, "subject": address, "version": -1}])
+    assert status == 200, body
+    latest = sr.get_latest(customer)
+    assert latest is not None
+    assert [(r.name, r.subject, r.version) for r in latest.references] == [(address, address, 2)]

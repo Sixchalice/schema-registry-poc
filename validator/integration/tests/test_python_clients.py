@@ -18,6 +18,7 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+from fastavro.schema import SchemaParseException
 from confluent_kafka import KafkaError, Message, Producer
 from confluent_kafka.schema_registry import (
     Schema,
@@ -174,6 +175,56 @@ def test_avro_with_reference(
     serializer = AvroSerializer(ck_client, Schema(schema, "AVRO", [SchemaReference(**refs[0])]), conf=CONF)
     check_client(serializer, {"addr": {"city": "TLV"}}, name,
                  registrar(register, name, schema, "AVRO", refs), producer)
+
+
+def test_avro_name_from_a_transitive_reference(
+    ck_client: SchemaRegistryClient,
+    register: Register,
+    producer: Producer,
+    config: ValidatorConfig,
+    ns: str,
+) -> None:
+    # Address references Country. Customer selects only Address and uses Country directly:
+    # the registry and the Python client load Country together with Address.
+    country, address = f"{ns}.Country", f"{ns}.Address"
+    registrar(register, country, json.dumps({"type": "record", "name": "Country", "namespace": ns, "fields": [
+        {"name": "code", "type": {"type": "enum", "name": "Code", "symbols": ["NL", "US"]}}]}), "AVRO")()
+    registrar(register, address, json.dumps({"type": "record", "name": "Address", "namespace": ns, "fields": [
+        {"name": "country", "type": country}]}), "AVRO", [{"name": country, "subject": country, "version": 1}])()
+    schema = json.dumps({"type": "record", "name": "Customer", "namespace": ns, "fields": [
+        {"name": "addr", "type": address}, {"name": "extra", "type": country}]})
+    name = accepted_name(f"{ns}.Customer", "AVRO", schema, config, [ReferenceInput(address)])
+    refs = [{"name": address, "subject": address, "version": 1}]
+
+    serializer = AvroSerializer(ck_client, Schema(schema, "AVRO", [SchemaReference(**refs[0])]), conf=CONF)
+    value = {"addr": {"country": {"code": "NL"}}, "extra": {"code": "US"}}
+    check_client(serializer, value, name, registrar(register, name, schema, "AVRO", refs), producer)
+
+
+@pytest.mark.parametrize("fields", [
+    pytest.param(lambda ns: [{"name": "a", "type": f"{ns}.Address"}, {"name": "c", "type": f"{ns}.Country"}],
+                 id="address-then-nested"),
+    pytest.param(lambda ns: [{"name": "c", "type": f"{ns}.Country"}], id="nested-only"),
+])
+def test_python_client_cannot_use_a_type_nested_in_a_reference(
+    ck_client: SchemaRegistryClient, register: Register, ns: str,
+    fields: Callable[[str], list[dict[str, object]]],
+) -> None:
+    # The enum Country is defined inside the referenced Address. The registry (and Java)
+    # accept a schema that uses <ns>.Country through the Address reference; the Python
+    # serializer cannot load it. If a client release fixes this, the test fails: revisit.
+    address = f"{ns}.Address"
+    registrar(register, address, json.dumps({"type": "record", "name": "Address", "namespace": ns, "fields": [
+        {"name": "city", "type": "string"},
+        {"name": "country", "type": {"type": "enum", "name": "Country", "symbols": ["NL", "US"]}}]}), "AVRO")()
+    schema = json.dumps({"type": "record", "name": "Customer", "namespace": ns, "fields": fields(ns)})
+    refs = [{"name": address, "subject": address, "version": 1}]
+    registrar(register, f"{ns}.Customer", schema, "AVRO", refs)()
+
+    value = {"a": {"city": "TLV", "country": "NL"}, "c": "US"}
+    with pytest.raises((TypeError, SchemaParseException)):
+        serializer = AvroSerializer(ck_client, Schema(schema, "AVRO", [SchemaReference(**refs[0])]), conf=CONF)
+        serializer(value, CTX)
 
 
 # JSON

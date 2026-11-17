@@ -362,6 +362,66 @@ def test_avro_row_that_does_not_define_its_name_is_an_error(
     assert compat_calls(sr) == []
 
 
+def _transitive_avro(sr: FakeSchemaRegistry) -> None:
+    """Address (the row) references Country, and Country defines a nested enum Code."""
+    sr.add("com.acme.Country", json.dumps({"type": "record", "name": "Country", "namespace": "com.acme", "fields": [
+        {"name": "code", "type": {"type": "enum", "name": "Code", "symbols": ["NL", "US"]}}]}))
+    sr.add("com.acme.Address", json.dumps({"type": "record", "name": "Address", "namespace": "com.acme", "fields": [
+        {"name": "country", "type": "com.acme.Country"}]}),
+        "AVRO", [SrReference("com.acme.Country", "com.acme.Country", 1)])
+
+
+@pytest.mark.parametrize("fields", [
+    pytest.param([{"name": "c", "type": "com.acme.Country"}], id="transitive-schema-only"),
+    pytest.param([{"name": "a", "type": "com.acme.Address"}, {"name": "c", "type": "com.acme.Country"}],
+                 id="row-and-transitive-schema"),
+    pytest.param([{"name": "code", "type": "com.acme.Code"}], id="name-nested-in-transitive-schema"),
+    pytest.param([{"name": "a", "type": "Address"}, {"name": "code", "type": "Code"}], id="unqualified"),
+])
+def test_avro_name_from_a_transitive_reference_is_provided_by_the_row(
+    fields: list[dict[str, Any]], sr: FakeSchemaRegistry, run: Callable
+) -> None:
+    # The registry loads Country together with Address, so the row for Address covers it:
+    # no "no reference is selected" for a schema the user never chose, and the row is used.
+    _transitive_avro(sr)
+    schema = json.dumps({"type": "record", "name": "Customer", "namespace": "com.acme", "fields": fields})
+    request = req("AVRO", None, "com.acme.Customer", schema=schema, references=[address_row("AVRO")])
+    assert run(request, sr) == ValidationResult(True, "Warning", PINNED_ADDRESS)
+    assert compat_calls(sr) == [("check_compatibility", "com.acme.Customer", schema, "AVRO",
+                                 (SrReference("com.acme.Address", "com.acme.Address", 1),))]
+
+
+def test_avro_transitive_name_with_its_own_row_uses_that_row(sr: FakeSchemaRegistry, run: Callable) -> None:
+    # Both rows are selected and each is used by its own name: no D5 for either.
+    _transitive_avro(sr)
+    schema = json.dumps({"type": "record", "name": "Customer", "namespace": "com.acme", "fields": [
+        {"name": "a", "type": "com.acme.Address"}, {"name": "c", "type": "com.acme.Country"}]})
+    request = req("AVRO", None, "com.acme.Customer", schema=schema,
+                  references=[address_row("AVRO"), ReferenceInput("com.acme.Country")])
+    result = run(request, sr)
+    assert (result.valid, result.validationType) == (True, "Warning"), result.message
+
+
+def test_avro_row_used_only_through_another_rows_transitive_name_is_unused(
+    sr: FakeSchemaRegistry, run: Callable
+) -> None:
+    # Country has its own row, so Address (which only brings Country along) is not used.
+    _transitive_avro(sr)
+    schema = json.dumps({"type": "record", "name": "Customer", "namespace": "com.acme", "fields": [
+        {"name": "c", "type": "com.acme.Country"}]})
+    request = req("AVRO", None, "com.acme.Customer", schema=schema,
+                  references=[address_row("AVRO"), ReferenceInput("com.acme.Country")])
+    assert run(request, sr) == ValidationResult(False, "Error", D5_ADDRESS)
+
+
+def test_avro_name_not_in_any_reference_is_still_missing(sr: FakeSchemaRegistry, run: Callable) -> None:
+    _transitive_avro(sr)
+    schema = json.dumps({"type": "record", "name": "Customer", "namespace": "com.acme", "fields": [
+        {"name": "a", "type": "com.acme.Address"}, {"name": "m", "type": "com.acme.Money"}]})
+    request = req("AVRO", None, "com.acme.Customer", schema=schema, references=[address_row("AVRO")])
+    assert run(request, sr) == ValidationResult(False, "Error", messages.REF_MISSING_ROW.format(x="com.acme.Money"))
+
+
 def test_duplicate_rows_skip_stage_d(sr: FakeSchemaRegistry, run: Callable) -> None:
     # order.avsc uses neither row: a D5 message would show that the cross-check ran.
     sr.add("com.acme.Address", load("AVRO", "address"))

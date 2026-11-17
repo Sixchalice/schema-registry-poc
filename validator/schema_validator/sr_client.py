@@ -229,11 +229,8 @@ def _error_message(response: requests.Response) -> str:
     Only called for a body with an integer error_code, so the raw text is never empty.
     """
     body = _json_or_none(response)
-    if isinstance(body, dict):
-        message = body.get("message")
-        if isinstance(message, str) and message:
-            return message
-    return response.text
+    message = body.get("message") if isinstance(body, dict) else None
+    return message if isinstance(message, str) and message else response.text
 
 
 def _parse_version(body: object) -> SchemaVersion | None:

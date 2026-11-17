@@ -225,6 +225,9 @@ def _parse_error(
             return f"type '{name}' is used before it is defined"
         # The walk took this name as provided, so nothing else would report the stop.
         return f"unknown type {name!r}" if isinstance(name, str) else f"unknown type {e.name!r}"
+    except KeyError as e:
+        # A type without a required entry: {"type": "array"} has no "items".
+        return f"a type is missing its {e.args[0]!r} entry" if e.args else "a type is missing an entry"
     except Exception as e:
         # SchemaParseException, and also TypeError, ValueError etc. on malformed schemas.
         return str(e)

@@ -607,3 +607,12 @@ def test_name_that_fastavro_lets_through_is_invalid(name: Any, with_reference: b
     )
     assert result == FormatAnalysis(None, {"com.acme.Address"}, ['Invalid Avro schema: the record "name" must be a string'])
 
+
+@pytest.mark.parametrize("type_, entry", [({"type": "array"}, "items"), ({"type": "map"}, "values")])
+def test_array_without_items_and_map_without_values(type_: dict[str, Any], entry: str) -> None:
+    # Nothing to walk into; fastavro reports the missing key.
+    result = run(rec("Order", [field("x", type_)], namespace="com.acme"))
+    assert result.expected_name == "com.acme.Order"
+    assert result.external_refs == set()
+    assert result.errors == [f"Invalid Avro schema: a type is missing its '{entry}' entry"]
+

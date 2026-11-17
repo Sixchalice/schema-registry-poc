@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from schema_validator import messages
 from schema_validator.models import ReferenceInput, proto_import_path
@@ -45,6 +45,8 @@ class Resolution:
     # The first text stored under a name is kept.
     referenced: dict[str, str]
     errors: list[str]  # D1, D2, D3, REF_TOO_DEEP
+    # Reference name -> ref_string of the row it was first loaded for (a row maps to itself).
+    provided_by: dict[str, str] = field(default_factory=dict)
 
 
 def resolve(
@@ -56,6 +58,7 @@ def resolve(
     """
     resolved: list[SrReference] = []
     referenced: dict[str, str] = {}
+    provided_by: dict[str, str] = {}
     errors: list[str] = []
     # Every (subject, version) fetched during this call, None when not registered.
     fetched: dict[tuple[str, int], SchemaVersion | None] = {}
@@ -76,11 +79,11 @@ def resolve(
         key = row.ref_string if row.ref_string is not None else row.schema_name
         resolved.append(SrReference(key, row.schema_name, latest.version))
         fetched.setdefault((row.schema_name, latest.version), latest)
-        error = _walk(name, row.schema_name, key, latest, sr, fetched, referenced, report)
+        error = _walk(name, row.schema_name, key, latest, sr, fetched, referenced, provided_by, report)
         if error is not None:
             report(error)
 
-    return Resolution(resolved=resolved, referenced=referenced, errors=errors)
+    return Resolution(resolved=resolved, referenced=referenced, errors=errors, provided_by=provided_by)
 
 
 def _walk(
@@ -91,6 +94,7 @@ def _walk(
     sr: SchemaRegistryClient,
     fetched: dict[tuple[str, int], SchemaVersion | None],
     referenced: dict[str, str],
+    provided_by: dict[str, str],
     report: Callable[[str], None],
 ) -> str | None:
     """Depth-first walk of one row's references, adding texts to `referenced` post-order.
@@ -113,6 +117,7 @@ def _walk(
         if child is None:
             stack.pop()
             referenced.setdefault(key, schema.schema)
+            provided_by.setdefault(key, root_key)
             continue
         if child.subject == name:
             return messages.REF_CYCLE.format(s=row_subject, name=name)
@@ -131,6 +136,16 @@ def _walk(
         deepest[node] = child_depth
         stack.append((child.name, found, child_depth, iter(found.references)))
     return None
+
+
+def through_rows(
+    rows: Sequence[ReferenceInput], external_refs: set[str], provided_by: dict[str, str]
+) -> set[str]:
+    """AVRO: a name that only a reference of a reference provides counts as a use of the
+    row it was loaded for, as the registry loads it with that row. A name that has a row
+    of its own stays itself."""
+    ref_strings = {row.ref_string for row in rows}
+    return {x if x in ref_strings else provided_by.get(x, x) for x in external_refs}
 
 
 def cross_check(
