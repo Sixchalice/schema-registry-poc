@@ -3,8 +3,8 @@
 Checked on 2026-11-16 (the secured registry and the Avro namespace follow-up on 2026-11-17) against `confluentinc/cp-schema-registry:7.9.0` on `apache/kafka:3.8.1`, from `integration/docker-compose.yml`, with confluent-kafka-python 2.16.1 and the Confluent 7.9.0 Java serializers.
 
 ```
-.venv/bin/python -m pytest -q                                   # 647 passed
-.venv/bin/python -m pytest integration/tests -m integration -q  # 133 passed, none skipped
+.venv/bin/python -m pytest -q                                   # 672 passed
+.venv/bin/python -m pytest integration/tests -m integration -q  # 134 passed, none skipped
 ```
 
 Every integration test creates its subjects under a fresh namespace (`it` + 10 hex digits, shown below as `<ns>`), so the suite can be rerun against the same registry.
@@ -27,7 +27,7 @@ One change, in `schema_validator/sr_client.py` (`HttpSchemaRegistryClient._call`
 
 - Observed: with a wrong prefix in `sr_url`, `POST /compatibility/...` returns `404 {"error_code":404,"message":"HTTP 404 Not Found"}`.
 - Before: only the two version lookups treated a 404 without error_code 40401/40402 as unavailable. On the compatibility and level calls such a 404 was `SchemaRegistryRejected`, so `validate` of a create returned `Schema Registry rejected the schema: HTTP 404 Not Found` (E1), blaming the schema for a configuration fault.
-- After: a 404 without error_code 40401/40402 is `SchemaRegistryUnavailable` on every call, so the result is E3 (`Could not reach Schema Registry to validate. Try again.`). A 404 with 40401/40402 is unchanged: `None` from the two version lookups, `SchemaRegistryRejected` on the level and compatibility calls. This departed from spec §7's "any other 4xx with an `error_code`: E1"; spec §7 now states the rule. It covers every 404 whose `error_code` is not 40401 or 40402: `error_code` 404, the HTTP server's generic code, and also Schema Registry's other 404 codes (40403 to 40409, for example `Schema not found`), which do not mean that the looked-up subject or version is not registered.
+- After: a 404 without error_code 40401/40402 is `SchemaRegistryUnavailable` on every call (except the schema lookup `POST /subjects/{s}`, added later for audit F4, where 40401 and 40403 are the not-found codes), so the result is E3 (`Could not reach Schema Registry to validate. Try again.`). A 404 with 40401/40402 is unchanged: `None` from the two version lookups, `SchemaRegistryRejected` on the level and compatibility calls. This departed from spec §7's "any other 4xx with an `error_code`: E1"; spec §7 now states the rule. It covers every 404 whose `error_code` is not 40401 or 40402: `error_code` 404, the HTTP server's generic code, and also Schema Registry's other 404 codes (40403 to 40409, for example `Schema not found`), which do not mean that the looked-up subject or version is not registered.
 
 ## Java checks
 
@@ -108,6 +108,8 @@ The last group was read by message. Every case is a defect the registry does not
 
 A further run after the audit fixes (2026-11-17, seed 4, 700 cases per format, 2,100 schemas): 0 false passes, 0 internal errors; both passed / both rejected 632 / 1,118; rejected by an own rule 103; rejected by a local parser 247 (Avro 19, JSON 28, Protobuf 200); stage E only 0.
 
+After the whole-branch review fixes (2026-11-17, seed 5, 300 cases per format, 900 schemas): 0 false passes, 0 internal errors; both passed / both rejected 274 / 471; rejected by an own rule 54; rejected by a local parser 101 (Avro 6, JSON 17, Protobuf 78); stage E only 0.
+
 Code change: an Avro record whose `name` is a list or object gave `Internal validator error`; it now gives `Invalid Avro schema: the record "name" must be a string`.
 
 ## Spec §10 rows 5a, 9, 10 and 11
@@ -179,7 +181,7 @@ Observed: a registry sending one byte every 0.5 s with `sr_timeout_seconds=2` he
 
 Code changed: requests are streamed and the body is read with `response.raw.read1(65536, decode_content=True)` until it returns `b""`, with a wall-clock check after each call against start + `sr_timeout_seconds`; an overrun is E3. `iter_content(chunk_size=None)` was tried first and did not help, because urllib3 reads a whole non-chunked body in one call (`drip` still took 10.6 s). Without `raw.read1` (urllib3 1.x) the client falls back to `iter_content(chunk_size=1)`. Measured with urllib3 2.8.0: `slow` and `drip` of `t13_failures.py` both end in 2.0 s with "Could not reach"; a 1 MB body reads in 0.0001 s with `read1` (about 1.2 s with `chunk_size=1`). A body that stalls or breaks mid-read (urllib3 `ReadTimeoutError`, `ProtocolError`, `DecodeError`, or an `OSError`) is E3: `test_error_while_reading_the_body_is_unavailable` (unit) and `test_stalled_body_is_unreachable` (a local socket server sending 5 of 100 bytes, no Docker). Spec 7 and README updated.
 
-## No redirects (audit L2)
+## No redirects (audit L3)
 
 Tested: `test_redirects_not_followed` (unit) and the `redirect` case of `t13_failures.py`.
 
@@ -187,13 +189,13 @@ Observed: `requests` followed a 302, so Basic credentials could go to another ho
 
 Code changed: every request has `allow_redirects=False`; a 3xx is E3 ("not 2xx"). Spec 7 updated.
 
-## No raw registry bodies (audit L3)
+## No raw registry bodies (audit L2)
 
 Tested: `test_raw_body_never_in_rejected`, `test_structured_message_not_echoed`, `test_plain_message_still_shown` (unit); the `e400raw`, `e409` and `e422other` cases of `t13_failures.py`. The integration tests are unchanged.
 
 Observed: a 4xx with an `error_code` but no `message` field showed the whole body, including an echoed `Authorization` header, and a message with the request or the other team's schema embedded was shown as it was.
 
-Code changed: `SchemaRegistryRejected` holds the body's `message` or "" plus `.code`. The stage E text is the `details:` reason, else a non-empty message without `{`, else `Schema Registry rejected the schema (error code {code}).` README and spec 7 updated.
+Code changed: `SchemaRegistryRejected` holds the body's `message` or "" plus `.code`. The stage E text is the `details:` reason, else a non-empty message without `{` when the `error_code` is Schema Registry's own (409, or 40000 to 49999; added after the whole-branch review, because a proxy's 4xx can carry an `error_code` such as 400 with a message of its own), else `Schema Registry rejected the schema (error code {code}).` README and spec 7 updated.
 
 ## Subject mode (audit F6)
 
@@ -209,7 +211,7 @@ Tested: `test_level_and_schema_change_together_is_an_error`, `test_level_change_
 
 Observed: `POST /subjects/{s}` with a registered text gives 200 with the version; with a text that is not registered, 404 `{"error_code":40403,"message":"Schema not found"}`; for a subject that does not exist, 404 error_code 40401. On the secured registry the `validator` user gets 200 and 404 from it with its existing ACLs (it needs `SUBJECT_READ`; a user without it gets `403 User is denied operation Read on Subject: x`). No ACL was added.
 
-Code changed: `is_registered` on the client (40403 is a not-found code for this call only); stage E checks the level before the compatibility call and returns E6 when the level differs and the schema is not registered. Known gap: if the references' latest versions changed in the meantime, the re-save repins them under the old level. README and spec 4 and 7 updated.
+Code changed: `is_registered` on the client (40403 is a not-found code for this call only); stage E checks the level before the compatibility call and returns E6 when the level differs and the schema is not registered. After the whole-branch review (F-I2), "unchanged" also needs the latest version's references and the rows to have the same `(name, subject)` pairs: a JSON row that keeps its `ref_string` but points at another Schema was counted as unchanged, because the lookup sends the latest version's own references. Known gap: versions are not compared, so if the references' latest versions changed in the meantime, the re-save repins them under the old level. README and spec 4 and 7 updated.
 
 ## Independent audit, 2026-11-17
 
@@ -218,14 +220,14 @@ An outside reviewer re-checked the library against the registry and the Python a
 | Finding | Our take | Change | Tests |
 |---|---|---|---|
 | F1 one type at two versions corrupts data | Agree | D7: one version per subject and one Schema per reference name across the graph (`REF_VERSION_CONFLICT`, `REF_NAME_CONFLICT`). See "One version per subject" | `test_version_conflict_direct_and_transitive`, `test_conflict_between_two_transitive_paths`, `test_diamond_same_version_is_not_a_conflict`, `test_name_conflict`, `test_conflict_recorded_on_a_skipped_revisit`, `test_version_conflict_is_an_error`; (int) `test_version_conflict_real_sr`, `test_two_versions_of_one_type_corrupt_data` |
-| F2 JSON `$ref` not resolved against `$id` | Agree | `$ref` is resolved against the `$id` chain; a target that is an `$id` inside the document is internal; a relative `$ref` under an `$id` needs the absolute URI as `ref_string`; malformed `$id` or `$ref` is `JSON_INVALID` | `test_relative_ref_under_id_resolves_to_absolute`, `test_ref_to_internal_id_is_internal`, `test_ref_to_own_id_with_fragment_is_internal`, `test_nested_id_moves_the_base`, `test_fragment_id_keeps_the_base`, `test_non_string_id_is_ignored`, `test_draft04_uses_id`, `test_malformed_id_is_an_error`, `test_malformed_ref_is_an_error`, `test_id_in_data_or_as_a_property_name_does_not_move_the_base`; (int) `test_json_id_relative_ref_is_rejected`, `test_json_id_absolute_ref_string_works`, `test_json_internal_id_ref_works` |
+| F2 JSON `$ref` not resolved against `$id` | Agree | `$ref` is resolved against the `$id` chain; a target that is an `$id` inside the document is internal; a relative `$ref` under an `$id` needs the absolute URI as `ref_string`; malformed `$id` or `$ref` is `JSON_INVALID` | `test_relative_ref_under_id_resolves_to_absolute`, `test_ref_to_internal_id_is_internal`, `test_ref_to_own_id_with_fragment_is_internal`, `test_nested_id_moves_the_base`, `test_fragment_id_keeps_the_base`, `test_non_string_id_is_ignored`, `test_draft04_uses_id`, `test_malformed_id_is_an_error`, `test_malformed_ref_is_an_error`, `test_id_in_data_or_as_a_property_name_does_not_move_the_base`, and for the review fix F-I1 `test_id_the_client_does_not_register_is_external`, `test_id_the_client_does_not_register_needs_a_reference` (3 shapes each), `test_id_beside_ref_moves_the_base_from_2019_09`, `test_without_schema_keyword_both_readings_need_a_reference`, `test_base_under_an_unknown_keyword_depends_on_how_the_ref_is_reached`, `test_same_document_ref_under_an_unregistered_id_is_external`, `test_id_under_a_nested_schema_keyword_is_not_internal`, `test_id_with_a_fragment_is_registered_with_it`, `test_keyword_of_the_wrong_type_for_one_reading_does_not_raise`; (int) `test_json_id_relative_ref_is_rejected`, `test_json_id_absolute_ref_string_works`, `test_json_internal_id_ref_works`, `test_json_id_under_a_keyword_the_draft_does_not_know_is_external` |
 | F3 Java Protobuf references need the qualified strategy | Agree, but not detectable per schema | None, because the registry accepts the schema and the failure depends on a client setting; `QualifiedReferenceSubjectNameStrategy` is a documented required Java setting (README, plan section 12) | Java `probe.ProtoRefs`; (int) `test_protobuf_import_of_another_schema`, `test_sr_accepts_protobuf_reference_name_mismatch` |
-| F4 compatibility checked at the current level | Agree; the owner chose option 2 | A level change and a schema change need separate saves (`LEVEL_AND_SCHEMA_CHANGED`, E6); `is_registered` on the client. See "Level change and schema change in one save" | `test_level_and_schema_change_together_is_an_error`, `test_level_change_with_unchanged_schema_warns`, `test_level_change_without_versions_is_not_blocked`, `test_same_level_unchanged_behaviour`, `test_level_change_lookup_failure_is_an_error`; (int) the `is_registered` and level-change tests named in that section |
+| F4 compatibility checked at the current level | Agree; the owner chose option 2 | A level change and a schema change need separate saves (`LEVEL_AND_SCHEMA_CHANGED`, E6); `is_registered` on the client. See "Level change and schema change in one save" | `test_level_and_schema_change_together_is_an_error`, `test_level_change_with_unchanged_schema_warns`, `test_level_change_without_versions_is_not_blocked`, `test_same_level_unchanged_behaviour`, `test_level_change_lookup_failure_is_an_error`, `test_level_change_with_repointed_reference_is_an_error`, `test_level_change_with_the_same_reference_subjects_warns`; (int) the `is_registered` and level-change tests named in that section |
 | F5 top-level Avro enum/fixed rejected | Agree | Stage B accepts `record`, `enum` and `fixed` at the top | `test_top_level_enum`, `test_top_level_fixed`, `test_top_level_enum_needs_namespace`; (int) `test_avro_shared_enum`; Java `probe.Nested` |
 | F6 subject mode not checked | Agree | `get_mode`; any mode other than `READWRITE` is E5 (`SR_MODE`) | `test_get_mode`, `test_readonly_subject_is_an_error`, `test_mode_inherited_from_global_blocks`, `test_import_mode_is_an_error`; (int) `test_mode_readonly_subject`, `test_readonly_subject_rejected`, `test_mode_lookup_by_validator_user` |
 | F7 transitive-only names need no row | Disagree | None, because a name provided by a referenced Schema's own reference is a valid use (registry and both clients work) and F1/D7 now covers the corruption the reviewer linked to it | `test_avro_name_from_a_transitive_reference_is_provided_by_the_row`, `test_avro_row_used_only_through_another_rows_transitive_name_is_unused`; (int) `test_avro_name_from_a_transitive_reference` |
 | L1 total deadline | Agree | Body read with `raw.read1` against start + `sr_timeout_seconds`; overrun is E3 | `test_slow_body_hits_deadline`, `test_error_while_reading_the_body_is_unavailable`; (int) `test_stalled_body_is_unreachable` |
-| L2 raw registry bodies shown | Agree | `SchemaRegistryRejected` keeps only a structured message and the code; `SR_REJECTED_CODE` | `test_raw_body_never_in_rejected`, `test_structured_message_not_echoed`, `test_plain_message_still_shown` |
+| L2 raw registry bodies shown | Agree | `SchemaRegistryRejected` keeps only a structured message and the code; a message is shown only with error_code 409 or 40000 to 49999; otherwise `SR_REJECTED_CODE` | `test_raw_body_never_in_rejected`, `test_structured_message_not_echoed`, `test_plain_message_still_shown`, `test_sr_rejected_message_shown_only_with_a_registry_error_code`, `test_sr_rejected_details_reason_shown_whatever_the_code` |
 | L3 redirects followed | Agree | `allow_redirects=False`; a 3xx is E3 | `test_redirects_not_followed` |
 | L4 JSON top level must be `"type": "object"` | Disagree | None, because it is a deliberate platform rule (`JSON_TOP_LEVEL`) | `tests/test_json_schema.py` top-level tests (unchanged) |
 | L5 JSON reference cycle rejected | Disagree | None, because the cycle rule is deliberately the same for all formats (the registry rejects it for Avro) | `test_direct_cycle`, `test_transitive_cycle`, `test_reference_cycle` (unchanged) |
@@ -243,13 +245,19 @@ Re-run of the reviewer's scripts against this code (the Java parts of the script
 - `t12`: C3 (edit incompatible under NONE with the level changed to FULL in the same save) gives `Error`; C4 (subject READONLY) gives `Error`, and the registry's own register call gives 422 42205.
 - Java probes `probe.Main`, `probe.ProtoRefs`, `probe.Nested` exit 0 (`Nested: all cases as expected`).
 
+## Whole-branch review fixes, 2026-11-17
+
+- F-I1, JSON `$id` false pass. Observed with the Python serializer (confluent-kafka 2.16.1, jsonschema 4.26.0, referencing 0.37.0): under a root `$id` of `https://acme.example/o.json`, a `$ref` to `https://acme.example/a.json` defined by an `$id` under draft-07 `$defs`, or under an unknown keyword such as `x-defs`, fails with `Unresolvable`, and in draft-07 an `$id` next to a `$ref` is ignored (the `$ref` resolves against the parent's base). `validate` had passed all three. Also observed: without `$schema` the serializer uses a 2020-12 validator, where an `$id` next to a `$ref` does move the base; below an unknown keyword the base depends on whether a pointer reaches the `$ref` directly or descends to it; and a subtree with its own `$schema` is registered by that draft. Code changed: the external refs follow `referencing` (spec 5.2 step 8). Pinned by the F2 row's review tests and (int) `test_json_id_under_a_keyword_the_draft_does_not_know_is_external`.
+- F-I2, E6 ignored the subjects of the references. Code changed: see "Level change and schema change in one save".
+- F-L2, a rejection's message is shown only with Schema Registry's own error codes. See "No raw registry bodies".
+
 ## Packaging
 
 `tests/test_packaging.py` builds the wheel from a copy of the tree with `setuptools.build_meta.build_wheel` on every unit-test run and checks that it holds every `.py` file and the 18 `.proto` files under `schema_validator/_proto/`, and no tests.
 
 ## Coverage
 
-`coverage run --branch --source=schema_validator -m pytest -q` on 2026-11-17: 1,029 statements and 368 branches, all covered by the unit tests alone.
+`coverage run --branch --source=schema_validator -m pytest -q` on 2026-11-17: 1,061 statements and 378 branches, all covered by the unit tests alone.
 
 ## Not verified
 
