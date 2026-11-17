@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from schema_validator import messages
 from schema_validator.formats import avro
 from schema_validator.formats.avro import analyse
 from schema_validator.models import FormatAnalysis, ValidatorConfig
@@ -164,8 +165,8 @@ def test_forward_use() -> None:
         )
     )
     assert result.external_refs == set()
-    # fastavro raises UnknownType for the forward use; that is not reported here.
-    assert result.errors == []
+    # fastavro stops at the forward use, and Schema Registry rejects it too.
+    assert result.errors == ["Invalid Avro schema: type 'com.acme.Later' is used before it is defined"]
 
 
 def test_refs_in_array_map_union() -> None:
@@ -183,8 +184,13 @@ def test_refs_in_array_map_union() -> None:
     assert result.external_refs == {"a.X", "a.Y", "a.Z"}
 
 
-def test_unqualified_use_falls_back_to_null_namespace() -> None:
-    # Java Avro looks an unqualified name up in the enclosing namespace, then in the null one.
+def nested_ns(name: str) -> str:
+    return messages.AVRO_NESTED_NAMESPACE.format(name=name)
+
+
+def test_unqualified_use_has_no_null_namespace_fallback() -> None:
+    # fastavro (Python clients) has no null-namespace fallback, so neither has the walk:
+    # the use resolves against the enclosing namespace only.
     result = run(
         rec(
             "Order",
@@ -192,27 +198,10 @@ def test_unqualified_use_falls_back_to_null_namespace() -> None:
             namespace="com.acme",
         )
     )
-    assert result.external_refs == set()
+    assert result == FormatAnalysis("com.acme.Order", {"com.acme.Inner"}, [nested_ns("Inner")])
 
 
-def test_enclosing_namespace_is_tried_first() -> None:
-    # Both com.acme.Inner and the null-namespace Inner exist: the use is local either way.
-    result = run(
-        rec(
-            "Order",
-            [
-                field("a", rec("Inner", [field("x", "string")], namespace="")),
-                field("b", rec("Inner", [field("y", "string")])),
-                field("c", "Inner"),
-            ],
-            namespace="com.acme",
-        )
-    )
-    assert result.external_refs == set()
-
-
-def test_qualified_use_has_no_null_namespace_fallback() -> None:
-    # Only an unqualified name falls back: "other.Inner" is not the null-namespace Inner.
+def test_qualified_use_is_not_the_null_namespace_type() -> None:
     result = run(
         rec(
             "Order",
@@ -221,6 +210,82 @@ def test_qualified_use_has_no_null_namespace_fallback() -> None:
         )
     )
     assert result.external_refs == {"other.Inner"}
+    assert result.errors == [nested_ns("Inner")]
+
+
+@pytest.mark.parametrize(
+    "nested",
+    [
+        pytest.param(rec("Inner", [field("x", "string")], namespace=""), id="record"),
+        pytest.param({"type": "enum", "name": "Inner", "namespace": "", "symbols": ["A"]}, id="enum"),
+        pytest.param({"type": "fixed", "name": "Inner", "namespace": "", "size": 4}, id="fixed"),
+    ],
+)
+def test_nested_type_with_empty_namespace(nested: dict[str, Any]) -> None:
+    result = run(rec("Order", [field("inner", nested), field("id", "string")], namespace="com.acme"))
+    assert result == FormatAnalysis("com.acme.Order", set(), [nested_ns("Inner")])
+
+
+@pytest.mark.parametrize("name", [".Inner", "Inner.", "a..B"])
+def test_nested_type_with_empty_name_part(name: str) -> None:
+    result = run(rec("Order", [field("inner", {"type": "fixed", "name": name, "size": 4})], namespace="com.acme"))
+    assert result.expected_name == "com.acme.Order"
+    assert result.errors[0] == nested_ns(name)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        pytest.param({}, id="inherits"),
+        pytest.param({"namespace": "other.ns"}, id="own-namespace"),
+    ],
+)
+def test_nested_type_with_a_namespace_is_fine(extra: dict[str, Any]) -> None:
+    result = run(rec("Order", [field("inner", rec("Inner", [field("x", "string")], **extra))], namespace="com.acme"))
+    assert result == FormatAnalysis("com.acme.Order", set(), [])
+
+
+def test_nested_dotted_name_is_fine() -> None:
+    result = run(rec("Order", [field("inner", rec("other.ns.Inner", [field("x", "string")], namespace=""))],
+                     namespace="com.acme"))
+    assert result == FormatAnalysis("com.acme.Order", set(), [])
+
+
+def test_nested_types_without_namespace_reported_in_document_order() -> None:
+    def fixed(name: str) -> dict[str, Any]:
+        return {"type": "fixed", "name": name, "namespace": "", "size": 4}
+
+    result = run(
+        rec(
+            "Order",
+            [
+                field("a", {"type": "array", "items": fixed("InArray")}),
+                field("b", rec("Mid", [field("deep", fixed("Deep"))])),
+                field("c", {"type": "map", "values": fixed("InMap")}),
+                field("d", ["null", fixed("InUnion")]),
+            ],
+            namespace="com.acme",
+        )
+    )
+    assert result == FormatAnalysis(
+        "com.acme.Order", set(), [nested_ns(n) for n in ("InArray", "Deep", "InMap", "InUnion")]
+    )
+
+
+def test_no_namespace_at_the_top_is_reported_once() -> None:
+    # Nested types inherit the missing namespace; only the top-level message is shown.
+    result = run(rec("Order", [field("inner", rec("Inner", [field("x", "string")]))]))
+    assert result.errors == NAMESPACE
+
+
+def test_nested_namespace_rule_skips_referenced_texts() -> None:
+    address = rec("Address", [field("c", {"type": "enum", "name": "Country", "namespace": "", "symbols": ["NL"]})],
+                  namespace="com.acme")
+    result = run(
+        rec("Customer", [field("addr", "com.acme.Address")], namespace="com.acme"),
+        referenced={"com.acme.Address": json.dumps(address)},
+    )
+    assert result == FormatAnalysis("com.acme.Customer", {"com.acme.Address"}, [])
 
 
 def test_nested_namespace() -> None:
@@ -443,3 +508,33 @@ def test_fastavro_recursion_error_is_invalid(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(avro.fastavro, "parse_schema", overflow)
     result = run(rec("Order", [field("id", "string")], namespace="com.acme"))
     assert result.errors == ["Invalid Avro schema: maximum recursion depth exceeded"]
+
+
+BAD_DEFAULT = field("bad", "string", default=5)
+
+
+def test_null_namespace_type_nested_in_a_reference_is_not_provided_by_bare_name() -> None:
+    # Country sits in the null namespace inside Address; "Country" in com.acme is com.acme.Country.
+    address = rec("Address", [field("c", {"type": "enum", "name": "Country", "namespace": "", "symbols": ["NL"]})],
+                  namespace="com.acme")
+    result = run(
+        rec("Customer", [field("addr", "com.acme.Address"), field("country", "Country"), BAD_DEFAULT],
+            namespace="com.acme"),
+        referenced={"com.acme.Address": json.dumps(address)},
+    )
+    assert result.external_refs == {"com.acme.Address", "com.acme.Country"}
+
+
+def test_unknown_type_the_walk_resolved_is_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The walk and fastavro disagree: fastavro stopped early, so the schema is not checked.
+    def unknown(*args: Any, **kwargs: Any) -> Any:
+        raise avro.UnknownType("com.acme.Inner")
+
+    monkeypatch.setattr(avro.fastavro, "parse_schema", unknown)
+    result = run(
+        rec("Customer", [field("country", "com.acme.Country")], namespace="com.acme"),
+        referenced={"com.acme.Address": json.dumps(ADDRESS_WITH_COUNTRY)},
+    )
+    assert result.external_refs == {"com.acme.Address"}
+    assert result.errors == ["Invalid Avro schema: unknown type 'com.acme.Inner'"]
+

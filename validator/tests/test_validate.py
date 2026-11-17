@@ -308,6 +308,31 @@ def test_avro_name_nested_in_a_reference(fields: list[dict[str, Any]], sr: FakeS
                                  (SrReference("com.acme.Address", "com.acme.Address", 1),))]
 
 
+def test_avro_nested_null_namespace_type_is_an_error(sr: FakeSchemaRegistry, run: Callable) -> None:
+    # fastavro stops at the bare use of Inner and never sees the bad default: this must not pass.
+    schema = json.dumps({"type": "record", "name": "Order", "namespace": "com.acme", "fields": [
+        {"name": "inner", "type": {"type": "record", "name": "Inner", "namespace": "", "fields": []}},
+        {"name": "again", "type": "Inner"},
+        {"name": "bad", "type": "string", "default": 5}]})
+    result = run(req("AVRO", None, "com.acme.Order", schema=schema), sr)
+    assert (result.valid, result.validationType) == (False, "Error")
+    assert messages.AVRO_NESTED_NAMESPACE.format(name="Inner") in result.message
+    assert compat_calls(sr) == []
+
+
+def test_avro_null_namespace_type_nested_in_a_reference_is_an_error(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.add("com.acme.Address", json.dumps({"type": "record", "name": "Address", "namespace": "com.acme", "fields": [
+        {"name": "country", "type": {"type": "enum", "name": "Country", "namespace": "", "symbols": ["NL"]}}]}))
+    schema = json.dumps({"type": "record", "name": "Customer", "namespace": "com.acme", "fields": [
+        {"name": "address", "type": "com.acme.Address"},
+        {"name": "country", "type": "Country"},
+        {"name": "bad", "type": "string", "default": 5}]})
+    request = req("AVRO", None, "com.acme.Customer", schema=schema, references=[address_row("AVRO")])
+    result = run(request, sr)
+    assert result == ValidationResult(False, "Error", messages.REF_MISSING_ROW.format(x="com.acme.Country"))
+    assert compat_calls(sr) == []
+
+
 def test_duplicate_rows_skip_stage_d(sr: FakeSchemaRegistry, run: Callable) -> None:
     # order.avsc uses neither row: a D5 message would show that the cross-check ran.
     sr.add("com.acme.Address", load("AVRO", "address"))

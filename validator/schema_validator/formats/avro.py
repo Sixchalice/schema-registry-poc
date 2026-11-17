@@ -37,18 +37,18 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
     name = schema.get("name")
     if isinstance(name, str):
         full_name = _full_name(name, _own_namespace(schema, None))
-        # Every dotted part must be non-empty: ".Order" or "com..Order" has no usable namespace.
-        parts = full_name.split(".")
-        if len(parts) > 1 and all(parts):
+        if _well_formed(full_name):
             expected_name = full_name
         else:
             errors.append(messages.AVRO_NAMESPACE)
 
     # Step 6
-    external_refs = _external_refs(schema, referenced)
+    defined, used, opted_out = _names(schema)
+    errors.extend(messages.AVRO_NESTED_NAMESPACE.format(name=n) for n in opted_out)
+    external_refs, unresolved = _external_refs(defined, used, referenced)
 
     # Step 7
-    error = _parse_error(schema, referenced)
+    error = _parse_error(schema, referenced, defined, unresolved)
     if error is not None:
         errors.append(messages.AVRO_INVALID.format(err=error))
 
@@ -69,32 +69,29 @@ def _full_name(name: str, namespace: str | None) -> str:
     return f"{namespace}.{name}"
 
 
-def _external_refs(schema: dict[str, Any], referenced: dict[str, str]) -> set[str]:
-    """Names used in type positions that the text does not define itself.
+def _external_refs(
+    defined: set[str], used: set[str], referenced: dict[str, str]
+) -> tuple[set[str], set[str]]:
+    """The reference names the text needs, and the used names nothing defines.
 
-    An unqualified name is looked up in the enclosing namespace first, then in the
-    null namespace (as Java Avro's Names.get does). A name defined inside a referenced
-    schema (an enum nested in a referenced record) is provided by that reference, so
-    it is reported as the reference's key.
+    A used name the text does not define itself is external. An unqualified name
+    resolves against the enclosing namespace only: fastavro has no null-namespace
+    fallback, so a schema relying on it does not parse in Python clients. A name
+    defined inside a referenced schema (an enum nested in a referenced record) is
+    provided by that reference, so it is reported as the reference's key.
     """
-    defined, used = _names(schema)
     top_level, nested = _reference_names(referenced)
     refs: set[str] = set()
-    for full, bare in used:
-        for name in (full, bare):
-            if name is None:
-                continue
-            if name in defined:
-                break
-            if name in top_level:
-                refs.add(name)
-                break
-            if name in nested:
-                refs.add(nested[name])
-                break
+    unresolved: set[str] = set()
+    for name in used - defined:
+        if name in top_level:
+            refs.add(name)
+        elif name in nested:
+            refs.add(nested[name])
         else:
-            refs.add(full)
-    return refs
+            refs.add(name)
+            unresolved.add(name)
+    return refs, unresolved
 
 
 def _reference_names(referenced: dict[str, str]) -> tuple[set[str], dict[str, str]]:
@@ -107,7 +104,7 @@ def _reference_names(referenced: dict[str, str]) -> tuple[set[str], dict[str, st
             root = json.loads(text)
         except (TypeError, ValueError, RecursionError):
             continue  # not this schema's error (see _parse_error)
-        defined, _ = _names(root)
+        defined, _, _ = _names(root)
         own: str | None = None
         if isinstance(root, dict) and isinstance(root.get("name"), str):
             own = _full_name(root["name"], _own_namespace(root, None))
@@ -117,24 +114,29 @@ def _reference_names(referenced: dict[str, str]) -> tuple[set[str], dict[str, st
     return top_level, nested
 
 
-def _names(schema: Any) -> tuple[set[str], set[tuple[str, str | None]]]:
-    """The full names a text defines, and the names it uses in type positions.
+def _well_formed(full_name: str) -> bool:
+    """A full name with a namespace and no empty dotted part (not "Order", ".Order", "com..Order")."""
+    parts = full_name.split(".")
+    return len(parts) > 1 and all(parts)
 
-    Each used name is (full name, bare name); the bare name is None when the use was
-    qualified or had no enclosing namespace, so there is no fallback to try.
-    """
+
+def _names(schema: Any) -> tuple[set[str], set[str], list[str]]:
+    """The full names a text defines, the full names it uses in type positions, and
+    the `name` (as written, in document order) of every nested named type that ends
+    up without a namespace although the type enclosing it has one."""
     defined: set[str] = set()
-    used: set[tuple[str, str | None]] = set()
+    used: set[str] = set()
+    opted_out: list[str] = []
     # Each entry is a value in a type position and the namespace enclosing it.
+    # Children are pushed in reverse, so the stack pops them in document order.
     pending: list[tuple[Any, str | None]] = [(schema, None)]
     while pending:
         node, namespace = pending.pop()
         if isinstance(node, str):
             if node not in _BUILTIN_TYPES:
-                full = _full_name(node, namespace)
-                used.add((full, node if full != node else None))
+                used.add(_full_name(node, namespace))
         elif isinstance(node, list):
-            pending.extend((member, namespace) for member in node)
+            pending.extend((member, namespace) for member in reversed(node))
         elif isinstance(node, dict):
             kind = node.get("type")
             # `kind` may be a list or dict (pushed back below), so test str before hashing.
@@ -145,9 +147,15 @@ def _names(schema: Any) -> tuple[set[str], set[tuple[str, str | None]]]:
                     full = _full_name(name, _own_namespace(node, namespace))
                     defined.add(full)
                     inner = full.rpartition(".")[0] or None
+                    # The root is step 4's; under a root without a namespace a plain
+                    # name is only inheriting the gap, which step 4 already reports.
+                    if node is not schema and not _well_formed(full) and ("." in full or namespace):
+                        opted_out.append(name)
                 fields = node.get("fields") if kind == "record" else None
                 if isinstance(fields, list):
-                    pending.extend((f["type"], inner) for f in fields if isinstance(f, dict) and "type" in f)
+                    pending.extend(
+                        (f["type"], inner) for f in reversed(fields) if isinstance(f, dict) and "type" in f
+                    )
             elif kind == "array":
                 if "items" in node:
                     pending.append((node["items"], namespace))
@@ -156,11 +164,18 @@ def _names(schema: Any) -> tuple[set[str], set[tuple[str, str | None]]]:
                     pending.append((node["values"], namespace))
             elif kind is not None:
                 pending.append((kind, namespace))
-    return defined, used
+    return defined, used, opted_out
 
 
-def _parse_error(schema: dict[str, Any], referenced: dict[str, str]) -> str | None:
-    """fastavro's error for the schema, parsed after its references; None if it parses."""
+def _parse_error(
+    schema: dict[str, Any], referenced: dict[str, str], defined: set[str], unresolved: set[str]
+) -> str | None:
+    """fastavro's error for the schema, parsed after its references; None if it parses.
+
+    `defined` are the names the text defines and `unresolved` the used names the walk
+    found no definition for. fastavro stops at the first unknown type, so after one the
+    rest of the schema is not checked: it is let through only when stage D reports it.
+    """
     named: dict[str, Any] = {}
     for text in referenced.values():
         try:
@@ -170,9 +185,17 @@ def _parse_error(schema: dict[str, Any], referenced: dict[str, str]) -> str | No
             pass
     try:
         fastavro.parse_schema(schema, named_schemas=named)
-    except UnknownType:
-        # A missing reference; stage D explains it. Caught first: it is not a SchemaParseException.
-        return None
+    except UnknownType as e:
+        # Caught first: it is not a SchemaParseException.
+        name = e.name
+        while isinstance(name, dict):  # fastavro gives {"type": "X"} for a wrapped name
+            name = name.get("type")
+        if isinstance(name, str) and name in unresolved:
+            return None  # A missing reference; stage D explains it.
+        if isinstance(name, str) and name in defined:
+            return f"type '{name}' is used before it is defined"
+        # The walk took this name as provided, so nothing else would report the stop.
+        return f"unknown type {e.name!r}"
     except Exception as e:
         # SchemaParseException, and also TypeError, ValueError etc. on malformed schemas.
         return str(e)

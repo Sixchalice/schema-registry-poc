@@ -51,6 +51,9 @@ LEVEL_WARNING = (
 # Avro (5.1)
 AVRO_TOP_LEVEL = "The top level of an Avro schema must be a single record."
 AVRO_NAMESPACE = "Avro schema needs a namespace, for example \"namespace\": \"com.team.domain\"."
+AVRO_NESTED_NAMESPACE = (
+    "Type '{name}' needs a namespace. Remove its empty \"namespace\" so it uses the schema's namespace."
+)
 AVRO_INVALID = "Invalid Avro schema: {err}"
 
 # JSON Schema (5.2)
