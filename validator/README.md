@@ -65,6 +65,12 @@ result.message         # "" for Ok; otherwise the messages, one per line
 | `allowed_json_drafts` | draft-04, draft-06, draft-07, 2019-09, 2020-12 | Accepted `$schema` values, stored without a trailing `#` (`DEFAULT_JSON_DRAFTS` in `models.py`). This is platform policy: Schema Registry accepts any `$schema` value |
 | `builtin_proto_imports` | 29 paths (`DEFAULT_BUILTIN_PROTO_IMPORTS` in `models.py`) | Import paths that need no reference row: `google/protobuf/` `any`, `api`, `descriptor`, `duration`, `empty`, `field_mask`, `source_context`, `struct`, `timestamp`, `type`, `wrappers`; `google/type/` `calendar_period`, `color`, `date`, `datetime`, `dayofweek`, `decimal`, `expr`, `fraction`, `interval`, `latlng`, `money`, `month`, `phone_number`, `postal_address`, `quaternion`, `timeofday` (each `.proto`); `confluent/meta.proto`, `confluent/type/decimal.proto` |
 
+On a registry with ACLs (Confluent Security Plugin), the validator's user needs `SUBJECT_READ`, `SUBJECT_WRITE` and `SUBJECT_COMPATIBILITY_READ` on subject `*`. `SUBJECT_WRITE` is for the compatibility check: it stores nothing, but the registry asks for Write. The same credentials can therefore register schemas, so protect them accordingly.
+
+```bash
+sr-acl-cli --config <sr.properties> --add -s '*' -p schema-validator -o SUBJECT_READ -o SUBJECT_WRITE -o SUBJECT_COMPATIBILITY_READ
+```
+
 The `HttpSchemaRegistryClient` takes its URL, credentials and timeout from the config through `from_config`, or directly: `HttpSchemaRegistryClient(url, username=None, password=None, timeout_seconds=10)`.
 
 ## The request
@@ -165,11 +171,13 @@ Unit tests (no network, no Docker; Schema Registry is faked):
 Integration tests against a real Schema Registry 7.9.0 and Kafka in Docker. They need `confluent-kafka[schemaregistry,avro,json,protobuf]` (a test dependency only). Start the stack, then run the tests:
 
 ```bash
-docker compose -p validator-it -f integration/docker-compose.yml up -d   # SR on localhost:18081, Kafka on localhost:19092
+docker compose -p validator-it -f integration/docker-compose.yml up -d   # SR on localhost:18081, secured SR on localhost:18082, Kafka on localhost:19092
 .venv/bin/python -m pytest integration/tests -m integration -q
 ```
 
 `SR_URL` and `KAFKA_BOOTSTRAP` override the addresses. The tests are skipped when Schema Registry is not reachable. Each test uses its own namespace, so they can be rerun against the same registry. The images are variables (`KAFKA_IMAGE`, `SR_IMAGE`) for environments that pull from an internal registry.
+
+`integration/tests/test_secured_sr.py` runs against the second registry of the stack, `schema-registry-secured` (HTTP Basic auth and ACLs; users in `integration/secured/users.properties`, ACLs in its start command). `SECURED_SR_URL` overrides its address, and the file is skipped when it is not reachable.
 
 The Java checks run in a Maven container on the same network:
 

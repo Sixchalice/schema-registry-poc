@@ -1,0 +1,138 @@
+"""The `validate` pipeline against a registry with HTTP Basic auth and ACLs (spec §7, E4).
+
+The registry is `schema-registry-secured` in integration/docker-compose.yml. Its users are in
+integration/secured/users.properties and their ACLs in the service's start command:
+`validator` has SUBJECT_READ, SUBJECT_WRITE and SUBJECT_COMPATIBILITY_READ on every subject,
+`no-write` lacks SUBJECT_WRITE, `no-acl` has nothing, `admin` has everything.
+"""
+from __future__ import annotations
+
+import json
+import os
+
+import pytest
+import requests
+
+from schema_validator import (
+    HttpSchemaRegistryClient,
+    ReferenceInput,
+    ValidationRequest,
+    ValidationResult,
+    ValidatorConfig,
+    messages,
+    validate,
+)
+
+SECURED_SR_URL = os.environ.get("SECURED_SR_URL", "http://localhost:18082").rstrip("/")
+_HEADERS = {"Content-Type": "application/vnd.schemaregistry.v1+json"}
+E4 = ValidationResult(False, "Error", messages.SR_UNAUTHORIZED)
+
+
+def _unreachable_reason() -> str | None:
+    try:
+        status = requests.get(f"{SECURED_SR_URL}/subjects", timeout=5).status_code
+    except requests.RequestException as e:
+        return f"the secured Schema Registry at {SECURED_SR_URL} is not reachable ({type(e).__name__})"
+    return None if status == 401 else f"{SECURED_SR_URL} answered {status} without credentials, expected 401"
+
+
+_REASON = _unreachable_reason()
+pytestmark = pytest.mark.skipif(_REASON is not None, reason=str(_REASON))
+
+
+def avro(name: str, namespace: str, fields: list[dict[str, object]]) -> str:
+    return json.dumps({"type": "record", "name": name, "namespace": namespace, "fields": fields})
+
+
+def run(request: ValidationRequest, username: str | None, password: str | None) -> ValidationResult:
+    config = ValidatorConfig(sr_url=SECURED_SR_URL, sr_username=username, sr_password=password)
+    return validate(request, HttpSchemaRegistryClient.from_config(config), config)
+
+
+def create(name: str, schema: str, references: list[ReferenceInput] | None = None,
+           previous_name: str | None = None) -> ValidationRequest:
+    return ValidationRequest(
+        name=name, schema_type="AVRO", schema=schema, compatibility="BACKWARD",
+        references=references or [], previous_name=previous_name, existing_names=[],
+    )
+
+
+def register_as_admin(subject: str, schema: str) -> None:
+    response = requests.post(
+        f"{SECURED_SR_URL}/subjects/{subject}/versions", headers=_HEADERS, auth=("admin", "admin-secret"),
+        data=json.dumps({"schema": schema, "schemaType": "AVRO"}), timeout=20,
+    )
+    assert response.status_code == 200, response.text
+
+
+ORDER_FIELDS: list[dict[str, object]] = [{"name": "id", "type": "string"}]
+
+
+@pytest.mark.parametrize("username, password", [
+    pytest.param(None, None, id="no-credentials"),
+    pytest.param("validator", "wrong-password", id="wrong-password"),
+    pytest.param("nobody", "nobody-secret", id="unknown-user"),
+])
+def test_401_is_e4(ns: str, username: str | None, password: str | None) -> None:
+    result = run(create(f"{ns}.Order", avro("Order", ns, ORDER_FIELDS)), username, password)
+    assert result == E4
+
+
+def test_user_without_acls_is_e4(ns: str) -> None:
+    result = run(create(f"{ns}.Order", avro("Order", ns, ORDER_FIELDS)), "no-acl", "no-acl-secret")
+    assert result == E4
+
+
+def test_403_on_a_reference_lookup_is_e4(ns: str) -> None:
+    # The first call for this request is the lookup of the referenced subject.
+    schema = avro("Order", ns, [{"name": "addr", "type": f"{ns}.Address"}])
+    request = create(f"{ns}.Order", schema, [ReferenceInput(f"{ns}.Address")])
+    assert run(request, "no-acl", "no-acl-secret") == E4
+
+
+def test_compatibility_check_needs_subject_write(ns: str) -> None:
+    # SUBJECT_READ and SUBJECT_COMPATIBILITY_READ are not enough: the registry asks for
+    # Write on the subject for POST /compatibility, although the call stores nothing.
+    name = f"{ns}.Order"
+    response = requests.post(
+        f"{SECURED_SR_URL}/compatibility/subjects/{name}/versions?verbose=true", headers=_HEADERS,
+        auth=("no-write", "no-write-secret"), data=json.dumps({"schema": avro("Order", ns, ORDER_FIELDS)}),
+        timeout=20,
+    )
+    assert response.status_code == 403
+    assert response.json() == {"error_code": 40301, "message": f"User is denied operation Write on Subject: {name}"}
+    assert run(create(name, avro("Order", ns, ORDER_FIELDS)), "no-write", "no-write-secret") == E4
+
+
+def test_level_lookup_needs_subject_compatibility_read(ns: str) -> None:
+    response = requests.get(f"{SECURED_SR_URL}/config/{ns}.Order?defaultToGlobal=true",
+                            auth=("no-acl", "no-acl-secret"), timeout=20)
+    assert response.status_code == 403
+    assert response.json()["message"] == f"User is denied operation ReadCompatibility on Subject: {ns}.Order"
+
+
+def test_validator_user_create(ns: str) -> None:
+    result = run(create(f"{ns}.Order", avro("Order", ns, ORDER_FIELDS)), "validator", "validator-secret")
+    assert result == ValidationResult(True, "Ok", "")
+    # The compatibility check stored nothing, although it needs SUBJECT_WRITE.
+    listed = requests.get(f"{SECURED_SR_URL}/subjects", auth=("admin", "admin-secret"), timeout=20).json()
+    assert f"{ns}.Order" not in listed
+
+
+def test_validator_user_edit(ns: str) -> None:
+    name = f"{ns}.Order"
+    register_as_admin(name, avro("Order", ns, ORDER_FIELDS))
+    compatible = avro("Order", ns, ORDER_FIELDS + [{"name": "note", "type": "string", "default": ""}])
+    assert run(create(name, compatible, previous_name=name), "validator", "validator-secret") == \
+        ValidationResult(True, "Ok", "")
+    incompatible = avro("Order", ns, ORDER_FIELDS + [{"name": "zip", "type": "string"}])
+    result = run(create(name, incompatible, previous_name=name), "validator", "validator-secret")
+    assert (result.valid, result.validationType) == (False, "Error")
+    assert result.message.startswith("Not BACKWARD-compatible with version 1: The field 'zip' ")
+
+
+def test_validator_user_with_a_reference(ns: str) -> None:
+    register_as_admin(f"{ns}.Address", avro("Address", ns, [{"name": "city", "type": "string"}]))
+    schema = avro("Order", ns, [{"name": "addr", "type": f"{ns}.Address"}])
+    result = run(create(f"{ns}.Order", schema, [ReferenceInput(f"{ns}.Address")]), "validator", "validator-secret")
+    assert result == ValidationResult(True, "Warning", messages.PINNED_WARNING.format(list=f"{ns}.Address v1"))

@@ -1,10 +1,10 @@
 # Verification record
 
-Checked on 2026-11-16 against `confluentinc/cp-schema-registry:7.9.0` (no authentication) on `apache/kafka:3.8.1`, from `integration/docker-compose.yml`, with confluent-kafka-python 2.16.1 and the Confluent 7.9.0 Java serializers.
+Checked on 2026-11-16 (the secured registry and the Avro namespace follow-up on 2026-11-17) against `confluentinc/cp-schema-registry:7.9.0` (no authentication) on `apache/kafka:3.8.1`, from `integration/docker-compose.yml`, with confluent-kafka-python 2.16.1 and the Confluent 7.9.0 Java serializers.
 
 ```
-.venv/bin/python -m pytest -q                                   # 514 passed
-.venv/bin/python -m pytest integration/tests -m integration -q  # 78 passed, none skipped
+.venv/bin/python -m pytest -q                                   # 529 passed
+.venv/bin/python -m pytest integration/tests -m integration -q  # 88 passed, none skipped
 ```
 
 Every integration test creates its subjects under a fresh namespace (`it` + 10 hex digits, shown below as `<ns>`), so the suite can be rerun against the same registry.
@@ -65,11 +65,22 @@ One change, in `schema_validator/sr_client.py` (`HttpSchemaRegistryClient._call`
 
 `QualifiedReferenceSubjectNameStrategy` maps `p6/shop/PAddress.proto` to `p6.shop.PAddress`, as spec §6 says.
 
+## Secured registry (spec §7, E4)
+
+Checked against `schema-registry-secured` in `integration/docker-compose.yml`: the same 7.9.0 image with HTTP Basic auth (a users file) and the Confluent Security Plugin in ACL mode. Pinned by `integration/tests/test_secured_sr.py` (10 tests). No code change was needed.
+
+| What was tested | Observed |
+|---|---|
+| `validate` with no credentials, a wrong password, an unknown user | `401 {"error_code": 401, "message": "Unauthorized"}` on the first call; result E4 |
+| `validate` as a user with no ACLs, with and without a reference row | `403 {"error_code": 40301, "message": "User is denied operation Read on Subject: <s>"}` (or `Write`); result E4 |
+| Which operation each call needs | Version lookups: `SUBJECT_READ`. `GET /config/{s}?defaultToGlobal=true`: `SUBJECT_COMPATIBILITY_READ` (`denied operation ReadCompatibility`). `POST /compatibility/subjects/{s}/versions`: `SUBJECT_WRITE` (`denied operation Write`), although it stores nothing |
+| `validate` as a user with `SUBJECT_READ` and `SUBJECT_COMPATIBILITY_READ` only | E4: the compatibility check is refused |
+| `validate` as a user with the three operations on `*` | Create: `Ok`, and the subject is not created. Edit: `Ok` for a compatible change, the incompatibility message for an incompatible one. With a reference: the pinned `Warning`. A subject that does not exist gives 404 (40401), not 403 |
+
 ## Packaging
 
 The wheel ships the bundled `.proto` files. This was verified in the final branch review, not rerun for this record: a wheel built from a copy of the tree with `setuptools.build_meta.build_wheel` holds the 18 `.proto` files under `schema_validator/_proto/`, and `protobuf.analyse` compiled `google/type/date.proto` and `confluent/meta.proto` from the unpacked wheel. (The project's virtual environment has no `pip`, so `pip wheel` was not used.)
 
 ## Not verified
 
-- 401 and 403 handling (E4) against a registry with authentication and ACLs. The test registry has no authentication; E4 is covered by unit tests only.
-- Which ACL operations the validator's Schema Registry user needs in production. Settle it when the validator is first deployed against the secured registry.
+- The Kafka-side setup of the production registry and its real login module. The secured test registry uses a users file, not the platform database.

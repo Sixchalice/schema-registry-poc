@@ -306,7 +306,15 @@ Response handling (observed on SR 7.9.0; the endpoint behaves the same for a sub
 
 `GET /subjects/{subject}/versions/latest` returns 404 (40401) for a subject that does not exist or is soft-deleted. The client returns "not registered" only for a 404 with `error_code` 40401 or 40402.
 
-The 401/403 handling has not been tested against a registry with authentication and ACLs. Which ACL operations the validator's user needs in production is also not established; settle it when the validator is first deployed against the secured registry.
+Verified against a 7.9.0 registry with HTTP Basic auth and the Confluent Security Plugin in ACL mode (`integration/tests/test_secured_sr.py`): missing or wrong credentials give 401 and a user without the ACL gives 403 (`error_code` 40301), on the first call the request makes; both are E4. The validator's user needs three operations on subject `*`:
+
+| Operation | Needed by |
+|---|---|
+| `SUBJECT_READ` | `GET /subjects/{s}/versions/latest` and `/versions/{v}` (the reference lookups) |
+| `SUBJECT_WRITE` | `POST /compatibility/subjects/{s}/versions`. The call stores nothing, but the registry asks for Write on the subject |
+| `SUBJECT_COMPATIBILITY_READ` | `GET /config/{s}?defaultToGlobal=true` (on edit) |
+
+`SUBJECT_WRITE` also lets the same credentials register schemas, so they must be kept like the platform's own registration credentials. With these ACLs a subject that does not exist still gives 404 (40401), not 403.
 
 Provide a `SchemaRegistryClient` protocol so tests can inject a fake.
 
@@ -449,10 +457,7 @@ Verified on 2026-11-16 against `confluentinc/cp-schema-registry:7.9.0` (no auth)
 | 9 | Subject names | SR accepts anything, case-sensitively (`X.Case` and `X.case` are two subjects). A name starting with `:.ctx:` lands in another context |
 | 10 | Deleting | SR refuses to soft-delete a subject that others reference (422, error 42206). After a soft delete the subject's history is gone for compatibility: an incompatible schema registers as the next version |
 | 11 | Reference version `-1` | SR accepts it at registration and stores the concrete latest version |
-
-Still open:
-
-- 401/403 handling and the ACL operations the validator's user needs (section 7).
+| 12 | 401/403 and the validator's ACLs | Checked against a registry with Basic auth and ACLs. E4 in every case; the user needs `SUBJECT_READ`, `SUBJECT_WRITE` and `SUBJECT_COMPATIBILITY_READ` on `*` (section 7) |
 
 Confirmed from Confluent documentation:
 
