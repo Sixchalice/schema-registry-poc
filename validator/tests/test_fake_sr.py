@@ -64,4 +64,4 @@ def test_fail_with_raises_from_every_method():
 
 def test_default_constants_sizes():
     assert len(DEFAULT_BUILTIN_PROTO_IMPORTS) == 29
-    assert len(DEFAULT_JSON_DRAFTS) == 6
+    assert len(DEFAULT_JSON_DRAFTS) == 5

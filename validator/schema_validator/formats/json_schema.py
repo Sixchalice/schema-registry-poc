@@ -19,7 +19,6 @@ _NAME_MAPS = frozenset(
     {"properties", "patternProperties", "definitions", "$defs", "dependentSchemas", "dependencies"}
 )
 _DRAFT04 = "http://json-schema.org/draft-04/schema"
-_DRAFT07_HTTPS = "https://json-schema.org/draft-07/schema"
 # Keywords whose value is data, not a schema.
 _DATA_KEYWORDS = frozenset({"enum", "const", "default", "examples"})
 
@@ -64,12 +63,8 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
 
     # Step 6
     if draft_ok:
-        # The https spelling of draft-07 is not known to jsonschema; it is the same draft.
-        checked = schema
-        if isinstance(schema.get("$schema"), str) and schema["$schema"].removesuffix("#") == _DRAFT07_HTTPS:
-            checked = {"$schema": "http://json-schema.org/draft-07/schema#"}
         try:
-            validator_for(checked, default=Draft7Validator).check_schema(schema)
+            validator_for(schema, default=Draft7Validator).check_schema(schema)
         except SchemaError as e:
             errors.append(messages.JSON_INVALID.format(err=e.message.partition("\n")[0]))
         except RecursionError:

@@ -92,7 +92,7 @@ def test_draft_with_and_without_hash(draft: str) -> None:
 
 @pytest.mark.parametrize("draft", DEFAULT_JSON_DRAFTS)
 def test_all_allowed_drafts(draft: str) -> None:
-    assert len(DEFAULT_JSON_DRAFTS) == 6
+    assert len(DEFAULT_JSON_DRAFTS) == 5
     assert run(schema(**{"$schema": draft})).errors == []
 
 
@@ -289,12 +289,9 @@ def test_draft04_uses_id() -> None:
     assert result.external_refs == {"https://x/dir/a.json"}
 
 
-def test_https_draft07_accepted() -> None:
-    ok = run(schema(**{"$schema": "https://json-schema.org/draft-07/schema#"}))
-    assert ok.errors == []
-    # It is checked with Draft7: a bad keyword value is found.
-    bad = run(schema(**{"$schema": "https://json-schema.org/draft-07/schema", "required": "id"}))
-    assert len(bad.errors) == 1 and bad.errors[0].startswith("Invalid JSON schema: ")
+def test_https_draft07_rejected() -> None:
+    draft = "https://json-schema.org/draft-07/schema#"
+    assert run(schema(**{"$schema": draft})).errors == [f"Unsupported JSON Schema draft '{draft}'."]
 
 
 def test_deep_schema_gives_too_deep() -> None:

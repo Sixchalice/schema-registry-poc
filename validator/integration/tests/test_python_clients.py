@@ -20,6 +20,7 @@ from types import ModuleType
 
 import fastavro
 import pytest
+from jsonschema.validators import Draft202012Validator, validator_for
 from fastavro.schema import SchemaParseException
 from confluent_kafka import KafkaError, Message, Producer
 from confluent_kafka.schema_registry import (
@@ -389,15 +390,16 @@ def test_json_internal_id_ref_works(
                  registrar(register, f"{ns}.O5", schema, "JSON"), producer)
 
 
-def test_json_https_draft07_works(
-    ck_client: SchemaRegistryClient, register: Register, producer: Producer, config: ValidatorConfig, ns: str,
-) -> None:
-    schema = json.dumps({"$schema": "https://json-schema.org/draft-07/schema#", "title": f"{ns}.H7",
-                         "type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]})
+def test_python_client_reads_https_draft07_as_2020_12(config: ValidatorConfig, ns: str) -> None:
+    # jsonschema does not know the https spelling of draft-07: it validates with 2020-12 and warns
+    # that this will become an error. That is why the validator rejects it (JSON_DRAFT).
+    draft = "https://json-schema.org/draft-07/schema#"
+    with pytest.warns(DeprecationWarning, match="metaschema specified by \\$schema was not found"):
+        assert validator_for({"$schema": draft}) is Draft202012Validator
+    schema = json.dumps({"$schema": draft, "title": f"{ns}.H7", "type": "object"})
     result = validated(f"{ns}.H7", schema, config, [])
-    assert result.validationType == "Ok", result.message
-    check_client(JSONSerializer(schema, ck_client, conf=CONF), {"id": "1"}, f"{ns}.H7",
-                 registrar(register, f"{ns}.H7", schema, "JSON"), producer)
+    assert not result.valid
+    assert result.message == f"Unsupported JSON Schema draft '{draft}'."
 
 
 # PROTOBUF
