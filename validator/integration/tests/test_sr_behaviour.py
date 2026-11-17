@@ -5,6 +5,8 @@ If a future registry version behaves differently, these tests fail and the plan 
 from __future__ import annotations
 
 import json
+import socket
+import threading
 import urllib.parse
 from collections.abc import Callable
 
@@ -274,6 +276,38 @@ def test_404_from_a_wrong_base_url_is_not_not_found(
         compatibility="BACKWARD", references=[], previous_name=None, existing_names=[],
     )
     assert validate(create, wrong, config) == ValidationResult(False, "Error", messages.SR_UNREACHABLE)
+
+
+def test_stalled_body_is_unreachable() -> None:
+    """A registry that sends part of a body and stalls is E3, not an internal error (no Docker needed)."""
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    done = threading.Event()
+
+    def serve() -> None:
+        conn, _ = server.accept()
+        with conn:
+            conn.recv(65536)
+            conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                         b"Content-Length: 100\r\n\r\n{\"abc\"")
+            done.wait(10)
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        client = HttpSchemaRegistryClient(f"http://127.0.0.1:{server.getsockname()[1]}", timeout_seconds=1)
+        request = ValidationRequest(
+            name="stalled.Fresh", schema_type="AVRO", schema=valid_schema("AVRO", "stalled", "Fresh"),
+            compatibility="BACKWARD", references=[], previous_name=None, existing_names=[],
+        )
+        result = validate(request, client, ValidatorConfig())
+    finally:
+        done.set()
+        server.close()
+        thread.join(5)
+    assert result == ValidationResult(False, "Error", messages.SR_UNREACHABLE)
+    assert "127.0.0.1" not in result.message
 
 
 # --- Spec §10 rows 5a, 9, 10 and 11 (first answered by one-off probe scripts) -----------

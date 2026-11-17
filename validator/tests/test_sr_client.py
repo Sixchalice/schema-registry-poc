@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 import requests
+import urllib3.exceptions
 
 from schema_validator.models import ValidatorConfig
 from schema_validator.sr_client import (
@@ -53,12 +54,6 @@ class StubResponse:
 
     def close(self) -> None:
         self.closed = True
-
-    def json(self) -> Any:
-        try:
-            return json.loads(self.text)
-        except json.JSONDecodeError as e:
-            raise ValueError(str(e)) from e
 
 
 class StubSession:
@@ -688,3 +683,32 @@ def test_fallback_hits_deadline_too(monkeypatch):
     monkeypatch.setattr("schema_validator.sr_client.time.monotonic", lambda: float(next(clock)))
     with pytest.raises(SchemaRegistryUnavailable):
         client_for(StubSession(NoRead1Response(200, VERSION_BODY)), timeout_seconds=2).get_latest("a.B")
+
+
+@pytest.mark.parametrize("error", [
+    urllib3.exceptions.ReadTimeoutError(None, "http://10.9.8.7:8081/x", "Read timed out."),
+    urllib3.exceptions.ProtocolError("Connection broken: 10.9.8.7"),
+    urllib3.exceptions.DecodeError("bad gzip from 10.9.8.7"),
+    ConnectionResetError("reset by 10.9.8.7"),
+])
+def test_error_while_reading_the_body_is_unavailable(error):
+    response = StubResponse(200, VERSION_BODY)
+
+    def read1(amt=None, decode_content=None):
+        raise error
+
+    response.raw.read1 = read1
+    with pytest.raises(SchemaRegistryUnavailable) as e:
+        client_for(StubSession(response)).get_latest("a.B")
+    assert str(e.value) == f"GET /subjects/{{s}}/versions/latest: {type(error).__name__}"
+    assert "10.9.8.7" not in str(e.value)
+    assert response.closed
+
+
+def test_deadline_passed_before_the_body_is_unavailable(monkeypatch):
+    clock = iter([0.0, 5.0, 5.0, 5.0])
+    monkeypatch.setattr("schema_validator.sr_client.time.monotonic", lambda: next(clock))
+    response = StubResponse(200, text="")  # nothing to read: only the check after request() can catch it
+    with pytest.raises(SchemaRegistryUnavailable) as e:
+        client_for(StubSession(response), timeout_seconds=2).get_latest("a.B")
+    assert "longer than the timeout" in str(e.value)

@@ -175,7 +175,7 @@ Tested: `test_slow_body_hits_deadline` (unit); the reviewer's fake registry `t13
 
 Observed: a registry sending one byte every 0.5 s with `sr_timeout_seconds=2` held the call for 10.6 s and then passed; `requests`' `timeout` bounds each read, not the whole response.
 
-Code changed: requests are streamed and the body is read with `response.raw.read1(65536, decode_content=True)` until it returns `b""`, with a wall-clock check after each call against start + `sr_timeout_seconds`; an overrun is E3. `iter_content(chunk_size=None)` was tried first and did not help, because urllib3 reads a whole non-chunked body in one call (`drip` still took 10.6 s). Without `raw.read1` (urllib3 1.x) the client falls back to `iter_content(chunk_size=1)`. Measured with urllib3 2.8.0: `slow` and `drip` of `t13_failures.py` both end in 2.0 s with "Could not reach"; a 1 MB body reads in 0.0001 s with `read1` (about 1.2 s with `chunk_size=1`). Spec 7 and README updated.
+Code changed: requests are streamed and the body is read with `response.raw.read1(65536, decode_content=True)` until it returns `b""`, with a wall-clock check after each call against start + `sr_timeout_seconds`; an overrun is E3. `iter_content(chunk_size=None)` was tried first and did not help, because urllib3 reads a whole non-chunked body in one call (`drip` still took 10.6 s). Without `raw.read1` (urllib3 1.x) the client falls back to `iter_content(chunk_size=1)`. Measured with urllib3 2.8.0: `slow` and `drip` of `t13_failures.py` both end in 2.0 s with "Could not reach"; a 1 MB body reads in 0.0001 s with `read1` (about 1.2 s with `chunk_size=1`). A body that stalls or breaks mid-read (urllib3 `ReadTimeoutError`, `ProtocolError`, `DecodeError`, or an `OSError`) is E3: `test_error_while_reading_the_body_is_unavailable` (unit) and `test_stalled_body_is_unreachable` (a local socket server sending 5 of 100 bytes, no Docker). Spec 7 and README updated.
 
 ## No redirects (audit L2)
 
@@ -203,4 +203,5 @@ Code changed: `SchemaRegistryRejected` holds the body's `message` or "" plus `.c
 
 ## Not verified
 
+- The deadline covers the body, not the headers: a server dripping its status line and headers a byte at a time inside the per-read timeout can hold a call longer than `sr_timeout_seconds` (`requests` has no total-time limit for headers). The clock is checked once when the headers are in.
 - The Kafka-side setup of the production registry and its real login module. The secured test registry uses a users file, not the platform database.

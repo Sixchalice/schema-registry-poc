@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 import requests
+import urllib3.exceptions
 
 from schema_validator.models import ValidatorConfig
 
@@ -186,15 +187,17 @@ class HttpSchemaRegistryClient:
                 # `timeout` bounds connect and each read, not the whole response: a
                 # server that trickles bytes would hold the call open, so check the
                 # clock after every piece of the body.
+                # Headers are not covered (requests has no total limit for them), but
+                # a deadline already passed is caught here, which also covers an empty body.
+                _check_deadline(started, self._timeout, where)
                 chunks = []
                 for chunk in _pieces(response):
                     chunks.append(chunk)
-                    if time.monotonic() > started + self._timeout:
-                        raise SchemaRegistryUnavailable(
-                            f"{where}: response took longer than the timeout")
+                    _check_deadline(started, self._timeout, where)
                 raw = b"".join(chunks)
-            except (requests.RequestException, ValueError) as e:
-                # ValueError covers UnicodeEncodeError from requests' Latin-1 Basic header
+            except (requests.RequestException, urllib3.exceptions.HTTPError, OSError, ValueError) as e:
+                # urllib3 errors and OSError come from reading the body (stream=True, so
+                # requests does not wrap them). ValueError covers UnicodeEncodeError from requests' Latin-1 Basic header
                 # (its repr holds the password) and urllib3's timeout <= 0 check.
                 raise SchemaRegistryUnavailable(f"{where}: {type(e).__name__}") from None
             status = response.status_code
@@ -238,6 +241,11 @@ def _bad_body(method: str, path: str) -> SchemaRegistryUnavailable:
 
 
 _UNPARSEABLE = object()
+
+
+def _check_deadline(started: float, timeout: float, where: str) -> None:
+    if time.monotonic() > started + timeout:
+        raise SchemaRegistryUnavailable(f"{where}: response took longer than the timeout")
 _READ_SIZE = 65536
 
 
