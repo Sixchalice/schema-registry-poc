@@ -6,7 +6,19 @@ build-backend = "setuptools.build_meta"
 name = "schema-validator"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["fastavro", "jsonschema", "grpcio-tools", "protobuf", "requests"]
+# Pinned to the versions the validator was verified with: its verdicts depend on these
+# libraries' exact behaviour (fastavro's errors, jsonschema's draft choice, protoc's
+# messages and limits, urllib3's read1). Upgrade only after re-running the integration
+# suite and the differential run.
+dependencies = [
+    "fastavro==1.13.1",
+    "jsonschema==4.26.0",
+    "referencing==0.37.0",
+    "grpcio-tools==1.85.1",
+    "protobuf==7.36.2",
+    "requests==2.34.2",
+    "urllib3==2.8.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["schema_validator*"]

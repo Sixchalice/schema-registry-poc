@@ -32,7 +32,7 @@ Schema Registry is Confluent Platform 7.9. The deployment name **is** the SR sub
 | References | Supported in v1. Explicit list on the deployment: selected schema + text as written in the schema (the text is needed for JSON only; see the next two rows) |
 | Protobuf import path | Fixed by convention: a referenced Schema `com.acme.Address` must be imported as `com/acme/Address.proto` (dots to slashes, plus `.proto`). The validator derives it; the user does not type it. Java producers must set `reference.subject.name.strategy` to `QualifiedReferenceSubjectNameStrategy` (section 12) |
 | JSON `title` | Dot-separated identifiers only: `^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$`. SR accepts any subject name (spaces, `/`, `:`, `*`, a `:.ctx:` context prefix), so the validator has to restrict it |
-| Library versions | Developed and verified with fastavro 1.13.1, jsonschema 4.26.0, grpcio-tools 1.85.1, protobuf 7.36.2, requests 2.34.2 |
+| Library versions | Pinned exactly in `pyproject.toml` to the verified versions: fastavro 1.13.1, jsonschema 4.26.0, referencing 0.37.0, grpcio-tools 1.85.1, protobuf 7.36.2, requests 2.34.2, urllib3 2.8.0. Upgrade only after re-running the integration suite and the differential run |
 | Reference versions | Chosen by the user per reference row (a dropdown of the subject's versions). The platform registers with exactly that version. |
 | Who resolves versions for registration | Nobody: the row carries the version, and America's registration step sends it as is |
 | Validity and compatibility verdict | Schema Registry, via its compatibility endpoint. Local parsing is for naming, structure and early errors |

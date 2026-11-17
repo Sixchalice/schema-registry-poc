@@ -10,7 +10,7 @@ Python 3.11 or later.
 pip install .
 ```
 
-The runtime dependencies are `fastavro`, `jsonschema`, `grpcio-tools`, `protobuf` and `requests`. The Protobuf files that Schema Registry resolves without a reference (`google/type/*`, `confluent/*`) are bundled in the package under `schema_validator/_proto/`; `google/protobuf/*` comes with `grpcio-tools`.
+The runtime dependencies are pinned in `pyproject.toml` to the versions the validator was verified with: fastavro 1.13.1, jsonschema 4.26.0 (with referencing 0.37.0), grpcio-tools 1.85.1, protobuf 7.36.2, requests 2.34.2 (with urllib3 2.8.0, whose `read1` the client uses). The verdicts depend on these libraries' exact behaviour, so upgrade one only after re-running the integration suite and the differential run. The Protobuf files that Schema Registry resolves without a reference (`google/type/*`, `confluent/*`) are bundled in the package under `schema_validator/_proto/`; `google/protobuf/*` comes with `grpcio-tools`.
 
 ## Usage
 
