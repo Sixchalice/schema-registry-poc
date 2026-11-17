@@ -330,6 +330,37 @@ def test_level_change_with_unchanged_schema_warns(
         True, "Warning", messages.LEVEL_WARNING.format(sr_level="NONE", compatibility="FULL"))
 
 
+def test_level_change_gap_is_closed(
+    client: HttpSchemaRegistryClient,
+    config: ValidatorConfig,
+    register: Register,
+    set_subject_level: Callable[[str, str], Response],
+    ns: str,
+) -> None:
+    # Same text, a newer reference version and a level change: the new Money v2 would be registered
+    # under the old level, so it counts as a schema change.
+    money, name = f"{ns}.Money", f"{ns}.Order"
+    money1 = {"type": "record", "name": "Money", "namespace": ns, "fields": [{"name": "amount", "type": "long"}]}
+    money2 = {**money1, "fields": [{"name": "value", "type": "long"}]}
+    text = json.dumps({"type": "record", "name": "Order", "namespace": ns,
+                       "fields": [{"name": "total", "type": money}]})
+    assert set_subject_level(money, "NONE")[0] == 200
+    assert register(money, json.dumps(money1))[0] == 200
+    assert set_subject_level(name, "NONE")[0] == 200
+    assert register(name, text, "AVRO", [{"name": money, "subject": money, "version": 1}])[0] == 200
+    assert register(money, json.dumps(money2))[0] == 200
+
+    same = validate(request(name, "AVRO", text, [ReferenceInput(money, None, 1)],
+                            previous_name=name, compatibility="FULL"), client, config)
+    newer = validate(request(name, "AVRO", text, [ReferenceInput(money, None, 2)],
+                             previous_name=name, compatibility="FULL"), client, config)
+
+    assert same.validationType == "Warning"
+    assert messages.LEVEL_WARNING.format(sr_level="NONE", compatibility="FULL") in same.message
+    assert newer == ValidationResult(False, "Error", messages.LEVEL_AND_SCHEMA_CHANGED.format(
+        sr_level="NONE", compatibility="FULL"))
+
+
 def test_level_change_with_reformatted_unchanged_schema(
     client: HttpSchemaRegistryClient,
     config: ValidatorConfig,

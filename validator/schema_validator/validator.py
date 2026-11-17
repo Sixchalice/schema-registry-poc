@@ -87,14 +87,12 @@ def _validate(request: ValidationRequest, sr: SchemaRegistryClient, config: Vali
                 level_warning = messages.LEVEL_WARNING.format(
                     sr_level=level, compatibility=request.compatibility)
                 latest = sr.get_latest(name)
-                # "Unchanged" also needs the same reference names on the same subjects: the lookup
-                # uses the latest version's own references, which may point elsewhere than the rows.
-                # Versions are not compared (an accepted gap): references re-pinned to newer versions
-                # of the same subjects count as unchanged, and the new versions are not checked.
+                # "Unchanged" also needs the same reference names on the same subjects at the same
+                # versions as the rows; the lookup then uses the rows' references.
                 if latest is not None and (
-                        {(r.name, r.subject) for r in latest.references}
-                        != {(r.name, r.subject) for r in resolution.resolved}
-                        or not sr.is_registered(name, request.schema, schema_type, latest.references)):
+                        {(r.name, r.subject, r.version) for r in latest.references}
+                        != {(r.name, r.subject, r.version) for r in resolution.resolved}
+                        or not sr.is_registered(name, request.schema, schema_type, resolution.resolved)):
                     return build_result([messages.LEVEL_AND_SCHEMA_CHANGED.format(
                         sr_level=level, compatibility=request.compatibility)], [])
         except _SR_FAILURES as err:

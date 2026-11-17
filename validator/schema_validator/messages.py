@@ -52,8 +52,8 @@ SR_UNREACHABLE = "Could not reach Schema Registry to validate. Try again."
 LEVEL_AND_SCHEMA_CHANGED = (
     "The compatibility level and the schema cannot change in the same save. "
     "Schema Registry checks a new version under the level in force when it is registered "
-    "(now '{sr_level}'). Save the new level '{compatibility}' with the schema unchanged first, "
-    "then change the schema."
+    "(now '{sr_level}'). Save the new level '{compatibility}' with the schema and its reference "
+    "versions unchanged first, then change the schema."
 )
 SR_UNAUTHORIZED = "The validator is not allowed to query Schema Registry. Contact the platform team."
 LEVEL_WARNING = (

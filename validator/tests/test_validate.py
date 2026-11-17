@@ -793,20 +793,45 @@ def test_level_change_without_versions_is_not_blocked(sr: FakeSchemaRegistry, ru
     assert "check_compatibility" in call_names(sr)
 
 
-def test_lookup_uses_latest_versions_own_references(sr: FakeSchemaRegistry, run: Callable) -> None:
+def test_lookup_uses_the_selected_versions(sr: FakeSchemaRegistry, run: Callable) -> None:
     sr.add("com.acme.Address", load("AVRO", "address"))
     sr.add("com.acme.Address", load("AVRO", "address"))
-    old_ref = SrReference("com.acme.Address", "com.acme.Address", 1)
-    sr.add("com.acme.Customer", load("AVRO", "customer"), references=[old_ref])
+    chosen = SrReference("com.acme.Address", "com.acme.Address", 2)
+    sr.add("com.acme.Customer", load("AVRO", "customer"), references=[chosen])
     sr.levels["com.acme.Customer"] = "NONE"
     request = req("AVRO", "customer", "com.acme.Customer", references=[ReferenceInput("com.acme.Address", None, 2)],
                   previous_name="com.acme.Customer", compatibility="FULL")
     result = run(request, sr)
     assert result.validationType == "Warning"
     lookup = next(c for c in sr.calls if c[0] == "is_registered")
-    assert lookup[4] == (old_ref,)
-    check = next(c for c in sr.calls if c[0] == "check_compatibility")
-    assert check[4] != (old_ref,)
+    assert lookup[4] == (chosen,)
+
+
+def _order_with_money(sr: FakeSchemaRegistry) -> None:
+    sr.add("com.acme.Address", load("AVRO", "address"))
+    sr.add("com.acme.Address", load("AVRO", "address"))
+    sr.add("com.acme.Customer", load("AVRO", "customer"),
+           references=[SrReference("com.acme.Address", "com.acme.Address", 1)])
+    sr.levels["com.acme.Customer"] = "NONE"
+
+
+def test_level_change_with_a_newer_reference_version_is_an_error(sr: FakeSchemaRegistry, run: Callable) -> None:
+    _order_with_money(sr)
+    request = req("AVRO", "customer", "com.acme.Customer", references=[ReferenceInput("com.acme.Address", None, 2)],
+                  previous_name="com.acme.Customer", compatibility="FULL")
+    assert run(request, sr) == ValidationResult(False, "Error", messages.LEVEL_AND_SCHEMA_CHANGED.format(
+        sr_level="NONE", compatibility="FULL"))
+    assert "check_compatibility" not in call_names(sr)
+
+
+def test_level_change_with_the_same_reference_version_warns(sr: FakeSchemaRegistry, run: Callable) -> None:
+    _order_with_money(sr)
+    request = req("AVRO", "customer", "com.acme.Customer", references=[ReferenceInput("com.acme.Address", None, 1)],
+                  previous_name="com.acme.Customer", compatibility="FULL")
+    result = run(request, sr)
+    assert result.validationType == "Warning"
+    assert messages.LEVEL_WARNING.format(sr_level="NONE", compatibility="FULL") in result.message
+    assert "check_compatibility" in call_names(sr)
 
 
 def test_level_change_with_repointed_reference_is_an_error(sr: FakeSchemaRegistry, run: Callable) -> None:
