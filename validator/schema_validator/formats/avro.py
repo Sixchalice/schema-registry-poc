@@ -43,12 +43,13 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
             errors.append(messages.AVRO_NAMESPACE)
 
     # Step 6
-    defined, used, opted_out = _names(schema)
-    errors.extend(messages.AVRO_NESTED_NAMESPACE.format(name=n) for n in opted_out)
+    defined, used, nested_errors = _names(schema, submitted=True)
+    errors.extend(nested_errors)
     external_refs, unresolved = _external_refs(defined, used, referenced)
 
-    # Step 7
-    error = _parse_error(schema, referenced, defined, unresolved)
+    # Step 7. With a nested-namespace error the walk and fastavro name that type
+    # differently, so fastavro not finding a defined name is already explained.
+    error = _parse_error(schema, referenced, defined, unresolved, explained=bool(nested_errors))
     if error is not None:
         errors.append(messages.AVRO_INVALID.format(err=error))
     elif not isinstance(name, str):
@@ -123,13 +124,13 @@ def _well_formed(full_name: str) -> bool:
     return len(parts) > 1 and all(parts)
 
 
-def _names(schema: Any) -> tuple[set[str], set[str], list[str]]:
+def _names(schema: Any, submitted: bool = False) -> tuple[set[str], set[str], list[str]]:
     """The full names a text defines, the full names it uses in type positions, and
-    the `name` (as written, in document order) of every nested named type that ends
-    up without a namespace although the type enclosing it has one."""
+    one error (in document order) for every nested named type that ends up without a
+    usable namespace although the type enclosing it has one."""
     defined: set[str] = set()
     used: set[str] = set()
-    opted_out: list[str] = []
+    nested_errors: list[str] = []
     # Each entry is a value in a type position and the namespace enclosing it.
     # Children are pushed in reverse, so the stack pops them in document order.
     pending: list[tuple[Any, str | None]] = [(schema, None)]
@@ -152,8 +153,22 @@ def _names(schema: Any) -> tuple[set[str], set[str], list[str]]:
                     inner = full.rpartition(".")[0] or None
                     # The root is step 4's; under a root without a namespace a plain
                     # name is only inheriting the gap, which step 4 already reports.
-                    if node is not schema and not _well_formed(full) and ("." in full or namespace):
-                        opted_out.append(name)
+                    if node is not schema:
+                        own = node.get("namespace")
+                        if "." in name:
+                            if not _well_formed(name):
+                                nested_errors.append(messages.AVRO_NESTED_NAME.format(name=name))
+                        elif namespace and (not _well_formed(full) or (own is not None or "namespace" in node)
+                                            and not isinstance(own, str)):
+                            # "", a malformed namespace, or one that is not a string: Java Avro
+                            # inherits the enclosing namespace for null, fastavro uses none.
+                            nested_errors.append(messages.AVRO_NESTED_NAMESPACE.format(name=name))
+                            # In the submitted schema only (the error is reported there): the
+                            # name it gets once the entry is removed, so that a bare use of
+                            # it is local and D4 does not repeat this error in other words.
+                            # A referenced text defines exactly what it says.
+                            if submitted:
+                                defined.add(f"{namespace}.{name}")
                 fields = node.get("fields") if kind == "record" else None
                 if isinstance(fields, list):
                     pending.extend(
@@ -167,11 +182,12 @@ def _names(schema: Any) -> tuple[set[str], set[str], list[str]]:
                     pending.append((node["values"], namespace))
             elif kind is not None:
                 pending.append((kind, namespace))
-    return defined, used, opted_out
+    return defined, used, nested_errors
 
 
 def _parse_error(
-    schema: dict[str, Any], referenced: dict[str, str], defined: set[str], unresolved: set[str]
+    schema: dict[str, Any], referenced: dict[str, str], defined: set[str], unresolved: set[str],
+    explained: bool = False,
 ) -> str | None:
     """fastavro's error for the schema, parsed after its references; None if it parses.
 
@@ -194,12 +210,18 @@ def _parse_error(
         name = e.name
         while isinstance(name, dict):  # fastavro gives {"type": "X"} for a wrapped name
             name = name.get("type")
+        missing = isinstance(name, str) and name in unresolved and name not in referenced
+        if isinstance(e.name, dict) and isinstance(name, str) and not missing:
+            # The registry resolves a wrapped name; fastavro (Python clients) does not.
+            return f"write the type '{name}' as a plain string, not as {{\"type\": \"{name}\"}}"
         if isinstance(name, str) and name in unresolved:
             if name not in referenced:
                 return None  # A missing reference; stage D (D4) explains it.
             # A row carries this name, so D4 stays silent, but its text does not define it.
             return f"type '{name}' is not defined by the reference selected for it"
         if isinstance(name, str) and name in defined:
+            if explained:
+                return None
             return f"type '{name}' is used before it is defined"
         # The walk took this name as provided, so nothing else would report the stop.
         return f"unknown type {name!r}" if isinstance(name, str) else f"unknown type {e.name!r}"

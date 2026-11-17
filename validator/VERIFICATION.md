@@ -1,10 +1,10 @@
 # Verification record
 
-Checked on 2026-11-16 (the secured registry and the Avro namespace follow-up on 2026-11-17) against `confluentinc/cp-schema-registry:7.9.0` (no authentication) on `apache/kafka:3.8.1`, from `integration/docker-compose.yml`, with confluent-kafka-python 2.16.1 and the Confluent 7.9.0 Java serializers.
+Checked on 2026-11-16 (the secured registry and the Avro namespace follow-up on 2026-11-17) against `confluentinc/cp-schema-registry:7.9.0` on `apache/kafka:3.8.1`, from `integration/docker-compose.yml`, with confluent-kafka-python 2.16.1 and the Confluent 7.9.0 Java serializers.
 
 ```
-.venv/bin/python -m pytest -q                                   # 538 passed
-.venv/bin/python -m pytest integration/tests -m integration -q  # 88 passed, none skipped
+.venv/bin/python -m pytest -q                                   # 549 passed
+.venv/bin/python -m pytest integration/tests -m integration -q  # 97 passed, none skipped
 ```
 
 Every integration test creates its subjects under a fresh namespace (`it` + 10 hex digits, shown below as `<ns>`), so the suite can be rerun against the same registry.
@@ -65,9 +65,24 @@ One change, in `schema_validator/sr_client.py` (`HttpSchemaRegistryClient._call`
 
 `QualifiedReferenceSubjectNameStrategy` maps `p6/shop/PAddress.proto` to `p6.shop.PAddress`, as spec §6 says.
 
+The stack has two registries: one without authentication, used by everything below except the "Secured registry" section, and one with HTTP Basic auth and ACLs.
+
+## Avro rules that are stricter than the registry (spec §5.1 steps 4 and 7)
+
+Added on 2026-11-17. Pinned by `integration/tests/test_validate_real_sr.py::test_avro_rules_the_registry_does_not_have`.
+
+| Schema | Registry (compatibility check on a new subject) | `validate` |
+|---|---|---|
+| Nested type with `"namespace": ""`, used by its bare name | `is_compatible: true` | `Type 'Inner' needs a namespace. ...`, no registry call |
+| Nested type with `"namespace": null`, used by its bare name | `is_compatible: true` | the same message |
+| Type name wrapped as `{"type": "<ns>.Inner"}` | `is_compatible: true` | `Invalid Avro schema: write the type '<ns>.Inner' as a plain string, ...` |
+| Type used before it is defined | `is_compatible: false`, `"Later" is not a defined name` | `Invalid Avro schema: type '<ns>.Later' is used before it is defined` |
+
+The first three are accepted by the registry and by Java clients, but fastavro (confluent-kafka-python) cannot parse them, so the validator rejects them.
+
 ## Secured registry (spec §7, E4)
 
-Checked against `schema-registry-secured` in `integration/docker-compose.yml`: the same 7.9.0 image with HTTP Basic auth (a users file) and the Confluent Security Plugin in ACL mode. Pinned by `integration/tests/test_secured_sr.py` (10 tests). No code change was needed.
+Checked against `schema-registry-secured` in `integration/docker-compose.yml`: the same 7.9.0 image with HTTP Basic auth (a users file) and the Confluent Security Plugin in ACL mode. Pinned by `integration/tests/test_secured_sr.py` (14 tests). No code change was needed.
 
 | What was tested | Observed |
 |---|---|
@@ -75,7 +90,7 @@ Checked against `schema-registry-secured` in `integration/docker-compose.yml`: t
 | `validate` as a user with no ACLs, with and without a reference row | `403 {"error_code": 40301, "message": "User is denied operation Read on Subject: <s>"}` (or `Write`); result E4 |
 | Which operation each call needs | Version lookups: `SUBJECT_READ`. `GET /config/{s}?defaultToGlobal=true`: `SUBJECT_COMPATIBILITY_READ` (`denied operation ReadCompatibility`). `POST /compatibility/subjects/{s}/versions`: `SUBJECT_WRITE` (`denied operation Write`), although it stores nothing |
 | `validate` as a user with `SUBJECT_READ` and `SUBJECT_COMPATIBILITY_READ` only | E4: the compatibility check is refused |
-| `validate` as a user with the three operations on `*` | Create: `Ok`, and the subject is not created. Edit: `Ok` for a compatible change, the incompatibility message for an incompatible one. With a reference: the pinned `Warning`. A subject that does not exist gives 404 (40401), not 403 |
+| `validate` as a user with the three operations on `*` | Create: `Ok`, and the subject is not created. Edit: `Ok` for a compatible change, the incompatibility message for an incompatible one. With a reference, and with a reference of a reference (the `/versions/{v}` lookup): the pinned `Warning`. A subject that does not exist gives 404 (40401), not 403 |
 
 ## Differential run against the registry
 

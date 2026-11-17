@@ -198,7 +198,8 @@ def test_unqualified_use_has_no_null_namespace_fallback() -> None:
             namespace="com.acme",
         )
     )
-    assert result == FormatAnalysis("com.acme.Order", {"com.acme.Inner"}, [nested_ns("Inner")])
+    # No external reference either: the namespace message is the whole story (no D4 on top).
+    assert result == FormatAnalysis("com.acme.Order", set(), [nested_ns("Inner")])
 
 
 def test_qualified_use_is_not_the_null_namespace_type() -> None:
@@ -228,9 +229,53 @@ def test_nested_type_with_empty_namespace(nested: dict[str, Any]) -> None:
 
 @pytest.mark.parametrize("name", [".Inner", "Inner.", "a..B"])
 def test_nested_type_with_empty_name_part(name: str) -> None:
+    # The fault is in the name, so the message is about the name, not about "namespace".
     result = run(rec("Order", [field("inner", {"type": "fixed", "name": name, "size": 4})], namespace="com.acme"))
     assert result.expected_name == "com.acme.Order"
-    assert result.errors[0] == nested_ns(name)
+    assert result.errors[0] == (
+        f"Type name '{name}' has an empty part around a dot. "
+        'Use a plain name, for example "Address", or a full name, for example "com.team.domain.Address".'
+    )
+    assert result.errors[0] == messages.AVRO_NESTED_NAME.format(name=name)
+
+
+def test_nested_namespace_message_text() -> None:
+    assert nested_ns("Inner") == (
+        "Type 'Inner' needs a namespace. Remove its \"namespace\" entry so it uses the schema's namespace."
+    )
+
+
+@pytest.mark.parametrize("namespace", [None, 5, ["a"], {}])
+@pytest.mark.parametrize("used", [True, False])
+def test_nested_type_with_a_namespace_that_is_not_a_string(namespace: Any, used: bool) -> None:
+    # Java Avro inherits the enclosing namespace here and fastavro uses none, so the two
+    # clients would disagree on the type's full name. One message, also when a bare use
+    # follows (fastavro stops there, which the namespace message already explains).
+    fields = [field("inner", {"type": "fixed", "name": "Inner", "namespace": namespace, "size": 4})]
+    if used:
+        fields.append(field("again", "Inner"))
+    result = run(rec("Order", fields, namespace="com.acme"))
+    assert result == FormatAnalysis("com.acme.Order", set(), [nested_ns("Inner")])
+
+
+def test_wrapped_use_of_a_local_type_says_how_to_write_it() -> None:
+    # The registry accepts {"type": "<name>"}; fastavro (Python clients) does not.
+    result = run(
+        rec("Order", [field("inner", {"type": "fixed", "name": "Inner", "size": 4}),
+                      field("again", {"type": "com.acme.Inner"})], namespace="com.acme")
+    )
+    assert result.errors == [
+        "Invalid Avro schema: write the type 'com.acme.Inner' as a plain string, not as {\"type\": \"com.acme.Inner\"}"
+    ]
+
+
+def test_nested_types_in_one_union_reported_in_document_order() -> None:
+    def fixed(name: str) -> dict[str, Any]:
+        return {"type": "fixed", "name": name, "namespace": "", "size": 4}
+
+    result = run(rec("Order", [field("u", [fixed("First"), "null", fixed("Second"), fixed("Third")])],
+                     namespace="com.acme"))
+    assert result.errors == [nested_ns(n) for n in ("First", "Second", "Third")]
 
 
 @pytest.mark.parametrize(
@@ -545,7 +590,10 @@ def test_wrapped_use_of_a_name_nested_in_a_reference_names_the_type() -> None:
         rec("Customer", [field("country", {"type": "com.acme.Country"})], namespace="com.acme"),
         referenced={"com.acme.Address": json.dumps(ADDRESS_WITH_COUNTRY)},
     )
-    assert result.errors == ["Invalid Avro schema: unknown type 'com.acme.Country'"]
+    assert result.errors == [
+        "Invalid Avro schema: write the type 'com.acme.Country' as a plain string, "
+        "not as {\"type\": \"com.acme.Country\"}"
+    ]
 
 
 @pytest.mark.parametrize("name", [[["Customer"]], ["x"], {"type": "array", "items": "Customer"}])

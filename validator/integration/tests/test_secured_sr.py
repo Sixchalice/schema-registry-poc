@@ -57,10 +57,10 @@ def create(name: str, schema: str, references: list[ReferenceInput] | None = Non
     )
 
 
-def register_as_admin(subject: str, schema: str) -> None:
+def register_as_admin(subject: str, schema: str, references: list[dict[str, object]] | None = None) -> None:
     response = requests.post(
         f"{SECURED_SR_URL}/subjects/{subject}/versions", headers=_HEADERS, auth=("admin", "admin-secret"),
-        data=json.dumps({"schema": schema, "schemaType": "AVRO"}), timeout=20,
+        data=json.dumps({"schema": schema, "schemaType": "AVRO", "references": references or []}), timeout=20,
     )
     assert response.status_code == 200, response.text
 
@@ -136,3 +136,36 @@ def test_validator_user_with_a_reference(ns: str) -> None:
     schema = avro("Order", ns, [{"name": "addr", "type": f"{ns}.Address"}])
     result = run(create(f"{ns}.Order", schema, [ReferenceInput(f"{ns}.Address")]), "validator", "validator-secret")
     assert result == ValidationResult(True, "Warning", messages.PINNED_WARNING.format(list=f"{ns}.Address v1"))
+
+
+@pytest.mark.parametrize("version", ["latest", "1"])
+def test_version_lookups_need_subject_read(ns: str, version: str) -> None:
+    response = requests.get(f"{SECURED_SR_URL}/subjects/{ns}.Order/versions/{version}",
+                            auth=("no-acl", "no-acl-secret"), timeout=20)
+    assert response.status_code == 403
+    assert response.json() == {"error_code": 40301, "message": f"User is denied operation Read on Subject: {ns}.Order"}
+
+
+@pytest.mark.parametrize("version", ["latest", "1"])
+def test_missing_subject_is_404_for_the_validator_user(ns: str, version: str) -> None:
+    # Not 403: with its ACLs on '*' the validator can tell "not registered" from "not allowed".
+    response = requests.get(f"{SECURED_SR_URL}/subjects/{ns}.Order/versions/{version}",
+                            auth=("validator", "validator-secret"), timeout=20)
+    assert (response.status_code, response.json()["error_code"]) == (404, 40401)
+
+
+def test_validator_user_with_a_transitive_reference(ns: str) -> None:
+    # Address references Country, so the validator also calls /versions/{v} for Country.
+    register_as_admin(f"{ns}.Country", avro("Country", ns, [{"name": "code", "type": "string"}]))
+    register_as_admin(f"{ns}.Address", avro("Address", ns, [{"name": "country", "type": f"{ns}.Country"}]),
+                      [{"name": f"{ns}.Country", "subject": f"{ns}.Country", "version": 1}])
+    schema = avro("Order", ns, [{"name": "addr", "type": f"{ns}.Address"}])
+    request = create(f"{ns}.Order", schema, [ReferenceInput(f"{ns}.Address")])
+    client = HttpSchemaRegistryClient(SECURED_SR_URL, "validator", "validator-secret")
+    calls: list[str] = []
+    original = client.get_version
+    client.get_version = lambda subject, version: (calls.append(f"{subject} v{version}"), original(subject, version))[1]  # type: ignore[method-assign]
+    result = validate(request, client, ValidatorConfig(sr_url=SECURED_SR_URL))
+    assert result == ValidationResult(True, "Warning", messages.PINNED_WARNING.format(list=f"{ns}.Address v1"))
+    assert calls == [f"{ns}.Country v1"]
+

@@ -316,7 +316,7 @@ def test_avro_nested_null_namespace_type_is_an_error(sr: FakeSchemaRegistry, run
         {"name": "bad", "type": "string", "default": 5}]})
     result = run(req("AVRO", None, "com.acme.Order", schema=schema), sr)
     assert (result.valid, result.validationType) == (False, "Error")
-    assert messages.AVRO_NESTED_NAMESPACE.format(name="Inner") in result.message
+    assert result == ValidationResult(False, "Error", messages.AVRO_NESTED_NAMESPACE.format(name="Inner"))
     assert compat_calls(sr) == []
 
 

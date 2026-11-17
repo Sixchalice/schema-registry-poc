@@ -112,8 +112,9 @@ All errors are collected; a stage is skipped only when it depends on one that fa
 | B, all | Avro and JSON text parses as JSON | `Schema is not valid JSON: {err}` |
 | B, Avro | The top level is one record | `The top level of an Avro schema must be a single record.` |
 | B, Avro | The full name has a namespace, and no dot-separated part of it is empty (`.Order`, `com..Order`) | `Avro schema needs a namespace, for example "namespace": "com.team.domain".` |
-| B, Avro | Every named type nested in the schema has a namespace: none sets `"namespace": ""` or a name such as `.Inner` (a nested type without a `namespace` inherits the schema's) | `Type '{name}' needs a namespace. Remove its empty "namespace" so it uses the schema's namespace.` |
-| B, Avro | fastavro parses the schema, with its references. A type must be defined before its first use | `Invalid Avro schema: {err}` |
+| B, Avro | Every named type nested in the schema has a namespace: none sets `"namespace"` to `""`, `null` or anything that is not a dotted name (a nested type without a `namespace` inherits the schema's) | `Type '{name}' needs a namespace. Remove its "namespace" entry so it uses the schema's namespace.` |
+| B, Avro | No nested type name has an empty part around a dot (`.Inner`, `Inner.`, `a..B`) | `Type name '{name}' has an empty part around a dot. Use a plain name, for example "Address", or a full name, for example "com.team.domain.Address".` |
+| B, Avro | fastavro parses the schema, with its references. A type must be defined before its first use, and a type name is written as a plain string, not as `{"type": "<name>"}` | `Invalid Avro schema: {err}` |
 | B, JSON | The top level is an object with `"type": "object"` | `The top level of a JSON schema must have "type": "object".` |
 | B, JSON | `title` is present | `JSON schema needs a "title"; it becomes the schema name.` |
 | B, JSON | `title` matches `^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$` | `The "title" must be a dotted name made of letters, digits and underscores, for example "com.team.domain.Order".` |

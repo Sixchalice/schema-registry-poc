@@ -274,3 +274,34 @@ def test_unreachable(ns: str) -> None:
                       HttpSchemaRegistryClient.from_config(config), config)
 
     assert result == ValidationResult(False, "Error", messages.SR_UNREACHABLE)
+
+
+def _fixed(name: str, **extra: object) -> dict[str, object]:
+    return {"type": "fixed", "name": name, "size": 4, **extra}
+
+
+@pytest.mark.parametrize("build, registry_accepts, expected", [
+    pytest.param(lambda ns: [{"name": "a", "type": _fixed("Inner", namespace="")}, {"name": "b", "type": "Inner"}],
+                 True, lambda ns: messages.AVRO_NESTED_NAMESPACE.format(name="Inner"), id="empty-namespace"),
+    pytest.param(lambda ns: [{"name": "a", "type": _fixed("Inner", namespace=None)}, {"name": "b", "type": "Inner"}],
+                 True, lambda ns: messages.AVRO_NESTED_NAMESPACE.format(name="Inner"), id="null-namespace"),
+    pytest.param(lambda ns: [{"name": "a", "type": _fixed("Inner")}, {"name": "b", "type": {"type": f"{ns}.Inner"}}],
+                 True, lambda ns: messages.AVRO_INVALID.format(
+                     err=f"write the type '{ns}.Inner' as a plain string, not as {{\"type\": \"{ns}.Inner\"}}"),
+                 id="wrapped-name"),
+    pytest.param(lambda ns: [{"name": "a", "type": "Later"}, {"name": "b", "type": _fixed("Later")}],
+                 False, lambda ns: messages.AVRO_INVALID.format(err=f"type '{ns}.Later' is used before it is defined"),
+                 id="forward-use"),
+])
+def test_avro_rules_the_registry_does_not_have(
+    client: HttpSchemaRegistryClient, config: ValidatorConfig, sr: HttpSchemaRegistryClient, ns: str,
+    build: Callable[[str], list[dict[str, object]]], registry_accepts: bool, expected: Callable[[str], str],
+) -> None:
+    # What the registry itself says about each shape, and that the validator stops before asking it.
+    text = json.dumps({"type": "record", "name": "Order", "namespace": ns, "fields": build(ns)})
+    assert sr.check_compatibility(f"{ns}.Order", text, "AVRO", ()).is_compatible is registry_accepts
+    recording = RecordingClient(client)
+    result = validate(request(f"{ns}.Order", "AVRO", text), recording, config)  # type: ignore[arg-type]
+    assert result == ValidationResult(False, "Error", expected(ns))
+    assert recording.calls == []
+
