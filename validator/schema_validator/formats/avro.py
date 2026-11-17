@@ -51,6 +51,9 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
     error = _parse_error(schema, referenced, defined, unresolved)
     if error is not None:
         errors.append(messages.AVRO_INVALID.format(err=error))
+    elif not isinstance(name, str):
+        # fastavro lets a list or dict through as a name, or stopped before looking at it.
+        errors.append(messages.AVRO_INVALID.format(err='the record "name" must be a string'))
 
     return FormatAnalysis(expected_name, external_refs, errors)
 
@@ -174,7 +177,8 @@ def _parse_error(
 
     `defined` are the names the text defines and `unresolved` the used names the walk
     found no definition for. fastavro stops at the first unknown type, so after one the
-    rest of the schema is not checked: it is let through only when stage D reports it.
+    rest of the schema is not checked: it is let through only when stage D reports it,
+    which it does not when a reference row carries the name (D4 matches rows by name).
     """
     named: dict[str, Any] = {}
     for text in referenced.values():
@@ -191,11 +195,14 @@ def _parse_error(
         while isinstance(name, dict):  # fastavro gives {"type": "X"} for a wrapped name
             name = name.get("type")
         if isinstance(name, str) and name in unresolved:
-            return None  # A missing reference; stage D explains it.
+            if name not in referenced:
+                return None  # A missing reference; stage D (D4) explains it.
+            # A row carries this name, so D4 stays silent, but its text does not define it.
+            return f"type '{name}' is not defined by the reference selected for it"
         if isinstance(name, str) and name in defined:
             return f"type '{name}' is used before it is defined"
         # The walk took this name as provided, so nothing else would report the stop.
-        return f"unknown type {e.name!r}"
+        return f"unknown type {name!r}" if isinstance(name, str) else f"unknown type {e.name!r}"
     except Exception as e:
         # SchemaParseException, and also TypeError, ValueError etc. on malformed schemas.
         return str(e)

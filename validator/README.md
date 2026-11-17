@@ -179,6 +179,12 @@ docker compose -p validator-it -f integration/docker-compose.yml up -d   # SR on
 
 `integration/tests/test_secured_sr.py` runs against the second registry of the stack, `schema-registry-secured` (HTTP Basic auth and ACLs; users in `integration/secured/users.properties`, ACLs in its start command). `SECURED_SR_URL` overrides its address, and the file is skipped when it is not reachable.
 
+`integration/differential.py` compares the validator with the registry on generated schemas: it runs `validate`, registers the same text and reports every disagreement. Its exit code is 1 when a schema passed `validate` and the registry refused it, or when the validator failed internally. Use the throwaway stack only; it registers every case.
+
+```bash
+.venv/bin/python integration/differential.py --cases 700 --seed 2 --out /tmp/differential.tsv
+```
+
 The Java checks run in a Maven container on the same network:
 
 ```bash

@@ -333,6 +333,35 @@ def test_avro_null_namespace_type_nested_in_a_reference_is_an_error(sr: FakeSche
     assert compat_calls(sr) == []
 
 
+CUSTOMER_BARE_COUNTRY = json.dumps({"type": "record", "name": "Customer", "namespace": "com.acme", "fields": [
+    {"name": "c", "type": "Country"},
+    {"name": "bad", "type": "string", "default": 5}]})
+
+
+@pytest.mark.parametrize("subject, text, row", [
+    pytest.param(
+        "com.acme.Address",
+        json.dumps({"type": "record", "name": "Address", "namespace": "com.acme", "fields": [
+            {"name": "country", "type": {"type": "enum", "name": "Country", "namespace": "", "symbols": ["NL"]}}]}),
+        ReferenceInput("com.acme.Address", "com.acme.Country"), id="ref-string-names-the-type"),
+    pytest.param(
+        "com.acme.Country", json.dumps({"type": "enum", "name": "Country", "symbols": ["NL"]}),
+        ReferenceInput("com.acme.Country"), id="subject-holds-a-null-namespace-type"),
+])
+def test_avro_row_that_does_not_define_its_name_is_an_error(
+    subject: str, text: str, row: ReferenceInput, sr: FakeSchemaRegistry, run: Callable
+) -> None:
+    # The row's name matches the used type, so D4 is silent; but its text does not define
+    # com.acme.Country, fastavro stops there and never sees the bad default.
+    sr.add(subject, text)
+    request = req("AVRO", None, "com.acme.Customer", schema=CUSTOMER_BARE_COUNTRY, references=[row])
+    result = run(request, sr)
+    assert result == ValidationResult(
+        False, "Error",
+        "Invalid Avro schema: type 'com.acme.Country' is not defined by the reference selected for it")
+    assert compat_calls(sr) == []
+
+
 def test_duplicate_rows_skip_stage_d(sr: FakeSchemaRegistry, run: Callable) -> None:
     # order.avsc uses neither row: a D5 message would show that the cross-check ran.
     sr.add("com.acme.Address", load("AVRO", "address"))

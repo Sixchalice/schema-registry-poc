@@ -3,7 +3,7 @@
 Checked on 2026-11-16 (the secured registry and the Avro namespace follow-up on 2026-11-17) against `confluentinc/cp-schema-registry:7.9.0` (no authentication) on `apache/kafka:3.8.1`, from `integration/docker-compose.yml`, with confluent-kafka-python 2.16.1 and the Confluent 7.9.0 Java serializers.
 
 ```
-.venv/bin/python -m pytest -q                                   # 529 passed
+.venv/bin/python -m pytest -q                                   # 538 passed
 .venv/bin/python -m pytest integration/tests -m integration -q  # 88 passed, none skipped
 ```
 
@@ -76,6 +76,22 @@ Checked against `schema-registry-secured` in `integration/docker-compose.yml`: t
 | Which operation each call needs | Version lookups: `SUBJECT_READ`. `GET /config/{s}?defaultToGlobal=true`: `SUBJECT_COMPATIBILITY_READ` (`denied operation ReadCompatibility`). `POST /compatibility/subjects/{s}/versions`: `SUBJECT_WRITE` (`denied operation Write`), although it stores nothing |
 | `validate` as a user with `SUBJECT_READ` and `SUBJECT_COMPATIBILITY_READ` only | E4: the compatibility check is refused |
 | `validate` as a user with the three operations on `*` | Create: `Ok`, and the subject is not created. Edit: `Ok` for a compatible change, the incompatibility message for an incompatible one. With a reference: the pinned `Warning`. A subject that does not exist gives 404 (40401), not 403 |
+
+## Differential run against the registry
+
+`integration/differential.py` generates schemas (valid seeds and random mutations of them, all three formats, with and without a reference), runs `validate` as a create and then registers the same text under the same name. On 2026-11-17, seeds 2 and 3 with 700 cases per format (4,200 schemas):
+
+| Outcome | Count |
+|---|---|
+| `validate` passed and the registry rejected the registration (false pass) | 0 |
+| `validate` raised or gave an internal error | 0 (3 before the fix below) |
+| Both passed / both rejected | 1,270 / 2,257 |
+| Rejected by one of the validator's own rules, registered by the registry | 210 |
+| Rejected by a local parser (fastavro, jsonschema, protoc), registered by the registry | 463 |
+
+The last group was read by message. Every case is a defect the registry does not check: Avro defaults of the wrong type and `{"type": "<name>"}` around a type name (fastavro cannot resolve it); JSON keywords the meta-schema rejects (duplicate `required` entries, negative `minLength`); Protobuf that `protoc` does not compile (types used without their import, duplicate or out-of-range field numbers, first enum value not zero, duplicate imports or packages).
+
+Code change: an Avro record whose `name` is a list or object gave `Internal validator error`; it now gives `Invalid Avro schema: the record "name" must be a string`.
 
 ## Packaging
 

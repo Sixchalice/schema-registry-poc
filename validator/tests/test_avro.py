@@ -538,3 +538,24 @@ def test_unknown_type_the_walk_resolved_is_invalid(monkeypatch: pytest.MonkeyPat
     assert result.external_refs == {"com.acme.Address"}
     assert result.errors == ["Invalid Avro schema: unknown type 'com.acme.Inner'"]
 
+
+def test_wrapped_use_of_a_name_nested_in_a_reference_names_the_type() -> None:
+    # fastavro does not resolve {"type": "<name>"}; its UnknownType carries the wrapper.
+    result = run(
+        rec("Customer", [field("country", {"type": "com.acme.Country"})], namespace="com.acme"),
+        referenced={"com.acme.Address": json.dumps(ADDRESS_WITH_COUNTRY)},
+    )
+    assert result.errors == ["Invalid Avro schema: unknown type 'com.acme.Country'"]
+
+
+@pytest.mark.parametrize("name", [[["Customer"]], ["x"], {"type": "array", "items": "Customer"}])
+@pytest.mark.parametrize("with_reference", [True, False])
+def test_name_that_fastavro_lets_through_is_invalid(name: Any, with_reference: bool) -> None:
+    # fastavro accepts a list or dict as the record name, or stops earlier at the missing
+    # reference; either way no name can be derived, and that must be an error of its own.
+    result = run(
+        {"type": "record", "name": name, "namespace": "com.acme", "fields": [field("a", "com.acme.Address")]},
+        referenced={"com.acme.Address": json.dumps(ADDRESS)} if with_reference else {},
+    )
+    assert result == FormatAnalysis(None, {"com.acme.Address"}, ['Invalid Avro schema: the record "name" must be a string'])
+
