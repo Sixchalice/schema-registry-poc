@@ -71,6 +71,10 @@ class SchemaRegistryClient(Protocol):
 
     def get_compatibility_level(self, subject: str) -> str: ...
 
+    def get_mode(self, subject: str) -> str:
+        """The subject's mode, or the global mode when it has none of its own."""
+        ...
+
     def check_compatibility(
         self,
         subject: str,
@@ -123,6 +127,14 @@ class HttpSchemaRegistryClient:
         if not isinstance(level, str):
             raise _bad_body("GET", path)
         return level
+
+    def get_mode(self, subject: str) -> str:
+        path = "/mode/{s}?defaultToGlobal=true"
+        body = self._call("GET", path, subject)
+        mode = body.get("mode") if isinstance(body, dict) else None
+        if not isinstance(mode, str):
+            raise _bad_body("GET", path)
+        return mode
 
     def check_compatibility(
         self,

@@ -169,6 +169,7 @@ Run only if stages A to D produced no errors.
 | E2 | SR reports it compatible with existing versions | `Not {sr_level}-compatible with version {n}: {descriptions}` |
 | E3 | SR reachable | `Could not reach Schema Registry to validate. Try again.` (Error; fail closed) |
 | E4 | SR accepts the validator's credentials (no 401/403) | `The validator is not allowed to query Schema Registry. Contact the platform team.` (Error; fail closed) |
+| E5 | The subject accepts new versions: its mode (or the global mode, when the subject has none) is `READWRITE`. Checked after a compatible verdict, on creates and edits alike | `Schema Registry does not accept new versions of '{name}' right now (mode {mode}). Contact the platform team.` (Error). A registry failure on the mode lookup is E3 or E4 |
 
 E1 and E2 arrive in the same response shape and are told apart by the message text (section 7). SR's raw messages are not shown as they are: they embed the whole schema text. An `Invalid schema` message without a `details:` part, or with an empty one, is shown as `Schema Registry rejected the schema without giving a reason.`
 
@@ -278,6 +279,7 @@ Every request is sent with `allow_redirects=False` and `stream=True`. `sr_timeou
 | Latest version of a subject | `GET /subjects/{subject}/versions/latest` |
 | Specific version | `GET /subjects/{subject}/versions/{version}` |
 | Subject compatibility level | `GET /config/{subject}?defaultToGlobal=true` |
+| Subject mode | `GET /mode/{subject}?defaultToGlobal=true` |
 | Validity + compatibility | `POST /compatibility/subjects/{subject}/versions?verbose=true` |
 
 Compatibility request body:
@@ -308,6 +310,8 @@ Response handling (observed on SR 7.9.0; the endpoint behaves the same for a sub
 
 `GET /config/{subject}?defaultToGlobal=true` returns `200 {"compatibilityLevel": "..."}` for any subject, existing or not. Without the parameter it returns 404 (40408) when the subject has no level of its own.
 
+`GET /mode/{subject}?defaultToGlobal=true` returns `200 {"mode": "..."}` for any subject, existing or not: the subject's own mode, else the global one. A body without a string `mode` is E3. A registration into a subject in `READONLY` mode is refused with 422 (error_code 42205), after the compatibility check has passed, which is why E5 exists.
+
 `GET /subjects/{subject}/versions/latest` returns 404 (40401) for a subject that does not exist or is soft-deleted. The client returns "not registered" only for a 404 with `error_code` 40401 or 40402.
 
 Verified against a 7.9.0 registry with HTTP Basic auth and the Confluent Security Plugin in ACL mode (`integration/tests/test_secured_sr.py`): missing or wrong credentials give 401 and a user without the ACL gives 403 (`error_code` 40301), on the first call the request makes; both are E4. The validator's user needs three operations on subject `*`:
@@ -316,7 +320,7 @@ Verified against a 7.9.0 registry with HTTP Basic auth and the Confluent Securit
 |---|---|
 | `SUBJECT_READ` | `GET /subjects/{s}/versions/latest` and `/versions/{v}` (the reference lookups) |
 | `SUBJECT_WRITE` | `POST /compatibility/subjects/{s}/versions`. The call stores nothing, but the registry asks for Write on the subject |
-| `SUBJECT_COMPATIBILITY_READ` | `GET /config/{s}?defaultToGlobal=true` (on edit) |
+| `SUBJECT_COMPATIBILITY_READ` | `GET /config/{s}?defaultToGlobal=true` (on edit) and `GET /mode/{s}?defaultToGlobal=true` (every request that reaches stage E; the registry answers a user without it with 403 `denied operation ReadCompatibility`). No fourth operation is needed |
 
 `SUBJECT_WRITE` also lets the same credentials register schemas, so they must be kept like the platform's own registration credentials. With these ACLs a subject that does not exist still gives 404 (40401), not 403.
 

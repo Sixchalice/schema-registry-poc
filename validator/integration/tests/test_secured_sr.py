@@ -169,3 +169,9 @@ def test_validator_user_with_a_transitive_reference(ns: str) -> None:
     assert result == ValidationResult(True, "Warning", messages.PINNED_WARNING.format(list=f"{ns}.Address v1"))
     assert calls == [f"{ns}.Country v1"]
 
+
+
+def test_mode_lookup_by_validator_user(ns: str) -> None:
+    client = HttpSchemaRegistryClient(SECURED_SR_URL, "validator", "validator-secret")
+
+    assert client.get_mode(f"{ns}.Order") == "READWRITE"

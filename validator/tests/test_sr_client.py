@@ -92,6 +92,7 @@ def call_all(client: HttpSchemaRegistryClient) -> list[Any]:
         lambda: client.get_latest("a.B"),
         lambda: client.get_version("a.B", 2),
         lambda: client.get_compatibility_level("a.B"),
+        lambda: client.get_mode("a.B"),
         lambda: client.check_compatibility("a.B", "S", "PROTOBUF", REFS),
     ]
 
@@ -145,6 +146,22 @@ def test_subject_is_url_encoded():
     session.response = StubResponse(200, {"is_compatible": True, "messages": []})
     client.check_compatibility("com/acme my.Order", "S", "AVRO", [])
     assert "/compatibility/subjects/com%2Facme%20my.Order/versions" in session.last[1]
+
+
+def test_get_mode():
+    session = StubSession(StubResponse(200, {"mode": "READONLY"}))
+    assert client_for(session).get_mode("a.B") == "READONLY"
+    method, url, _ = session.last
+    assert method == "GET"
+    assert url.endswith("/mode/a.B?defaultToGlobal=true")
+
+
+@pytest.mark.parametrize("body", [
+    ["READONLY"], "READONLY", None, {}, {"mode": 1}, {"mode": None}, {"mode": ["READONLY"]},
+])
+def test_get_mode_bad_body(body):
+    with pytest.raises(SchemaRegistryUnavailable):
+        client_for(StubSession(StubResponse(200, body))).get_mode("a.B")
 
 
 def test_level():
@@ -566,6 +583,7 @@ def test_lone_surrogate_subject_is_unavailable():
         lambda: client.get_latest("a\udc80b"),
         lambda: client.get_version("a\udc80b", 1),
         lambda: client.get_compatibility_level("a\udc80b"),
+        lambda: client.get_mode("a\udc80b"),
         lambda: client.check_compatibility("a\udc80b", "S", "AVRO", []),
     ]
     for call in calls:

@@ -44,6 +44,8 @@ SR_REJECTED = "Schema Registry rejected the schema: {reason}"
 SR_REJECTED_NO_REASON = "Schema Registry rejected the schema without giving a reason."
 SR_REJECTED_CODE = "Schema Registry rejected the schema (error code {code})."
 SR_INCOMPATIBLE = "Not {sr_level}-compatible with version {n}: {descriptions}"
+SR_MODE = ("Schema Registry does not accept new versions of '{name}' right now (mode {mode}). "
+           "Contact the platform team.")
 SR_UNREACHABLE = "Could not reach Schema Registry to validate. Try again."
 SR_UNAUTHORIZED = "The validator is not allowed to query Schema Registry. Contact the platform team."
 LEVEL_WARNING = (

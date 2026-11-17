@@ -650,6 +650,38 @@ def test_sr_unauthorized(sr: FakeSchemaRegistry, run: Callable) -> None:
     assert result == ValidationResult(False, "Error", E4)
 
 
+# --- E5: mode -------------------------------------------------------------------------
+
+
+E5 = "Schema Registry does not accept new versions of 'com.acme.Order' right now (mode {mode}). Contact the platform team."
+
+
+def test_readonly_subject_is_an_error(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.modes["com.acme.Order"] = "READONLY"
+    result = run(req("AVRO", "order", "com.acme.Order"), sr)
+    assert result == ValidationResult(False, "Error", E5.format(mode="READONLY"))
+
+
+def test_mode_inherited_from_global_blocks(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.global_mode = "READONLY"
+    result = run(req("AVRO", "order", "com.acme.Order", previous_name="com.acme.Order"), sr)
+    assert result == ValidationResult(False, "Error", E5.format(mode="READONLY"))
+
+
+def test_import_mode_is_an_error(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.modes["com.acme.Order"] = "IMPORT"
+    result = run(req("AVRO", "order", "com.acme.Order"), sr)
+    assert result == ValidationResult(False, "Error", E5.format(mode="IMPORT"))
+
+
+def test_mode_failure_maps_like_other_stage_e_calls(sr: FakeSchemaRegistry, run: Callable) -> None:
+    def fail(subject: str) -> str:
+        raise SchemaRegistryUnavailable("x")
+    sr.get_mode = fail  # type: ignore[method-assign]
+    result = run(req("AVRO", "order", "com.acme.Order"), sr)
+    assert result == ValidationResult(False, "Error", messages.SR_UNREACHABLE)
+
+
 # --- Warnings -------------------------------------------------------------------------
 
 

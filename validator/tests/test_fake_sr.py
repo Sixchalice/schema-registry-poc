@@ -40,6 +40,16 @@ def test_compatibility_level_defaults_to_backward():
     assert sr.get_compatibility_level("s") == "FULL"
 
 
+def test_mode_defaults_to_readwrite_then_global_then_subject():
+    sr = FakeSchemaRegistry()
+    assert sr.get_mode("s") == "READWRITE"
+    sr.global_mode = "READONLY"
+    assert sr.get_mode("s") == "READONLY"
+    sr.modes["s"] = "READWRITE"
+    assert sr.get_mode("s") == "READWRITE"
+    assert sr.calls[-1] == ("get_mode", "s")
+
+
 def test_check_compatibility_returns_verdict_and_records_call():
     sr = FakeSchemaRegistry()
     assert sr.check_compatibility("s", "t", "AVRO", []) == CompatibilityVerdict(True)
@@ -56,6 +66,7 @@ def test_fail_with_raises_from_every_method():
         lambda: sr.get_latest("s"),
         lambda: sr.get_version("s", 1),
         lambda: sr.get_compatibility_level("s"),
+        lambda: sr.get_mode("s"),
         lambda: sr.check_compatibility("s", "t", "AVRO", []),
     ):
         with pytest.raises(SchemaRegistryUnavailable):

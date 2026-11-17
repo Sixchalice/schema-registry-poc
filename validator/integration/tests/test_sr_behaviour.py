@@ -415,3 +415,25 @@ def test_sr_stores_the_latest_version_for_reference_version_minus_one(
     latest = sr.get_latest(customer)
     assert latest is not None
     assert [(r.name, r.subject, r.version) for r in latest.references] == [(address, address, 2)]
+
+
+# Mode lookups (spec §7, E5)
+
+def test_mode_default_to_global(raw_get: Callable[[str], Response], ns: str) -> None:
+    status, body = raw_get(f"/mode/{ns}.none?defaultToGlobal=true")
+
+    assert (status, body) == (200, {"mode": "READWRITE"})
+
+
+def test_mode_readonly_subject(
+    register: Register,
+    set_subject_mode: Callable[[str, str], Response],
+    ns: str,
+) -> None:
+    subject = f"{ns}.Order"
+    assert set_subject_mode(subject, "READONLY")[0] == 200
+
+    status, body = register(subject, valid_schema("AVRO", ns))
+
+    assert status == 422, body
+    assert isinstance(body, dict) and body.get("error_code") == 42205

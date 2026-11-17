@@ -292,6 +292,20 @@ def test_level_warning_on_edit(
         True, "Warning", messages.LEVEL_WARNING.format(sr_level="FULL", compatibility="BACKWARD"))
 
 
+def test_readonly_subject_rejected(
+    client: HttpSchemaRegistryClient,
+    config: ValidatorConfig,
+    set_subject_mode: Callable[[str, str], Response],
+    ns: str,
+) -> None:
+    name = f"{ns}.Order"
+    assert set_subject_mode(name, "READONLY")[0] == 200
+
+    result = validate(request(name, "AVRO", order("AVRO", ns)), client, config)
+
+    assert result == ValidationResult(False, "Error", messages.SR_MODE.format(name=name, mode="READONLY"))
+
+
 def test_unreachable(ns: str) -> None:
     config = ValidatorConfig(sr_url="http://localhost:1", sr_timeout_seconds=1)
 

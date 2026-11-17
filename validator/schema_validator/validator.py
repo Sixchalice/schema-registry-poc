@@ -86,6 +86,14 @@ def _validate(request: ValidationRequest, sr: SchemaRegistryClient, config: Vali
     if e:
         return build_result(e, [])
 
+    # E5: the subject (or the registry) must accept new versions.
+    try:
+        mode = sr.get_mode(name)
+    except _SR_FAILURES as err:
+        return build_result([_sr_failure(err)], [])
+    if mode != "READWRITE":
+        return build_result([messages.SR_MODE.format(name=name, mode=mode)], [])
+
     # Warnings
     warnings: list[str] = []
     if resolution.resolved:

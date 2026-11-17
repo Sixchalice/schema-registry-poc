@@ -16,6 +16,8 @@ class FakeSchemaRegistry:
     def __init__(self) -> None:
         self._subjects: dict[str, list[SchemaVersion]] = {}
         self.levels: dict[str, str] = {}
+        self.modes: dict[str, str] = {}
+        self.global_mode = "READWRITE"
         self.verdict: CompatibilityVerdict = CompatibilityVerdict(True)
         self.fail_with: Exception | None = None
         self.calls: list[tuple] = []
@@ -47,6 +49,11 @@ class FakeSchemaRegistry:
         self.calls.append(("get_compatibility_level", subject))
         self._check_fail()
         return self.levels.get(subject, "BACKWARD")
+
+    def get_mode(self, subject: str) -> str:
+        self.calls.append(("get_mode", subject))
+        self._check_fail()
+        return self.modes.get(subject, self.global_mode)
 
     def check_compatibility(self, subject: str, schema: str, schema_type: str,
                             references: Sequence[SrReference]) -> CompatibilityVerdict:

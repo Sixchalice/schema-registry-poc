@@ -8,7 +8,7 @@ import json
 import os
 import urllib.parse
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 
 import pytest
@@ -99,6 +99,20 @@ def set_subject_level() -> Callable[[str, str], Response]:
     def put(subject: str, level: str) -> Response:
         return sr_call("PUT", f"/config/{quote(subject)}", {"compatibility": level})
     return put
+
+
+@pytest.fixture
+def set_subject_mode() -> Iterator[Callable[[str, str], Response]]:
+    """PUT /mode/{subject}; every subject set this way gets its own mode removed afterwards."""
+    touched: list[str] = []
+
+    def put(subject: str, mode: str) -> Response:
+        touched.append(subject)
+        return sr_call("PUT", f"/mode/{quote(subject)}", {"mode": mode})
+
+    yield put
+    for subject in touched:
+        sr_call("DELETE", f"/mode/{quote(subject)}")
 
 
 @pytest.fixture(scope="session")
