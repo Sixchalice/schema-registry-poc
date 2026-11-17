@@ -33,8 +33,8 @@ Schema Registry is Confluent Platform 7.9. The deployment name **is** the SR sub
 | Protobuf import path | Fixed by convention: a referenced Schema `com.acme.Address` must be imported as `com/acme/Address.proto` (dots to slashes, plus `.proto`). The validator derives it; the user does not type it. Java producers must set `reference.subject.name.strategy` to `QualifiedReferenceSubjectNameStrategy` (section 12) |
 | JSON `title` | Dot-separated identifiers only: `^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$`. SR accepts any subject name (spaces, `/`, `:`, `*`, a `:.ctx:` context prefix), so the validator has to restrict it |
 | Library versions | Developed and verified with fastavro 1.13.1, jsonschema 4.26.0, grpcio-tools 1.85.1, protobuf 7.36.2, requests 2.34.2 |
-| Reference versions | Not chosen by the user. Pinned to latest at registration time |
-| Who resolves versions for registration | America's registration step asks SR itself. The validator only reports versions in its message |
+| Reference versions | Chosen by the user per reference row (a dropdown of the subject's versions). The platform registers with exactly that version. |
+| Who resolves versions for registration | Nobody: the row carries the version, and America's registration step sends it as is |
 | Validity and compatibility verdict | Schema Registry, via its compatibility endpoint. Local parsing is for naming, structure and early errors |
 | Key vs value | Chosen on the topic side. Irrelevant to the validator (same subject either way) |
 | Permissions, delete-blocking, registration | America's responsibility, out of scope here |
@@ -55,6 +55,8 @@ class ReferenceInput:
                               # JSON: required (the $ref value without its #fragment).
                               # AVRO: optional; empty or schema_name (anything else is rejected, A5).
                               # PROTOBUF: ignored; derived from schema_name (section 6).
+    version: int | None       # the version picked by the user, required (int >= 1). None only
+                              # so that stage A can report a missing one (A5).
 
 @dataclass(frozen=True)
 class ValidationRequest:
@@ -118,7 +120,7 @@ Collect all errors; do not stop at the first one. A stage is skipped only when i
 | A2 | `schema` is text that encodes as UTF-8, is not empty or whitespace only, and its UTF-8 size is within `max_schema_bytes` | `Schema contains characters that are not valid text.` / `Schema is empty.` / `Schema is too large ({n} bytes, limit {max}).` |
 | A3 | `compatibility` is one of BACKWARD, BACKWARD_TRANSITIVE, FORWARD, FORWARD_TRANSITIVE, FULL, FULL_TRANSITIVE, NONE | `Unknown compatibility level '{x}'.` |
 | A4 | `name` is non-empty, has no whitespace, does not start with `:` | `Schema name is invalid.` |
-| A5 | No two reference rows share a `ref_string` or a `schema_name`; no row references `name` itself; an AVRO row's `ref_string` is empty or equals its `schema_name` (one message per offending row, in row order, after the duplicate messages) | `Reference '{x}' is listed twice.` / `A schema cannot reference itself.` / `For an Avro reference to '{s}', leave the reference text empty or write '{s}'.` |
+| A5 | No two reference rows share a `ref_string` or a `schema_name`; no row references `name` itself; every row has a `version` that is an integer from 1 up (a `bool` is not one); an AVRO row's `ref_string` is empty or equals its `schema_name` (one message per offending row, in row order, after the duplicate messages) | `Reference '{x}' is listed twice.` / `A schema cannot reference itself.` / `Select a version for reference '{s}'.` / `For an Avro reference to '{s}', leave the reference text empty or write '{s}'.` |
 
 If A1 or A2 fails, stop and return. If A5 fails, stage D is skipped (no reference lookups, no D4/D5); stages B and C still run.
 
@@ -143,12 +145,13 @@ On edit, if the user changed the namespace or record name inside the schema, C3 
 | Code | Check | Message template |
 |---|---|---|
 | D1 | Each referenced `schema_name` exists in SR | `Referenced schema '{s}' is not registered in Schema Registry yet.` |
+| D1 | The row's version exists in SR (also false for a soft-deleted version) | `'{s}' has no version {v} (the latest is {latest}).` |
 | D2 | Referenced schema has the same format | `'{s}' is a {their_type} schema; a {my_type} schema can only reference {my_type} schemas.` |
 | D3 | No cycle: following references transitively from each referenced schema never reaches `name` | `Reference cycle: '{s}' already depends on '{name}'.` / `References of '{s}' are nested more than 20 levels deep.` |
 | D4 | Every external name used in the schema text has a reference row | `Your schema uses '{x}' but no reference is selected for it.` |
 | D5 | Every reference row is actually used in the schema text | `'{x}' is selected as a reference but is not used in the schema.` PROTOBUF: `'{s}' is selected as a reference but the schema does not import it. Write the import as: import "{path}";` |
 | D6 | JSON: `ref_string` is present and not empty on every row | `Reference to '{s}' needs the text used in the schema (the $ref value).` |
-| D7 | One version per subject and one Schema per reference name, across the whole graph (the rows and everything they reference) | `'{s}' is used at more than one version: {uses}. A schema can use only one version of it. Save the Schemas that use an older version again so that they use v{latest}, then save this schema.` / `The reference name '{x}' is used for more than one Schema: {subjects}. Each Schema needs its own reference name.` |
+| D7 | One version per subject and one Schema per reference name, across the whole graph (the rows and everything they reference) | `'{s}' is used at more than one version: {uses}. A schema can use only one version of it. Update the Schemas that use an older version to v{latest}: select v{latest} for '{s}' in their references and save them. Then save this schema.` (when one of the versions is this schema's own row: `'{s}' is used at more than one version: {uses}. A schema can use only one version of it. Select the same version for '{s}' as the Schemas it comes through, or update those Schemas to v{chosen}: select v{chosen} for '{s}' in their references and save them.`) / `The reference name '{x}' is used for more than one Schema: {subjects}. Each Schema needs its own reference name.` |
 
 A nested reference that is not registered gives D1 with the nested subject.
 
@@ -156,9 +159,11 @@ For AVRO, a missing `ref_string` defaults to `schema_name`; any other value is r
 
 D3, D4 and D5 exist only in the validator. Verified: SR accepts unused reference rows in every format, accepts a Protobuf reference whose name differs from the import path (a Java consumer then fails with `"X" is not defined`), and does not detect cycles for Protobuf or JSON (Avro fails only by accident, with `Can't redefine`).
 
-If there are references and no errors, add a Warning listing the versions that would be pinned right now:
+If there are references and no errors, add a Warning listing the versions that are pinned, each as `{subject} v{n}`, or `{subject} v{n} (latest is v{m})` when a newer version exists:
 
-`References will be pinned to: com.acme.Address v3, com.acme.Money v1. They stay on these versions until this schema is saved again.`
+`References will be pinned to: com.acme.Address v3, com.acme.Money v1 (latest is v2). To update one, select a newer version for it.`
+
+When every reference is at its latest version the second sentence is left out.
 
 ### Stage E: Schema Registry verdict (section 7)
 
@@ -271,7 +276,7 @@ Reference row = `(schema_name, ref_string)`:
 
 - `ref_string` is the SR reference `name`: the Avro full type name, the Protobuf import path, or the JSON `$ref` value without its fragment.
 - `schema_name` is the SR reference `subject`.
-- `version` is the latest version of that subject, looked up in SR.
+- `version` is the version the user picked for the row.
 
 Why the Protobuf import path is fixed. A Java Protobuf producer resolves every import of its message to a subject before it sends, even with `use.latest.version=true`, through `reference.subject.name.strategy`. The default strategy uses the import path itself as the subject, so `import "acme/address.proto"` fails with `Subject 'acme/address.proto' not found`. Confluent's `QualifiedReferenceSubjectNameStrategy` drops `.proto` and turns `/` into `.`, so `com/acme/Address.proto` resolves to `com.acme.Address`, which is the Schema's subject. Verified for a direct and a transitive import; the consumer needs no extra setting. Python producers do not do this lookup.
 
@@ -280,14 +285,14 @@ For AVRO, SR ignores the reference `name` entirely (any text works); the exact-m
 Algorithm:
 
 1. Normalise rows (AVRO: a missing or empty `ref_string` defaults to `schema_name`; PROTOBUF: set `ref_string` to `schema_name.replace(".", "/") + ".proto"`).
-2. For each row, `GET /subjects/{schema_name}/versions/latest`. 404 gives D1. Otherwise keep `version`, `schemaType` (absent means AVRO), `schema` text and its `references`.
-3. D2 format check.
+2. For each row, `GET /subjects/{schema_name}/versions/latest`. 404 gives D1. If the row's `version` is the latest, use it; otherwise `GET /subjects/{schema_name}/versions/{version}`, and a 404 gives the not-found error for the version. Keep `schemaType` (absent means AVRO), `schema` text and its `references` of the row's version. The latest version number is kept for the warning.
+3. D2 format check, on the row's version.
 4. D3 cycle check: depth-first walk over the referenced schemas' own `references` (fetch each `subject`/`version` from SR, memoised per request, max depth 20). If `name` is reached, report the cycle.
 5. D7, during the same walk: record every reference edge (also edges to a schema already walked) and every row. For each subject, the versions used must be one; for each reference name, the subjects must be one. Otherwise report `REF_VERSION_CONFLICT` / `REF_NAME_CONFLICT`, after the per-row errors, sorted by subject / name. Why: the registry accepts a schema that uses Money v2 directly and Money v1 through another reference, but Python and Java then resolve the one name differently and decode each other's data wrongly (audit F1).
 6. D4/D5 cross-check: compare `external_refs` from stage B with the set of `ref_string` values. Both directions, exact string match.
 7. Build `resolved = [{name: ref_string, subject: schema_name, version: n}]` for stage E and for the warning text.
 
-The validator does not return `resolved` as data. America's registration step re-resolves the latest versions itself (accepted trade-off: a referenced schema could gain a version between validation and registration).
+The validator does not return `resolved` as data: the platform already has each row's version and registers with exactly it, so a referenced schema gaining a version between validation and registration changes nothing.
 
 ---
 
@@ -529,7 +534,7 @@ Deliver `VERIFICATION.md` with one row per item: what was tested, the observed b
 
 1. Schema deployment form: name, format, compatibility, schema text, reference rows (dropdown + text).
 2. Calling the validator and displaying `valid`, `validationType`, `message`.
-3. Registration: for each reference row, get the latest version from SR and register with `{name: ref_string, subject: schema_name, version}`. For PROTOBUF the `name` is not user input: it is `schema_name` with dots replaced by slashes, plus `.proto`. Surface SR errors to the user: an invalid schema gives 422 (42201) and an incompatible one gives 409, both with the long message format described in section 7. SR also accepts `version: -1` and stores the latest version itself, which would remove the lookup.
+3. Registration: for each reference row, register with `{name: ref_string, subject: schema_name, version}`, where `version` is the row's version (no lookup of the latest). For PROTOBUF the `name` is not user input: it is `schema_name` with dots replaced by slashes, plus `.proto`. Surface SR errors to the user: an invalid schema gives 422 (42201) and an incompatible one gives 409, both with the long message format described in section 7.
 4. Blocking deletion of a Schema that other Schemas reference. SR enforces this too: the delete fails with 422 (42206), and `GET /subjects/{s}/versions/{v}/referencedby` lists the schema ids that reference it. Note that deleting a Schema and creating it again under the same name skips the compatibility check against the old versions.
 5. Permissions: Services on a topic need read access to the topic's schema and everything it references, transitively. Re-evaluate when a reference is added to an existing schema.
 6. Topic side: selecting the schema and whether it is the key or the value.
@@ -559,6 +564,7 @@ Java consumers only, choosing the class to deserialize into (does not affect the
 
 - Protobuf: `specific.protobuf.value.type` names the class. Confluent documents that it does not work with RecordNameStrategy when the `.proto` has more than one message; the "exactly one top-level message" rule avoids that case. Without it the consumer gets a `DynamicMessage`.
 - JSON Schema: Confluent documents that `json.value.type` does not work with RecordNameStrategy. The alternative is `type.property=javaType` on the deserializer plus a top-level `javaType` property in the schema holding the Java class name, restricted with `json.type.allowed.packages`. Otherwise the consumer gets a generic map or `JsonNode`. Consequence for the validator: a top-level `javaType` property in a JSON schema must be accepted, not flagged.
+- A producer that builds its own copy of a schema with references (a Java Avro producer with the referenced records copied into its schema, or classes generated from a referenced subject) must build from the versions pinned in the registered version of its own subject, not from the referenced subject's latest version. Python with `use.latest.version` does this itself.
 - Python consumers are unaffected: they pass the message type or a `from_dict` function in code.
 
 Keep `use.latest.version` on: it makes the client use the registered schema instead of looking its own text up. In the one case tested without it (Python, Avro, same schema with different whitespace and key order) the lookup still succeeded, so the "schema not found" risk was not reproduced, but the setting is also what makes references work without extra lookups in Python.

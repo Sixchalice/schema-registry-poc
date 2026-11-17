@@ -36,7 +36,7 @@ request = ValidationRequest(
     schema="""{"type": "record", "name": "Customer", "namespace": "com.acme",
                "fields": [{"name": "address", "type": "com.acme.Address"}]}""",
     compatibility="BACKWARD",
-    references=[ReferenceInput(schema_name="com.acme.Address")],
+    references=[ReferenceInput(schema_name="com.acme.Address", version=3)],
     previous_name=None,          # None on create; the current name on edit
     existing_names=["com.acme.Address", "com.acme.Order"],
 )
@@ -95,7 +95,9 @@ The `HttpSchemaRegistryClient` takes its URL, credentials and timeout from the c
 | `schema_name` | The Schema deployment selected as the reference (its Schema Registry subject) |
 | `ref_string` | How the reference is written in the schema text. **JSON: required**, the `$ref` value without its `#fragment` (an empty string counts as missing). Under a top-level `$id` it is the absolute URI the `$ref` resolves to, as the Python serializer resolves it (a nested `$id` is not allowed). **AVRO: optional**, leave it empty or write `schema_name` (the referenced record's full name); any other text is rejected. A schema that the referenced record itself references is covered by the same row. A type defined inside the referenced record (for example a nested enum) cannot be used from another schema; give it its own Schema. **PROTOBUF: ignored**, the import path is always derived from `schema_name` (see below) |
 
-Reference versions are not part of the request. The validator uses the latest version of each referenced subject and names it in a warning; the registration step looks the versions up again itself.
+| `version` | The version of the referenced Schema, picked by the user (a dropdown of the subject's versions). Required, an integer from 1 up; there is no "latest" choice. The validator checks and uses exactly this version, and the platform registers with exactly this version (no lookup of the latest). `None` exists only so that A5 can report a missing version |
+
+The validator uses the version of each row for every check and says in a warning when a newer version exists. A version the subject does not have (or one that was soft-deleted) is an error.
 
 The name each format derives (Confluent's RecordNameStrategy): Avro uses the record's full name (a `name` that contains dots is the full name and `namespace` is ignored), JSON Schema uses `title`, Protobuf uses `package` plus the one top-level message.
 
@@ -109,7 +111,7 @@ All errors are collected; a stage is skipped only when it depends on one that fa
 | A2 | The schema is valid text, is not empty or whitespace only, and its UTF-8 size is within `max_schema_bytes` | `Schema contains characters that are not valid text.` / `Schema is empty.` / `Schema is too large ({n} bytes, limit {max}).` |
 | A3 | `compatibility` is a known level | `Unknown compatibility level '{x}'.` |
 | A4 | `name` is not empty, has no whitespace and does not start with `:` | `Schema name is invalid.` |
-| A5 | No two rows share a `schema_name` or a `ref_string`; no row references `name`; an Avro row's `ref_string` is empty or equals its `schema_name` | `Reference '{x}' is listed twice.` / `A schema cannot reference itself.` / `For an Avro reference to '{s}', leave the reference text empty or write '{s}'.` |
+| A5 | No two rows share a `schema_name` or a `ref_string`; no row references `name`; every row has a `version` (an integer from 1 up); an Avro row's `ref_string` is empty or equals its `schema_name` | `Reference '{x}' is listed twice.` / `A schema cannot reference itself.` / `Select a version for reference '{s}'.` / `For an Avro reference to '{s}', leave the reference text empty or write '{s}'.` |
 | B, all | Avro and JSON text parses as JSON | `Schema is not valid JSON: {err}` |
 | B, Avro and JSON | The parsed text is nested no deeper than `max_nesting_depth` (also when it is so deep that the parser overflows) | `Schema is nested more than {max} levels deep.` |
 | B, Avro | The top level is one record, enum or fixed | `The top level of an Avro schema must be a single record, enum or fixed.` |
@@ -138,12 +140,13 @@ All errors are collected; a stage is skipped only when it depends on one that fa
 | C3 | `name` equals the name derived from the schema, case-sensitively | `The name must match the schema. It should be '{expected_name}'.` |
 | C1 + C3 | On edit, the name derived from the schema changed (replaces C1 and C3) | `The schema's full name changed from '{previous_name}' to '{expected_name}'. A schema's name cannot change; revert the namespace/name or create a new Schema.` |
 | D1 | Each referenced subject is registered | `Referenced schema '{s}' is not registered in Schema Registry yet.` |
+| D1 | The row's version is registered | `'{s}' has no version {v} (the latest is {latest}).` |
 | D2 | Each referenced subject has the same format | `'{s}' is a {their_type} schema; a {my_type} schema can only reference {my_type} schemas.` |
 | D3 | Following references from each referenced subject never reaches `name`, within 20 levels | `Reference cycle: '{s}' already depends on '{name}'.` / `References of '{s}' are nested more than 20 levels deep.` |
 | D4 | Every external name the schema uses has a row | `Your schema uses '{x}' but no reference is selected for it.` |
 | D5 | Every row is used in the schema | `'{x}' is selected as a reference but is not used in the schema.` (Protobuf: `'{s}' is selected as a reference but the schema does not import it. Write the import as: import "{path}";`) |
 | D6 | JSON: every row has a non-empty `ref_string` | `Reference to '{s}' needs the text used in the schema (the $ref value).` |
-| D7 | One version per subject and one Schema per reference name, across the whole graph (the rows and everything they reference) | `'{s}' is used at more than one version: {uses}. A schema can use only one version of it. Save the Schemas that use an older version again so that they use v{latest}, then save this schema.` / `The reference name '{x}' is used for more than one Schema: {subjects}. Each Schema needs its own reference name.` |
+| D7 | One version per subject and one Schema per reference name, across the whole graph (the rows and everything they reference) | `'{s}' is used at more than one version: {uses}. A schema can use only one version of it. Update the Schemas that use an older version to v{latest}: select v{latest} for '{s}' in their references and save them. Then save this schema.` (when one of the versions is this schema's own row: `'{s}' is used at more than one version: {uses}. A schema can use only one version of it. Select the same version for '{s}' as the Schemas it comes through, or update those Schemas to v{chosen}: select v{chosen} for '{s}' in their references and save them.`) / `The reference name '{x}' is used for more than one Schema: {subjects}. Each Schema needs its own reference name.` |
 | E1 | Schema Registry accepts the schema as valid | `Schema Registry rejected the schema: {reason}` / `Schema Registry rejected the schema without giving a reason.` (an `Invalid schema` message with no reason) / `Schema Registry rejected the schema (error code {code}).` (the registry sent no message, one that contains `{`, or an `error_code` other than Schema Registry's own 409 and 40000 to 49999) |
 | E2 | Schema Registry finds it compatible with the registered versions | `Not {sr_level}-compatible with version {n}: {descriptions}` (when the registry names no version: `Not {sr_level}-compatible with the existing versions: {descriptions}`) |
 | E3 | Schema Registry is reachable (timeouts, connection errors, 5xx, unreadable responses, a response that is not finished within `sr_timeout_seconds`, a redirect, a 404 that is not Schema Registry's "subject or version not found", a 4xx without an error_code) | `Could not reach Schema Registry to validate. Try again.` |
@@ -159,7 +162,7 @@ Warnings, returned as `Warning` when there is no error:
 
 | When | Message |
 |---|---|
-| The schema has references | `References will be pinned to: {list}. They stay on these versions until this schema is saved again.` (`{list}` is for example `com.acme.Address v3, com.acme.Money v1`) |
+| The schema has references | `References will be pinned to: {list}.` when every reference is at its latest version, otherwise `References will be pinned to: {list}. To update one, select a newer version for it.` (`{list}` is for example `com.acme.Address v3, com.acme.Money v1 (latest is v2)`) |
 | On edit, `compatibility` differs from the subject's current level in Schema Registry, and the schema is unchanged, or the subject has no versions | `Compatibility was checked using the current level '{sr_level}', not the new level '{compatibility}'.` |
 
 ## Protobuf import paths

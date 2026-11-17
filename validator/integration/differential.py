@@ -291,7 +291,7 @@ def build_case(schema_type: str, ns: str, addr: str, rng: random.Random) -> tupl
     rows = []
     # Now and then the row is left out, or selected although the seed does not use it.
     if uses_address != (rng.random() < 0.1):
-        rows = [ReferenceInput(f"{addr}.Address", "address.json" if schema_type == "JSON" else None)]
+        rows = [ReferenceInput(f"{addr}.Address", "address.json" if schema_type == "JSON" else None, 1)]
     return _place(text, ns, addr), rows
 
 

@@ -102,6 +102,12 @@ def _reference_errors(
                 reported.add(value)
             seen.add(value)
 
+    errors.extend(
+        messages.REF_VERSION_REQUIRED.format(s=ref.schema_name)
+        for ref in references
+        if not isinstance(ref.version, int) or isinstance(ref.version, bool) or ref.version < 1
+    )
+
     if schema_type == "AVRO":
         errors.extend(
             messages.AVRO_REF_STRING.format(s=ref.schema_name)

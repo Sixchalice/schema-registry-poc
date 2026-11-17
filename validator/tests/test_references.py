@@ -25,8 +25,8 @@ def sr() -> FakeSchemaRegistry:
     return FakeSchemaRegistry()
 
 
-def row(schema_name: str, ref_string: str | None = None) -> ReferenceInput:
-    return ReferenceInput(schema_name, ref_string)
+def row(schema_name: str, ref_string: str | None = None, version: int = 1) -> ReferenceInput:
+    return ReferenceInput(schema_name, ref_string, version)
 
 
 def get_version_calls(sr: FakeSchemaRegistry) -> list[tuple]:
@@ -44,11 +44,11 @@ def add_chain(sr: FakeSchemaRegistry, length: int) -> None:
 
 
 def test_normalise_avro_default() -> None:
-    assert normalise_rows("AVRO", [row("a.B")]) == ([ReferenceInput("a.B", "a.B")], [])
+    assert normalise_rows("AVRO", [row("a.B")]) == ([ReferenceInput("a.B", "a.B", 1)], [])
 
 
 def test_normalise_avro_keeps_given() -> None:
-    assert normalise_rows("AVRO", [row("a.B", "a.B")]) == ([ReferenceInput("a.B", "a.B")], [])
+    assert normalise_rows("AVRO", [row("a.B", "a.B")]) == ([ReferenceInput("a.B", "a.B", 1)], [])
 
 
 def test_normalise_protobuf_derives() -> None:
@@ -61,7 +61,7 @@ def test_normalise_protobuf_derives() -> None:
 
 def test_normalise_json_requires_ref_string() -> None:
     rows, errors = normalise_rows("JSON", [row("a.B"), row("a.C", "c.json")])
-    assert rows == [ReferenceInput("a.C", "c.json")]
+    assert rows == [ReferenceInput("a.C", "c.json", 1)]
     assert errors == ["Reference to 'a.B' needs the text used in the schema (the $ref value)."]
 
 
@@ -89,10 +89,10 @@ def test_normalise_json_missing_ref_string_agrees_with_stage_a(ref_string: str |
 def test_resolve_happy(sr: FakeSchemaRegistry) -> None:
     sr.add("a.B", B1)
     sr.add("a.B", B2)
-    result = resolve(MAIN, "AVRO", [row("a.B", "a.B")], sr)
+    result = resolve(MAIN, "AVRO", [row("a.B", "a.B", 2)], sr)
     assert result == Resolution(
         resolved=[SrReference("a.B", "a.B", 2)], referenced={"a.B": B2}, errors=[],
-        provided_by={"a.B": "a.B"},
+        provided_by={"a.B": "a.B"}, latest={"a.B": 2},
     )
 
 
@@ -314,9 +314,9 @@ def test_json_fragment_already_stripped() -> None:
 
 def test_pinned_warning() -> None:
     resolved = [SrReference("x", "com.acme.Address", 3), SrReference("y", "com.acme.Money", 1)]
-    assert pinned_warning(resolved) == (
-        "References will be pinned to: com.acme.Address v3, com.acme.Money v1. "
-        "They stay on these versions until this schema is saved again."
+    latest = {"com.acme.Address": 3, "com.acme.Money": 1}
+    assert pinned_warning(resolved, latest) == (
+        "References will be pinned to: com.acme.Address v3, com.acme.Money v1."
     )
 
 
@@ -330,11 +330,12 @@ def _money_setup(sr: FakeSchemaRegistry) -> None:
 def test_version_conflict_direct_and_transitive(sr: FakeSchemaRegistry) -> None:
     _money_setup(sr)
     sr.add("a.Line", "Line", references=[SrReference("a.Money", "a.Money", 1)])
-    result = resolve(MAIN, "AVRO", [row("a.Line", "a.Line"), row("a.Money", "a.Money")], sr)
+    result = resolve(MAIN, "AVRO", [row("a.Line", "a.Line"), row("a.Money", "a.Money", 2)], sr)
     assert result.errors == [
         "'a.Money' is used at more than one version: v1 through 'a.Line', v2 directly. "
-        "A schema can use only one version of it. Save the Schemas that use an older version "
-        "again so that they use v2, then save this schema."
+        "A schema can use only one version of it. Select the same version for 'a.Money' as the "
+        "Schemas it comes through, or update those Schemas to v2: select v2 for 'a.Money' in "
+        "their references and save them."
     ]
 
 
@@ -345,8 +346,8 @@ def test_conflict_between_two_transitive_paths(sr: FakeSchemaRegistry) -> None:
     result = resolve(MAIN, "AVRO", [row("a.B", "a.B"), row("a.C", "a.C")], sr)
     assert result.errors == [
         "'a.Money' is used at more than one version: v1 through 'a.B', v2 through 'a.C'. "
-        "A schema can use only one version of it. Save the Schemas that use an older version "
-        "again so that they use v2, then save this schema."
+        "A schema can use only one version of it. Update the Schemas that use an older version "
+        "to v2: select v2 for 'a.Money' in their references and save them. Then save this schema."
     ]
 
 
@@ -365,12 +366,13 @@ def test_same_version_directly_and_through_another_parent(sr: FakeSchemaRegistry
     sr.add("a.D", "D", references=[SrReference("a.Money", "a.Money", 2)])
     result = resolve(
         MAIN, "AVRO",
-        [row("a.B", "a.B"), row("a.C", "a.C"), row("a.D", "a.D"), row("a.Money", "a.Money")], sr)
+        [row("a.B", "a.B"), row("a.C", "a.C"), row("a.D", "a.D"), row("a.Money", "a.Money", 2)], sr)
     assert result.errors == [
         "'a.Money' is used at more than one version: v1 through 'a.B', "
         "v2 directly and through 'a.C' and 'a.D'. "
-        "A schema can use only one version of it. Save the Schemas that use an older version "
-        "again so that they use v2, then save this schema."
+        "A schema can use only one version of it. Select the same version for 'a.Money' as the "
+        "Schemas it comes through, or update those Schemas to v2: select v2 for 'a.Money' in "
+        "their references and save them."
     ]
 
 
@@ -396,3 +398,83 @@ def test_conflict_recorded_on_a_skipped_revisit(sr: FakeSchemaRegistry) -> None:
     result = resolve(MAIN, "AVRO", [row("a.Top", "a.Top"), row("a.Other", "a.Other")], sr)
     assert len(result.errors) == 1
     assert "v1 through 'a.Mid' and 'a.Top', v2 through 'a.Other'" in result.errors[0]
+
+
+# The version in the row
+
+def test_pinned_older_version_is_used(sr: FakeSchemaRegistry) -> None:
+    sr.add("a.Money", "Money1")
+    sr.add("a.Money", "Money2")
+    result = resolve(MAIN, "AVRO", [row("a.Money", "a.Money", 1)], sr)
+    assert result.resolved == [SrReference("a.Money", "a.Money", 1)]
+    assert result.referenced == {"a.Money": "Money1"}
+    assert result.latest == {"a.Money": 2}
+    assert result.errors == []
+
+
+def test_row_at_latest_fetches_only_latest(sr: FakeSchemaRegistry) -> None:
+    sr.add("a.Money", "Money1")
+    sr.add("a.Money", "Money2")
+    resolve(MAIN, "AVRO", [row("a.Money", "a.Money", 2)], sr)
+    assert sr.calls == [("get_latest", "a.Money")]
+
+
+def test_version_above_latest_is_not_found(sr: FakeSchemaRegistry) -> None:
+    for text in ("M1", "M2", "M3"):
+        sr.add("a.Money", text)
+    result = resolve(MAIN, "AVRO", [row("a.Money", "a.Money", 7)], sr)
+    assert result.errors == ["'a.Money' has no version 7 (the latest is 3)."]
+    assert result.resolved == []
+
+
+def test_walk_follows_the_pinned_versions_references(sr: FakeSchemaRegistry) -> None:
+    sr.add("a.Money", "Money1")
+    sr.add("a.Money", "Money2")
+    sr.add("a.Line", "Line1", references=[SrReference("a.Money", "a.Money", 1)])
+    sr.add("a.Line", "Line2", references=[SrReference("a.Money", "a.Money", 2)])
+    result = resolve(MAIN, "AVRO", [row("a.Line", "a.Line", 1)], sr)
+    assert result.errors == []
+    assert result.referenced == {"a.Money": "Money1", "a.Line": "Line1"}
+
+
+def test_protobuf_row_keeps_its_version() -> None:
+    rows, _ = normalise_rows("PROTOBUF", [ReferenceInput("a.B", None, 3)])
+    assert rows == [ReferenceInput("a.B", "a/B.proto", 3)]
+
+
+def test_pinned_warning_shows_newer_versions() -> None:
+    resolved = [SrReference("a.M", "a.M", 1), SrReference("a.A", "a.A", 3)]
+    assert pinned_warning(resolved, {"a.M": 3, "a.A": 3}) == (
+        "References will be pinned to: a.M v1 (latest is v3), a.A v3. "
+        "To update one, select a newer version for it."
+    )
+
+
+def test_pinned_warning_all_latest_has_no_update_hint() -> None:
+    assert pinned_warning([SrReference("a.A", "a.A", 3)], {"a.A": 3}) == (
+        "References will be pinned to: a.A v3."
+    )
+
+
+def test_version_conflict_without_own_row_says_update_them(sr: FakeSchemaRegistry) -> None:
+    _money_setup(sr)
+    sr.add("a.B", "B", references=[SrReference("a.Money", "a.Money", 1)])
+    sr.add("a.C", "C", references=[SrReference("a.Money", "a.Money", 2)])
+    result = resolve(MAIN, "AVRO", [row("a.B", "a.B"), row("a.C", "a.C")], sr)
+    assert result.errors == [
+        "'a.Money' is used at more than one version: v1 through 'a.B', v2 through 'a.C'. "
+        "A schema can use only one version of it. Update the Schemas that use an older version "
+        "to v2: select v2 for 'a.Money' in their references and save them. Then save this schema."
+    ]
+
+
+def test_version_conflict_with_own_row_suggests_selecting(sr: FakeSchemaRegistry) -> None:
+    _money_setup(sr)
+    sr.add("a.Line", "Line", references=[SrReference("a.Money", "a.Money", 1)])
+    result = resolve(MAIN, "AVRO", [row("a.Line", "a.Line", 1), row("a.Money", "a.Money", 2)], sr)
+    assert result.errors == [
+        "'a.Money' is used at more than one version: v1 through 'a.Line', v2 directly. "
+        "A schema can use only one version of it. Select the same version for 'a.Money' as the "
+        "Schemas it comes through, or update those Schemas to v2: select v2 for 'a.Money' in "
+        "their references and save them."
+    ]

@@ -118,7 +118,7 @@ def _validate(request: ValidationRequest, sr: SchemaRegistryClient, config: Vali
     # Warnings
     warnings: list[str] = []
     if resolution.resolved:
-        warnings.append(pinned_warning(resolution.resolved))
+        warnings.append(pinned_warning(resolution.resolved, resolution.latest))
     if level_warning is not None:
         warnings.append(level_warning)
     return build_result([], warnings)

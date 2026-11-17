@@ -143,6 +143,14 @@ Added on 2026-11-17. Money v1 is registered, Line references Money v1, then Mone
 - The registry registers Order with both references. The Python `AvroSerializer` writes Money v2 in both places; a reader that resolves Money v1 everywhere (what the Java serializer does) misreads `total` (`integration/tests/test_python_clients.py::test_two_versions_of_one_type_corrupt_data`).
 - Code change: D7 (spec §4, §6). `validate` answers `'<ns>.Money' is used at more than one version: v1 through '<ns>.Line', v2 directly. ...` and the same for a reference name used for two Schemas (`integration/tests/test_validate_real_sr.py::test_version_conflict_real_sr`). Before, it answered `Warning`.
 
+## Reference versions chosen per row
+
+Added on 2026-11-17. Money v1 and v2 are registered; a row picks v1.
+
+- `validate` answers `Warning`: `References will be pinned to: <ns>.Money v1 (latest is v2). To update one, select a newer version for it.` The registry takes the schema with exactly Money v1, and the Python serializer (`use.latest.version`) produces with it (`integration/tests/test_python_clients.py::test_older_pinned_version_registers_and_produces`).
+- A version the subject lacks, or one that was soft-deleted, gives `'<ns>.Address' has no version N (the latest is M).` (`integration/tests/test_validate_real_sr.py::test_unknown_version_is_not_found`, `test_soft_deleted_version_is_not_found`).
+- The F1 conflict with this schema's own row now offers the fix the user can make (`test_version_conflict_real_sr`).
+
 ## Top-level enum and fixed (audit F5)
 
 Tested: `<ns>.Color` (enum) registered as its own Schema, then a record `<ns>.Paint` with a field of type `<ns>.Color` and a reference row for it. `integration/tests/test_python_clients.py::test_avro_shared_enum` validates both (no Warning on the record), registers them, serializes with the Python `AvroSerializer`, produces, and reads the value back with `AvroDeserializer`. `probe.Nested` does the same with Java `KafkaAvroSerializer` (client schema with `AColor` inlined) and reads `{"color": "GREEN"}` back; it prints `Nested: all cases as expected`.

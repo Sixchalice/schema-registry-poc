@@ -63,8 +63,17 @@ def test_invalid_names(name: str) -> None:
     assert result.fatal is False
 
 
+@pytest.mark.parametrize("version", [None, 0, -1, True, "2"])
+def test_missing_version_is_required(version: object) -> None:
+    refs = [ReferenceInput("a.B", None, 1), ReferenceInput("a.C", None, version)]  # type: ignore[arg-type]
+    result = check_input(req(references=refs), CONFIG)
+    assert result.errors == [messages.REF_VERSION_REQUIRED.format(s="a.C")]
+    assert result.references_ok is False
+    assert result.fatal is False
+
+
 def test_duplicate_reference_subject() -> None:
-    refs = [ReferenceInput("a.B"), ReferenceInput("a.B")]
+    refs = [ReferenceInput("a.B", None, 1), ReferenceInput("a.B", None, 1)]
     result = check_input(req(references=refs), CONFIG)
     assert result.errors == ["Reference 'a.B' is listed twice."]
     assert result.references_ok is False
@@ -72,21 +81,21 @@ def test_duplicate_reference_subject() -> None:
 
 
 def test_duplicate_ref_string() -> None:
-    refs = [ReferenceInput("a.B", "x.json"), ReferenceInput("a.C", "x.json")]
+    refs = [ReferenceInput("a.B", "x.json", 1), ReferenceInput("a.C", "x.json", 1)]
     result = check_input(req(schema_type="JSON", references=refs), CONFIG)
     assert result.errors == ["Reference 'x.json' is listed twice."]
     assert result.references_ok is False
 
 
 def test_self_reference() -> None:
-    result = check_input(req(references=[ReferenceInput("com.acme.Order")]), CONFIG)
+    result = check_input(req(references=[ReferenceInput("com.acme.Order", None, 1)]), CONFIG)
     assert result.errors == ["A schema cannot reference itself."]
     assert result.references_ok is False
 
 
 def test_avro_ref_string_defaults_to_schema_name() -> None:
     # a.C's own text 'a.B' is a custom ref_string (L6) and also repeats a.B's name.
-    refs = [ReferenceInput("a.B"), ReferenceInput("a.C", "a.B")]
+    refs = [ReferenceInput("a.B", None, 1), ReferenceInput("a.C", "a.B", 1)]
     result = check_input(req(references=refs), CONFIG)
     assert result.errors == [
         "Reference 'a.B' is listed twice.",
@@ -96,7 +105,7 @@ def test_avro_ref_string_defaults_to_schema_name() -> None:
 
 
 def test_avro_custom_ref_string_rejected() -> None:
-    refs = [ReferenceInput("a.Address", "address.avsc"), ReferenceInput("a.Money", "m")]
+    refs = [ReferenceInput("a.Address", "address.avsc", 1), ReferenceInput("a.Money", "m", 1)]
     result = check_input(req(references=refs), CONFIG)
     assert result.errors == [
         messages.AVRO_REF_STRING.format(s="a.Address"), messages.AVRO_REF_STRING.format(s="a.Money")]
@@ -106,7 +115,7 @@ def test_avro_custom_ref_string_rejected() -> None:
 
 @pytest.mark.parametrize("ref_string", [None, "", "a.Address"])
 def test_avro_ref_string_equal_to_name_allowed(ref_string: str | None) -> None:
-    result = check_input(req(references=[ReferenceInput("a.Address", ref_string)]), CONFIG)
+    result = check_input(req(references=[ReferenceInput("a.Address", ref_string, 1)]), CONFIG)
     assert result.errors == []
     assert result.references_ok is True
 
@@ -118,20 +127,20 @@ def test_lone_surrogate_schema() -> None:
 
 
 def test_avro_same_row_twice_reports_once() -> None:
-    refs = [ReferenceInput("a.B"), ReferenceInput("a.B")]
+    refs = [ReferenceInput("a.B", None, 1), ReferenceInput("a.B", None, 1)]
     result = check_input(req(references=refs), CONFIG)
     assert result.errors == ["Reference 'a.B' is listed twice."]
 
 
 def test_protobuf_ref_string_is_ignored() -> None:
-    refs = [ReferenceInput("a.B", "x.proto"), ReferenceInput("a.C", "x.proto")]
+    refs = [ReferenceInput("a.B", "x.proto", 1), ReferenceInput("a.C", "x.proto", 1)]
     result = check_input(req(schema_type="PROTOBUF", references=refs), CONFIG)
     assert result.errors == []
     assert result.references_ok is True
 
 
 def test_json_rows_without_ref_string_are_not_duplicates() -> None:
-    refs = [ReferenceInput("a.B"), ReferenceInput("a.C")]
+    refs = [ReferenceInput("a.B", None, 1), ReferenceInput("a.C", None, 1)]
     result = check_input(req(schema_type="JSON", references=refs), CONFIG)
     assert result.errors == []
     assert result.references_ok is True
@@ -139,21 +148,21 @@ def test_json_rows_without_ref_string_are_not_duplicates() -> None:
 
 def test_json_rows_with_empty_ref_string_are_not_duplicates() -> None:
     # "" means "not filled in", like None: stage D reports D6 for each row.
-    refs = [ReferenceInput("a.B", ""), ReferenceInput("a.C", "")]
+    refs = [ReferenceInput("a.B", "", 1), ReferenceInput("a.C", "", 1)]
     result = check_input(req(schema_type="JSON", references=refs), CONFIG)
     assert result.errors == []
     assert result.references_ok is True
 
 
 def test_value_repeated_three_times_reports_once() -> None:
-    refs = [ReferenceInput("a.B", "b.json"), ReferenceInput("a.B", "c.json"),
-            ReferenceInput("a.B", "d.json")]
+    refs = [ReferenceInput("a.B", "b.json", 1), ReferenceInput("a.B", "c.json", 1),
+            ReferenceInput("a.B", "d.json", 1)]
     result = check_input(req(schema_type="JSON", references=refs), CONFIG)
     assert result.errors == ["Reference 'a.B' is listed twice."]
 
 
 def test_unsupported_format_still_reports_references() -> None:
-    refs = [ReferenceInput("a.B"), ReferenceInput("a.B")]
+    refs = [ReferenceInput("a.B", None, 1), ReferenceInput("a.B", None, 1)]
     result = check_input(req(schema_type="XML", references=refs), CONFIG)
     assert result.errors == [
         "Unsupported schema format 'XML'. Use AVRO, JSON or PROTOBUF.",

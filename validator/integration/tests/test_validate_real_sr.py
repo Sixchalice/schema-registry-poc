@@ -5,6 +5,7 @@ import json
 from collections.abc import Callable, Sequence
 
 import pytest
+import requests
 
 from schema_validator import (
     HttpSchemaRegistryClient,
@@ -133,7 +134,7 @@ def test_stage_d_failure(client: HttpSchemaRegistryClient, config: ValidatorConf
     customer = json.dumps({"type": "record", "name": "Customer", "namespace": ns,
                            "fields": [{"name": "addr", "type": f"{ns}.Address"}]})
 
-    result = validate(request(f"{ns}.Customer", "AVRO", customer, [ReferenceInput(f"{ns}.Address")]),
+    result = validate(request(f"{ns}.Customer", "AVRO", customer, [ReferenceInput(f"{ns}.Address", None, 1)]),
                       client, config)
 
     assert result == ValidationResult(
@@ -156,10 +157,10 @@ def test_version_conflict_real_sr(
         {"name": "line", "type": line}, {"name": "total", "type": money}]})
 
     result = validate(request(f"{ns}.Order", "AVRO", order,
-                              [ReferenceInput(line), ReferenceInput(money)]), client, config)
+                              [ReferenceInput(line, None, 1), ReferenceInput(money, None, 2)]), client, config)
 
-    assert result == ValidationResult(False, "Error", messages.REF_VERSION_CONFLICT.format(
-        s=money, uses=f"v1 through '{line}', v2 directly", latest=2))
+    assert result == ValidationResult(False, "Error", messages.REF_VERSION_CONFLICT_DIRECT.format(
+        s=money, uses=f"v1 through '{line}', v2 directly", chosen=2))
 
 
 def test_stage_e_invalid(client: HttpSchemaRegistryClient, config: ValidatorConfig, ns: str) -> None:
@@ -211,17 +212,17 @@ def customer(schema_type: str, ns: str) -> tuple[str, ReferenceInput]:
     if schema_type == "AVRO":
         text = json.dumps({"type": "record", "name": "Customer", "namespace": ns,
                            "fields": [{"name": "addr", "type": subject}]})
-        return text, ReferenceInput(subject)
+        return text, ReferenceInput(subject, None, 1)
     if schema_type == "JSON":
         # With and without a #fragment: both match the row without the fragment.
         text = json.dumps({"$schema": "http://json-schema.org/draft-07/schema#", "title": f"{ns}.Customer",
                            "type": "object",
                            "properties": {"addr": {"$ref": "address.json"},
                                           "zip": {"$ref": "address.json#/definitions/Zip"}}})
-        return text, ReferenceInput(subject, "address.json")
+        return text, ReferenceInput(subject, "address.json", 1)
     text = (f'syntax = "proto3";\npackage {ns};\nimport "{proto_import_path(subject)}";\n'
             f'message Customer {{ Address addr = 1; }}\n')
-    return text, ReferenceInput(subject)
+    return text, ReferenceInput(subject, None, 1)
 
 
 @pytest.mark.parametrize("schema_type", FORMATS)
@@ -266,7 +267,7 @@ def test_avro_name_nested_in_a_reference(
         fields.insert(0, {"name": "addr", "type": subject})
     text = json.dumps({"type": "record", "name": "Customer", "namespace": ns, "fields": fields})
 
-    result = validate(request(f"{ns}.Customer", "AVRO", text, [ReferenceInput(subject)]), client, config)
+    result = validate(request(f"{ns}.Customer", "AVRO", text, [ReferenceInput(subject, None, 1)]), client, config)
 
     assert result == ValidationResult(
         False, "Error", messages.AVRO_NESTED_IN_REFERENCE.format(name=f"{ns}.Country", schema=subject))
@@ -403,3 +404,36 @@ def test_avro_rules_the_registry_does_not_have(
     assert result == ValidationResult(False, "Error", expected(ns))
     assert recording.calls == []
 
+
+
+def test_unknown_version_is_not_found(
+    client: HttpSchemaRegistryClient, config: ValidatorConfig, register: Register, ns: str,
+) -> None:
+    subject = f"{ns}.Address"
+    assert register(subject, address("AVRO", ns))[0] == 200
+    text, _ = customer("AVRO", ns)
+
+    result = validate(request(f"{ns}.Customer", "AVRO", text, [ReferenceInput(subject, None, 9)]),
+                      client, config)
+
+    assert result == ValidationResult(
+        False, "Error", messages.REF_VERSION_NOT_FOUND.format(s=subject, v=9, latest=1))
+
+
+def test_soft_deleted_version_is_not_found(
+    client: HttpSchemaRegistryClient, config: ValidatorConfig, register: Register, ns: str,
+) -> None:
+    subject = f"{ns}.Address"
+    assert register(subject, address("AVRO", ns))[0] == 200
+    v2 = json.dumps({"type": "record", "name": "Address", "namespace": ns, "fields": [
+        {"name": "city", "type": "string"}, {"name": "zip", "type": "string", "default": ""}]})
+    assert register(subject, v2)[0] == 200
+    deleted = requests.delete(f"{config.sr_url}/subjects/{subject}/versions/1", timeout=20)
+    assert deleted.status_code == 200, deleted.text
+    text, _ = customer("AVRO", ns)
+
+    result = validate(request(f"{ns}.Customer", "AVRO", text, [ReferenceInput(subject, None, 1)]),
+                      client, config)
+
+    assert result == ValidationResult(
+        False, "Error", messages.REF_VERSION_NOT_FOUND.format(s=subject, v=1, latest=2))

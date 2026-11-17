@@ -1,7 +1,7 @@
 """Stage D: reference rows, their resolution in Schema Registry and the cross-check."""
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from schema_validator import messages
@@ -27,9 +27,11 @@ def normalise_rows(
     errors: list[str] = []
     for ref in references:
         if schema_type == "PROTOBUF":
-            rows.append(ReferenceInput(ref.schema_name, proto_import_path(ref.schema_name)))
+            rows.append(ReferenceInput(
+                ref.schema_name, proto_import_path(ref.schema_name), ref.version))
         elif schema_type == "AVRO":
-            rows.append(ReferenceInput(ref.schema_name, ref.schema_name))  # stage A: equal or empty
+            rows.append(ReferenceInput(
+                ref.schema_name, ref.schema_name, ref.version))  # stage A: equal or empty
         elif not ref.ref_string:
             errors.append(messages.REF_STRING_REQUIRED.format(s=ref.schema_name))
         else:
@@ -39,7 +41,8 @@ def normalise_rows(
 
 @dataclass(frozen=True)
 class Resolution:
-    # One per row that passed D1 and D2: (name=ref_string, subject=schema_name, version=latest).
+    # One per row that passed D1, D2 and the version check:
+    # (name=ref_string, subject=schema_name, version=the row's version).
     resolved: list[SrReference]
     # Reference name -> schema text, direct and transitive, dependencies first.
     # The first text stored under a name is kept.
@@ -47,6 +50,8 @@ class Resolution:
     errors: list[str]  # D1, D2, D3, REF_TOO_DEEP, then D7 conflicts
     # Reference name -> ref_string of the row it was first loaded for (a row maps to itself).
     provided_by: dict[str, str] = field(default_factory=dict)
+    # Subject -> its latest version, for each row whose subject exists (D1 passed).
+    latest: dict[str, int] = field(default_factory=dict)
 
 
 def resolve(
@@ -60,6 +65,7 @@ def resolve(
     referenced: dict[str, str] = {}
     provided_by: dict[str, str] = {}
     errors: list[str] = []
+    latest_versions: dict[str, int] = {}
     # Every (subject, version) fetched during this call, None when not registered.
     fetched: dict[tuple[str, int], SchemaVersion | None] = {}
     # D7: subject -> version -> parent subjects (None for this schema's own row), and
@@ -76,31 +82,49 @@ def resolve(
         if latest is None:
             report(messages.REF_NOT_REGISTERED.format(s=row.schema_name))
             continue
-        if latest.schema_type != schema_type:
+        latest_versions[row.schema_name] = latest.version
+        # Stage A guarantees an int >= 1 here.
+        version = row.version if row.version is not None else latest.version
+        if version == latest.version:
+            chosen = latest
+        else:
+            found = sr.get_version(row.schema_name, version)
+            if found is None:
+                report(messages.REF_VERSION_NOT_FOUND.format(
+                    s=row.schema_name, v=version, latest=latest.version))
+                continue
+            chosen = found
+        if chosen.schema_type != schema_type:
             report(messages.REF_WRONG_FORMAT.format(
-                s=row.schema_name, their_type=latest.schema_type, my_type=schema_type))
+                s=row.schema_name, their_type=chosen.schema_type, my_type=schema_type))
             continue
         key = row.ref_string if row.ref_string is not None else row.schema_name
-        resolved.append(SrReference(key, row.schema_name, latest.version))
-        fetched.setdefault((row.schema_name, latest.version), latest)
-        uses.setdefault(row.schema_name, {}).setdefault(latest.version, set()).add(None)
+        resolved.append(SrReference(key, row.schema_name, version))
+        fetched.setdefault((row.schema_name, version), chosen)
+        uses.setdefault(row.schema_name, {}).setdefault(version, set()).add(None)
         names.setdefault(key, set()).add(row.schema_name)
         error = _walk(
-            name, row.schema_name, key, latest, sr, fetched, referenced, provided_by, report,
+            name, row.schema_name, key, chosen, sr, fetched, referenced, provided_by, report,
             uses, names)
         if error is not None:
             report(error)
 
     for subject, versions in sorted(uses.items()):
         if len(versions) > 1:
-            report(messages.REF_VERSION_CONFLICT.format(
-                s=subject, uses=_describe_uses(versions), latest=max(versions)))
+            own = [v for v, parents in versions.items() if None in parents]
+            if own:
+                report(messages.REF_VERSION_CONFLICT_DIRECT.format(
+                    s=subject, uses=_describe_uses(versions), chosen=own[0]))
+            else:
+                report(messages.REF_VERSION_CONFLICT.format(
+                    s=subject, uses=_describe_uses(versions), latest=max(versions)))
     for ref_name, subjects in sorted(names.items()):
         if len(subjects) > 1:
             report(messages.REF_NAME_CONFLICT.format(
                 x=ref_name, subjects=", ".join(f"'{s}'" for s in sorted(subjects))))
 
-    return Resolution(resolved=resolved, referenced=referenced, errors=errors, provided_by=provided_by)
+    return Resolution(resolved=resolved, referenced=referenced, errors=errors, provided_by=provided_by,
+        latest=latest_versions)
 
 
 def _describe_uses(versions: dict[int, set[str | None]]) -> str:
@@ -203,6 +227,15 @@ def cross_check(
     return errors
 
 
-def pinned_warning(resolved: Sequence[SrReference]) -> str:
-    pinned = ", ".join(f"{ref.subject} v{ref.version}" for ref in resolved)
-    return messages.PINNED_WARNING.format(list=pinned)
+def pinned_warning(resolved: Sequence[SrReference], latest: Mapping[str, int]) -> str:
+    entries = []
+    newer = False
+    for ref in resolved:
+        newest = latest.get(ref.subject, ref.version)
+        if ref.version < newest:
+            newer = True
+            entries.append(f"{ref.subject} v{ref.version} (latest is v{newest})")
+        else:
+            entries.append(f"{ref.subject} v{ref.version}")
+    template = messages.PINNED_WARNING_NEWER if newer else messages.PINNED_WARNING
+    return template.format(list=", ".join(entries))

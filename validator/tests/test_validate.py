@@ -38,10 +38,7 @@ cfg = ValidatorConfig()
 
 E3 = "Could not reach Schema Registry to validate. Try again."
 E4 = "The validator is not allowed to query Schema Registry. Contact the platform team."
-PINNED_ADDRESS = (
-    "References will be pinned to: com.acme.Address v1. "
-    "They stay on these versions until this schema is saved again."
-)
+PINNED_ADDRESS = "References will be pinned to: com.acme.Address v1."
 D1_ADDRESS = "Referenced schema 'com.acme.Address' is not registered in Schema Registry yet."
 D5_ADDRESS = "'com.acme.Address' is selected as a reference but is not used in the schema."
 
@@ -66,7 +63,7 @@ def req(schema_type: str, file: str | None, name: str, /, **overrides: Any) -> V
 
 
 def address_row(schema_type: str) -> ReferenceInput:
-    return ReferenceInput("com.acme.Address", "address.json" if schema_type == "JSON" else None)
+    return ReferenceInput("com.acme.Address", "address.json" if schema_type == "JSON" else None, 1)
 
 
 def compat_calls(sr: FakeSchemaRegistry) -> list[tuple]:
@@ -122,7 +119,7 @@ def test_fatal_stops_early(sr: FakeSchemaRegistry, run: Callable) -> None:
 def test_fatal_keeps_every_stage_a_error(sr: FakeSchemaRegistry, run: Callable) -> None:
     request = req(
         "AVRO", None, " bad", schema_type="XML", compatibility="SIDEWAYS",
-        references=[ReferenceInput("x"), ReferenceInput("x")],
+        references=[ReferenceInput("x", None, 1), ReferenceInput("x", None, 1)],
     )
     result = run(request, sr)
     assert result.message.split("\n") == [
@@ -229,11 +226,11 @@ def test_version_conflict_is_an_error(sr: FakeSchemaRegistry, run: Callable) -> 
     schema = json.dumps({"type": "record", "name": "Order", "namespace": "a", "fields": [
         {"name": "line", "type": "a.Line"}, {"name": "total", "type": "a.Money"}]})
     result = run(req("AVRO", None, "a.Order", schema=schema,
-                     references=[ReferenceInput("a.Line"), ReferenceInput("a.Money")]), sr)
+                     references=[ReferenceInput("a.Line", None, 1), ReferenceInput("a.Money", None, 2)]), sr)
     assert not result.valid
     assert result.validationType == "Error"
-    assert result.message == messages.REF_VERSION_CONFLICT.format(
-        s="a.Money", uses="v1 through 'a.Line', v2 directly", latest=2)
+    assert result.message == messages.REF_VERSION_CONFLICT_DIRECT.format(
+        s="a.Money", uses="v1 through 'a.Line', v2 directly", chosen=2)
     assert compat_calls(sr) == []
 
 
@@ -243,14 +240,14 @@ def test_avro_custom_ref_string_rejected(sr: FakeSchemaRegistry, run: Callable) 
     schema = json.dumps({"type": "record", "name": "Order", "namespace": "a", "fields": [
         {"name": "to", "type": "a.Address"}]})
     result = run(req("AVRO", None, "a.Order", schema=schema,
-                     references=[ReferenceInput("a.Address", "address.avsc")]), sr)
+                     references=[ReferenceInput("a.Address", "address.avsc", 1)]), sr)
     assert result == ValidationResult(False, "Error", messages.AVRO_REF_STRING.format(s="a.Address"))
     assert compat_calls(sr) == []
 
 
 def test_json_row_without_ref_string(sr: FakeSchemaRegistry, run: Callable) -> None:
     sr.add("com.acme.Address", load("JSON", "address"), "JSON")
-    request = req("JSON", "customer", "com.acme.Customer", references=[ReferenceInput("com.acme.Address")])
+    request = req("JSON", "customer", "com.acme.Customer", references=[ReferenceInput("com.acme.Address", None, 1)])
     result = run(request, sr)
     assert result.validationType == "Error"
     assert messages.REF_STRING_REQUIRED.format(s="com.acme.Address") in result.message.split("\n")
@@ -258,7 +255,7 @@ def test_json_row_without_ref_string(sr: FakeSchemaRegistry, run: Callable) -> N
 
 def test_json_row_with_empty_ref_string(sr: FakeSchemaRegistry, run: Callable) -> None:
     sr.add("com.acme.Address", load("JSON", "address"), "JSON")
-    request = req("JSON", "customer", "com.acme.Customer", references=[ReferenceInput("com.acme.Address", "")])
+    request = req("JSON", "customer", "com.acme.Customer", references=[ReferenceInput("com.acme.Address", "", 1)])
     result = run(request, sr)
     assert result.validationType == "Error"
     lines = result.message.split("\n")
@@ -302,7 +299,7 @@ def test_protobuf_transitive(sr: FakeSchemaRegistry, run: Callable) -> None:
         'syntax = "proto3";\npackage com.acme;\nimport "com/acme/Mid.proto";\n'
         "message Top {\n  com.acme.Mid mid = 1;\n}\n"
     )
-    request = req("PROTOBUF", None, "com.acme.Top", schema=schema, references=[ReferenceInput("com.acme.Mid")])
+    request = req("PROTOBUF", None, "com.acme.Top", schema=schema, references=[ReferenceInput("com.acme.Mid", None, 1)])
     result = run(request, sr)
     assert result.validationType == "Warning", result.message
 
@@ -314,7 +311,7 @@ def test_avro_transitive(sr: FakeSchemaRegistry, run: Callable) -> None:
     sr.add("com.acme.Mid", mid, "AVRO", [SrReference("com.acme.Address", "com.acme.Address", 1)])
     schema = json.dumps({"type": "record", "name": "Top", "namespace": "com.acme",
                          "fields": [{"name": "mid", "type": "com.acme.Mid"}]})
-    request = req("AVRO", None, "com.acme.Top", schema=schema, references=[ReferenceInput("com.acme.Mid")])
+    request = req("AVRO", None, "com.acme.Top", schema=schema, references=[ReferenceInput("com.acme.Mid", None, 1)])
     result = run(request, sr)
     assert result.validationType == "Warning", result.message
 
@@ -372,7 +369,7 @@ CUSTOMER_BARE_COUNTRY = json.dumps({"type": "record", "name": "Customer", "names
 @pytest.mark.parametrize("subject, text, row", [
     pytest.param(
         "com.acme.Country", json.dumps({"type": "enum", "name": "Country", "symbols": ["NL"]}),
-        ReferenceInput("com.acme.Country"), id="subject-holds-a-null-namespace-type"),
+        ReferenceInput("com.acme.Country", None, 1), id="subject-holds-a-null-namespace-type"),
 ])
 def test_avro_row_that_does_not_define_its_name_is_an_error(
     subject: str, text: str, row: ReferenceInput, sr: FakeSchemaRegistry, run: Callable
@@ -438,7 +435,7 @@ def test_avro_transitive_name_with_its_own_row_uses_that_row(sr: FakeSchemaRegis
     schema = json.dumps({"type": "record", "name": "Customer", "namespace": "com.acme", "fields": [
         {"name": "a", "type": "com.acme.Address"}, {"name": "c", "type": "com.acme.Country"}]})
     request = req("AVRO", None, "com.acme.Customer", schema=schema,
-                  references=[address_row("AVRO"), ReferenceInput("com.acme.Country")])
+                  references=[address_row("AVRO"), ReferenceInput("com.acme.Country", None, 1)])
     result = run(request, sr)
     assert (result.valid, result.validationType) == (True, "Warning"), result.message
 
@@ -451,7 +448,7 @@ def test_avro_row_used_only_through_another_rows_transitive_name_is_unused(
     schema = json.dumps({"type": "record", "name": "Customer", "namespace": "com.acme", "fields": [
         {"name": "c", "type": "com.acme.Country"}]})
     request = req("AVRO", None, "com.acme.Customer", schema=schema,
-                  references=[address_row("AVRO"), ReferenceInput("com.acme.Country")])
+                  references=[address_row("AVRO"), ReferenceInput("com.acme.Country", None, 1)])
     assert run(request, sr) == ValidationResult(False, "Error", D5_ADDRESS)
 
 
@@ -466,7 +463,7 @@ def test_avro_name_not_in_any_reference_is_still_missing(sr: FakeSchemaRegistry,
 def test_duplicate_rows_skip_stage_d(sr: FakeSchemaRegistry, run: Callable) -> None:
     # order.avsc uses neither row: a D5 message would show that the cross-check ran.
     sr.add("com.acme.Address", load("AVRO", "address"))
-    rows = [ReferenceInput("com.acme.Address"), ReferenceInput("com.acme.Address")]
+    rows = [ReferenceInput("com.acme.Address", None, 1), ReferenceInput("com.acme.Address", None, 1)]
     result = run(req("AVRO", "order", "com.acme.Order", references=rows), sr)
     assert result == ValidationResult(False, "Error", messages.REFERENCE_DUPLICATE.format(x="com.acme.Address"))
     assert "get_latest" not in call_names(sr)
@@ -474,7 +471,7 @@ def test_duplicate_rows_skip_stage_d(sr: FakeSchemaRegistry, run: Callable) -> N
 
 def test_duplicate_rows_skip_row_normalisation(sr: FakeSchemaRegistry, run: Callable) -> None:
     # JSON rows without a ref_string would get D6 if the rows were normalised.
-    rows = [ReferenceInput("com.acme.Address"), ReferenceInput("com.acme.Address")]
+    rows = [ReferenceInput("com.acme.Address", None, 1), ReferenceInput("com.acme.Address", None, 1)]
     result = run(req("JSON", "order", "com.acme.Order", references=rows), sr)
     assert result == ValidationResult(False, "Error", messages.REFERENCE_DUPLICATE.format(x="com.acme.Address"))
     assert sr.calls == []
@@ -485,7 +482,7 @@ def test_partial_resolution_skips_stage_e_and_warnings(sr: FakeSchemaRegistry, r
     sr.add("com.acme.Address", load("AVRO", "address"))
     schema = json.dumps({"type": "record", "name": "Customer", "namespace": "com.acme", "fields": [
         {"name": "address", "type": "com.acme.Address"}, {"name": "money", "type": "com.acme.Money"}]})
-    rows = [ReferenceInput("com.acme.Address"), ReferenceInput("com.acme.Money")]
+    rows = [ReferenceInput("com.acme.Address", None, 1), ReferenceInput("com.acme.Money", None, 1)]
     request = req("AVRO", None, "com.acme.Customer", schema=schema, references=rows,
                   previous_name="com.acme.Customer", compatibility="FULL")
     result = run(request, sr)
@@ -790,7 +787,7 @@ def test_lookup_uses_latest_versions_own_references(sr: FakeSchemaRegistry, run:
     old_ref = SrReference("com.acme.Address", "com.acme.Address", 1)
     sr.add("com.acme.Customer", load("AVRO", "customer"), references=[old_ref])
     sr.levels["com.acme.Customer"] = "NONE"
-    request = req("AVRO", "customer", "com.acme.Customer", references=[address_row("AVRO")],
+    request = req("AVRO", "customer", "com.acme.Customer", references=[ReferenceInput("com.acme.Address", None, 2)],
                   previous_name="com.acme.Customer", compatibility="FULL")
     result = run(request, sr)
     assert result.validationType == "Warning"
@@ -808,7 +805,7 @@ def test_level_change_with_repointed_reference_is_an_error(sr: FakeSchemaRegistr
            references=[SrReference("address.json", "com.acme.Address", 1)])
     sr.levels["com.acme.Customer"] = "NONE"
     request = req("JSON", "customer", "com.acme.Customer",
-                  references=[ReferenceInput("com.acme.Address2", "address.json")],
+                  references=[ReferenceInput("com.acme.Address2", "address.json", 1)],
                   previous_name="com.acme.Customer", compatibility="FULL")
     assert run(request, sr) == ValidationResult(False, "Error", messages.LEVEL_AND_SCHEMA_CHANGED.format(
         sr_level="NONE", compatibility="FULL"))

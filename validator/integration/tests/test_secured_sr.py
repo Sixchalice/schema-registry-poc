@@ -86,7 +86,7 @@ def test_user_without_acls_is_e4(ns: str) -> None:
 def test_403_on_a_reference_lookup_is_e4(ns: str) -> None:
     # The first call for this request is the lookup of the referenced subject.
     schema = avro("Order", ns, [{"name": "addr", "type": f"{ns}.Address"}])
-    request = create(f"{ns}.Order", schema, [ReferenceInput(f"{ns}.Address")])
+    request = create(f"{ns}.Order", schema, [ReferenceInput(f"{ns}.Address", None, 1)])
     assert run(request, "no-acl", "no-acl-secret") == E4
 
 
@@ -134,7 +134,7 @@ def test_validator_user_edit(ns: str) -> None:
 def test_validator_user_with_a_reference(ns: str) -> None:
     register_as_admin(f"{ns}.Address", avro("Address", ns, [{"name": "city", "type": "string"}]))
     schema = avro("Order", ns, [{"name": "addr", "type": f"{ns}.Address"}])
-    result = run(create(f"{ns}.Order", schema, [ReferenceInput(f"{ns}.Address")]), "validator", "validator-secret")
+    result = run(create(f"{ns}.Order", schema, [ReferenceInput(f"{ns}.Address", None, 1)]), "validator", "validator-secret")
     assert result == ValidationResult(True, "Warning", messages.PINNED_WARNING.format(list=f"{ns}.Address v1"))
 
 
@@ -160,7 +160,7 @@ def test_validator_user_with_a_transitive_reference(ns: str) -> None:
     register_as_admin(f"{ns}.Address", avro("Address", ns, [{"name": "country", "type": f"{ns}.Country"}]),
                       [{"name": f"{ns}.Country", "subject": f"{ns}.Country", "version": 1}])
     schema = avro("Order", ns, [{"name": "addr", "type": f"{ns}.Address"}])
-    request = create(f"{ns}.Order", schema, [ReferenceInput(f"{ns}.Address")])
+    request = create(f"{ns}.Order", schema, [ReferenceInput(f"{ns}.Address", None, 1)])
     client = HttpSchemaRegistryClient(SECURED_SR_URL, "validator", "validator-secret")
     calls: list[str] = []
     original = client.get_version

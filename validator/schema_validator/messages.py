@@ -34,9 +34,11 @@ REF_UNUSED_PROTOBUF = (
     "Write the import as: import \"{path}\";"
 )
 REF_STRING_REQUIRED = "Reference to '{s}' needs the text used in the schema (the $ref value)."
-PINNED_WARNING = (
-    "References will be pinned to: {list}. "
-    "They stay on these versions until this schema is saved again."
+REF_VERSION_REQUIRED = "Select a version for reference '{s}'."
+REF_VERSION_NOT_FOUND = "'{s}' has no version {v} (the latest is {latest})."
+PINNED_WARNING = "References will be pinned to: {list}."
+PINNED_WARNING_NEWER = (
+    "References will be pinned to: {list}. To update one, select a newer version for it."
 )
 
 # Stage E
@@ -119,8 +121,13 @@ NOT_JSON = "Schema is not valid JSON: {err}"
 SR_INCOMPATIBLE_NO_VERSION = "Not {sr_level}-compatible with the existing versions: {descriptions}"
 REF_VERSION_CONFLICT = (
     "'{s}' is used at more than one version: {uses}. A schema can use only one version of it. "
-    "Save the Schemas that use an older version again so that they use v{latest}, "
-    "then save this schema."
+    "Update the Schemas that use an older version to v{latest}: select v{latest} for '{s}' "
+    "in their references and save them. Then save this schema."
+)
+REF_VERSION_CONFLICT_DIRECT = (
+    "'{s}' is used at more than one version: {uses}. A schema can use only one version of it. "
+    "Select the same version for '{s}' as the Schemas it comes through, or update those "
+    "Schemas to v{chosen}: select v{chosen} for '{s}' in their references and save them."
 )
 REF_NAME_CONFLICT = (
     "The reference name '{x}' is used for more than one Schema: {subjects}. "

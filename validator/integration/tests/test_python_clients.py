@@ -175,11 +175,43 @@ def test_avro_with_reference(
                                              "fields": [{"name": "city", "type": "string"}]}), "AVRO")()
     schema = json.dumps({"type": "record", "name": "Customer", "namespace": ns,
                          "fields": [{"name": "addr", "type": address}]})
-    name = accepted_name(f"{ns}.Customer", "AVRO", schema, config, [ReferenceInput(address)])
+    name = accepted_name(f"{ns}.Customer", "AVRO", schema, config, [ReferenceInput(address, None, 1)])
     refs = [{"name": address, "subject": address, "version": 1}]
 
     serializer = AvroSerializer(ck_client, Schema(schema, "AVRO", [SchemaReference(**refs[0])]), conf=CONF)
     check_client(serializer, {"addr": {"city": "TLV"}}, name,
+                 registrar(register, name, schema, "AVRO", refs), producer)
+
+
+def test_older_pinned_version_registers_and_produces(
+    ck_client: SchemaRegistryClient,
+    register: Register,
+    producer: Producer,
+    config: ValidatorConfig,
+    ns: str,
+) -> None:
+    # Money has v1 and v2; the row picks v1. validate warns that v2 exists, the registry takes the
+    # schema with exactly v1, and the Python serializer (use.latest.version) produces with it.
+    money = f"{ns}.Money"
+    money1 = {"type": "record", "name": "Money", "namespace": ns, "fields": [{"name": "amount", "type": "long"}]}
+    money2 = {**money1, "fields": money1["fields"] + [{"name": "currency", "type": "string", "default": "EUR"}]}
+    registrar(register, money, json.dumps(money1), "AVRO")()
+    registrar(register, money, json.dumps(money2), "AVRO")()
+    schema = json.dumps({"type": "record", "name": "Line", "namespace": ns,
+                         "fields": [{"name": "price", "type": money}]})
+    name = f"{ns}.Line"
+    request = ValidationRequest(
+        name=name, schema_type="AVRO", schema=schema, compatibility="BACKWARD",
+        references=[ReferenceInput(money, None, 1)], previous_name=None, existing_names=[],
+    )
+
+    result = validate(request, HttpSchemaRegistryClient.from_config(config), config)
+
+    assert result == ValidationResult(True, "Warning", messages.PINNED_WARNING_NEWER.format(
+        list=f"{money} v1 (latest is v2)"))
+    refs = [{"name": money, "subject": money, "version": 1}]
+    serializer = AvroSerializer(ck_client, Schema(schema, "AVRO", [SchemaReference(**refs[0])]), conf=CONF)
+    check_client(serializer, {"price": {"amount": 5}}, name,
                  registrar(register, name, schema, "AVRO", refs), producer)
 
 
@@ -195,7 +227,7 @@ def test_avro_shared_enum(
 
     schema = json.dumps({"type": "record", "name": "Paint", "namespace": ns,
                          "fields": [{"name": "color", "type": color}]})
-    name = accepted_name(f"{ns}.Paint", "AVRO", schema, config, [ReferenceInput(color)])
+    name = accepted_name(f"{ns}.Paint", "AVRO", schema, config, [ReferenceInput(color, None, 1)])
     refs = [{"name": color, "subject": color, "version": 1}]
 
     serializer = AvroSerializer(ck_client, Schema(schema, "AVRO", [SchemaReference(**refs[0])]), conf=CONF)
@@ -222,7 +254,7 @@ def test_avro_name_from_a_transitive_reference(
         {"name": "country", "type": country}]}), "AVRO", [{"name": country, "subject": country, "version": 1}])()
     schema = json.dumps({"type": "record", "name": "Customer", "namespace": ns, "fields": [
         {"name": "addr", "type": address}, {"name": "extra", "type": country}]})
-    name = accepted_name(f"{ns}.Customer", "AVRO", schema, config, [ReferenceInput(address)])
+    name = accepted_name(f"{ns}.Customer", "AVRO", schema, config, [ReferenceInput(address, None, 1)])
     refs = [{"name": address, "subject": address, "version": 1}]
 
     serializer = AvroSerializer(ck_client, Schema(schema, "AVRO", [SchemaReference(**refs[0])]), conf=CONF)
@@ -236,7 +268,7 @@ def test_two_versions_of_one_type_corrupt_data(
     # Audit F1: Line pinned Money v1, Order uses Line and Money v2 (latest). The registry
     # accepts it, but Python and Java resolve the one name Money differently, so one side
     # decodes the other's bytes wrongly. This is why `validate` rejects the shape
-    # (REF_VERSION_CONFLICT). Here: the Python serializer writes Money v2 in both places,
+    # (REF_VERSION_CONFLICT_DIRECT). Here: the Python serializer writes Money v2 in both places,
     # a reader that resolves Money v1 everywhere (what Java does) misreads `total`.
     money, line, order_name = f"{ns}.Money", f"{ns}.Line", f"{ns}.Order"
     money1 = {"type": "record", "name": "Money", "namespace": ns, "fields": [{"name": "amount", "type": "long"}]}
@@ -335,7 +367,7 @@ def test_json_with_external_ref(
                          "properties": {"addr": {"$ref": "address.json"},
                                         "zip": {"$ref": "address.json#/definitions/Zip"}},
                          "required": ["addr"]})
-    name = accepted_name(f"{ns}.Customer", "JSON", schema, config, [ReferenceInput(address, "address.json")])
+    name = accepted_name(f"{ns}.Customer", "JSON", schema, config, [ReferenceInput(address, "address.json", 1)])
     refs = [{"name": "address.json", "subject": address, "version": 1}]
 
     serializer = JSONSerializer(Schema(schema, "JSON", [SchemaReference(**refs[0])]), ck_client, conf=CONF)
@@ -376,7 +408,7 @@ def test_json_id_relative_ref_is_rejected(
     # named "address.json" cannot be found. The registry itself accepts the schema.
     address = register_address(register, ns)
     schema = id_schema(ns, "O2")
-    result = validated(f"{ns}.O2", schema, config, [ReferenceInput(address, "address.json")])
+    result = validated(f"{ns}.O2", schema, config, [ReferenceInput(address, "address.json", 1)])
     assert result.validationType == "Error" and ABSOLUTE in result.message
 
     refs = [{"name": "address.json", "subject": address, "version": 1}]
@@ -391,7 +423,7 @@ def test_json_id_absolute_ref_string_works(
 ) -> None:
     address = register_address(register, ns)
     schema = id_schema(ns, "O3")
-    result = validated(f"{ns}.O3", schema, config, [ReferenceInput(address, ABSOLUTE)])
+    result = validated(f"{ns}.O3", schema, config, [ReferenceInput(address, ABSOLUTE, 1)])
     assert result.validationType == "Warning", result.message
 
     refs = [{"name": ABSOLUTE, "subject": address, "version": 1}]
@@ -461,7 +493,7 @@ def test_json_nested_schema_keyword_is_rejected(
         "title": f"{ns}.Nested", "type": "object",
         "properties": {"p": {"$schema": DRAFT_07, "properties": {
             "t": {"$id": "https://acme.example/sub/", "$ref": "a.json"}}}}})
-    result = validated(f"{ns}.Nested", schema, config, [ReferenceInput(address, "https://acme.example/sub/a.json")])
+    result = validated(f"{ns}.Nested", schema, config, [ReferenceInput(address, "https://acme.example/sub/a.json", 1)])
     assert result.validationType == "Error"
     assert result.message == (
         messages.JSON_NESTED_ID.format(kw="$id", paths="'/properties/p/properties/t'") + "\n"
@@ -487,7 +519,7 @@ def test_python_client_ignores_root_id_beside_root_ref_in_draft07(
             "$ref": "#/definitions/O",
             "definitions": {"O": {"type": "object", "properties": {"a": {"$ref": "a.json"}}}}})
 
-    result = validated(f"{ns}.RootA", root_schema("RootA"), config, [ReferenceInput(address, "a.json")])
+    result = validated(f"{ns}.RootA", root_schema("RootA"), config, [ReferenceInput(address, "a.json", 1)])
     assert result.validationType == "Error"
     assert result.message == messages.JSON_ROOT_ID_WITH_REF.format(kw="$id")
 
@@ -604,7 +636,7 @@ def test_protobuf_import_of_another_schema(
     registrar(register, address, address_text, "PROTOBUF")()
     schema = (f'syntax = "proto3";\npackage {ns};\nimport "{address_path}";\n'
               f'message Customer {{ Address addr = 1; }}\n')
-    name = accepted_name(f"{ns}.Customer", "PROTOBUF", schema, config, [ReferenceInput(address)])
+    name = accepted_name(f"{ns}.Customer", "PROTOBUF", schema, config, [ReferenceInput(address, None, 1)])
     modules = compile_proto(tmp_path, monkeypatch, {address_path: address_text, f"{ns}/Customer.proto": schema})
     customer = modules[f"{ns}/Customer.proto"].Customer
     value = customer(addr=modules[address_path].Address(city="TLV"))
@@ -635,7 +667,7 @@ def test_protobuf_types_nested_in_an_imported_schema(
     schema = (f'syntax = "proto3";\npackage {ns};\nimport "{address_path}";\n'
               f'message Customer {{\n  Address.Geo geo = 1;\n  {ns}.Address.Kind kind = 2;\n'
               f'  repeated Address.Geo more = 3;\n}}\n')
-    name = accepted_name(f"{ns}.Customer", "PROTOBUF", schema, config, [ReferenceInput(address)])
+    name = accepted_name(f"{ns}.Customer", "PROTOBUF", schema, config, [ReferenceInput(address, None, 1)])
     modules = compile_proto(tmp_path, monkeypatch, {address_path: address_text, f"{ns}/Customer.proto": schema})
     customer = modules[f"{ns}/Customer.proto"].Customer
     addr = modules[address_path].Address
@@ -664,7 +696,7 @@ def test_json_definitions_of_a_referenced_schema_two_levels_deep(
     }), "JSON")()
     schema = json.dumps({"$schema": DRAFT_07, "title": f"{ns}.Customer", "type": "object",
                          "properties": {"geo": {"$ref": "address.json#/definitions/Geo"}}, "required": ["geo"]})
-    name = accepted_name(f"{ns}.Customer", "JSON", schema, config, [ReferenceInput(address, "address.json")])
+    name = accepted_name(f"{ns}.Customer", "JSON", schema, config, [ReferenceInput(address, "address.json", 1)])
     refs = [{"name": "address.json", "subject": address, "version": 1}]
 
     serializer = JSONSerializer(Schema(schema, "JSON", [SchemaReference(**refs[0])]), ck_client, conf=CONF)
