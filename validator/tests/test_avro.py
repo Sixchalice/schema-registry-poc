@@ -463,6 +463,29 @@ def test_default_in_a_nested_record_is_checked() -> None:
         messages.AVRO_UNION_DEFAULT.format(field="n", record="t.Inner", first="null")]
 
 
+def _with_error_type(error_fields: list[dict[str, Any]], **field: Any) -> dict[str, Any]:
+    error = {"type": "error", "name": "Failure", "fields": error_fields}
+    return {"type": "record", "name": "R", "namespace": "t", "fields": [{"name": "e", "type": error, **field}]}
+
+
+def test_default_inside_a_nested_error_type_is_checked() -> None:
+    # Java parses an error type as a record and checks its fields' defaults.
+    schema = _with_error_type([{"name": "u", "type": ["null", "int"], "default": 1}])
+    assert analyse(json.dumps(schema), {}, ValidatorConfig()).errors == [
+        messages.AVRO_UNION_DEFAULT.format(field="u", record="t.Failure", first="null")]
+
+
+def test_record_shaped_default_of_an_error_type_is_valid() -> None:
+    schema = _with_error_type([{"name": "u", "type": "int"}], default={"u": 1})
+    assert analyse(json.dumps(schema), {}, ValidatorConfig()).errors == []
+
+
+def test_bad_default_of_an_error_type_names_the_type() -> None:
+    schema = _with_error_type([{"name": "u", "type": "int"}], default={"u": "x"})
+    assert analyse(json.dumps(schema), {}, ValidatorConfig()).errors == [
+        messages.AVRO_DEFAULT_INVALID.format(field="e", record="t.R", type="t.Failure")]
+
+
 def test_default_of_a_referenced_type() -> None:
     address = '{"type":"record","name":"Address","namespace":"t","fields":[{"name":"zip","type":"string"}]}'
     schema = {"type": "record", "name": "R", "namespace": "t",

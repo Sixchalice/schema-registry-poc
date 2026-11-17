@@ -12,7 +12,9 @@ from typing import Any
 
 from schema_validator import messages
 
-_NAMED_TYPES = ("record", "enum", "fixed")
+# Java parses an "error" (a protocol's error type, which fastavro also takes in a schema) as a record.
+_RECORDS = ("record", "error")
+_NAMED_TYPES = (*_RECORDS, "enum", "fixed")
 _NON_FINITE = ("NaN", "Infinity", "-Infinity")
 
 
@@ -77,7 +79,7 @@ def default_errors(parsed: dict[str, Any], named: Mapping[str, Any]) -> list[str
 
 
 def _records(parsed: Any) -> list[dict[str, Any]]:
-    """The records defined in the text, in document order (where each one starts)."""
+    """The records (and error types) defined in the text, in document order (where each one starts)."""
     records: list[dict[str, Any]] = []
     # Children are pushed in reverse, so the stack pops them in document order.
     pending: list[Any] = [parsed]
@@ -87,7 +89,7 @@ def _records(parsed: Any) -> list[dict[str, Any]]:
             pending.extend(reversed(node))
         elif isinstance(node, dict):
             kind = node.get("type")
-            if kind == "record":
+            if kind in _RECORDS:
                 records.append(node)
                 fields = node.get("fields")
                 if isinstance(fields, list):
@@ -116,7 +118,7 @@ def _valid(value: Any, schema: Any, named: Mapping[str, Any]) -> bool:
     if not isinstance(schema, dict):
         return False
     kind = schema.get("type")
-    if kind == "record":
+    if kind in _RECORDS:
         return isinstance(value, dict) and _record_value(value, schema.get("fields"), named)
     if kind == "enum":
         symbols = schema.get("symbols")
