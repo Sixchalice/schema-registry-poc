@@ -300,3 +300,29 @@ def test_deep_schema_gives_too_deep() -> None:
         node = {"type": "object", "properties": {"p": node}}
     result = run(schema(properties={"p": node}))
     assert result.errors == ["JSON schema is nested too deeply."]
+
+
+def test_malformed_id_is_an_error() -> None:
+    bad = "Invalid JSON schema: the $id 'http://[x' is not a valid URI"
+    root = run(schema(**{"$id": "http://[x", "properties": {"a": {"$ref": "a.json"}}}))
+    assert root.errors == [bad] and root.external_refs is None
+    nested = run(schema(properties={"s": {"$id": "http://[x"}}))
+    assert nested.errors == [bad] and nested.external_refs is None
+    draft04 = run(schema(**{"$schema": "http://json-schema.org/draft-04/schema#", "id": "http://[x"}))
+    assert draft04.errors == [bad.replace("$id", "id")] and draft04.external_refs is None
+
+
+def test_malformed_ref_is_an_error() -> None:
+    result = run(schema(properties={"a": {"$ref": "http://[x"}}))
+    assert result.errors == ["Invalid JSON schema: the $ref 'http://[x' is not a valid URI"]
+    assert result.external_refs is None
+
+
+def test_id_in_data_or_as_a_property_name_does_not_move_the_base() -> None:
+    result = run(schema(**{
+        "$id": "https://x/root.json",
+        "properties": {"$id": {"type": "string"}, "a": {"$ref": "a.json"}},
+        "default": {"$id": "https://other/"}, "const": {"$id": "https://other/"},
+        "enum": [{"$id": "https://other/"}], "examples": [{"$id": "https://other/"}],
+    }))
+    assert result.external_refs == {"https://x/a.json"}

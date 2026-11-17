@@ -20,7 +20,6 @@ from types import ModuleType
 
 import fastavro
 import pytest
-from jsonschema.validators import Draft202012Validator, validator_for
 from fastavro.schema import SchemaParseException
 from confluent_kafka import KafkaError, Message, Producer
 from confluent_kafka.schema_registry import (
@@ -34,6 +33,7 @@ from confluent_kafka.schema_registry.avro import AvroSerializer
 from confluent_kafka.schema_registry.json_schema import JSONSerializer
 from confluent_kafka.schema_registry.protobuf import ProtobufSerializer
 from confluent_kafka.serialization import MessageField, SerializationContext
+from jsonschema.validators import Draft202012Validator, validator_for
 
 from schema_validator import (
     HttpSchemaRegistryClient,

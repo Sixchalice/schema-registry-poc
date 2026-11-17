@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
-from urllib.parse import urldefrag, urljoin
+from urllib.parse import urldefrag, urljoin, urlsplit
 
 from jsonschema.exceptions import SchemaError
 from jsonschema.validators import Draft7Validator, validator_for
@@ -18,9 +18,28 @@ _TITLE_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+"
 _NAME_MAPS = frozenset(
     {"properties", "patternProperties", "definitions", "$defs", "dependentSchemas", "dependencies"}
 )
-_DRAFT04 = "http://json-schema.org/draft-04/schema"
 # Keywords whose value is data, not a schema.
 _DATA_KEYWORDS = frozenset({"enum", "const", "default", "examples"})
+_DRAFT04 = "http://json-schema.org/draft-04/schema"
+
+
+class _BadUri(Exception):
+    """A `$id`, `id` or `$ref` value that urllib cannot parse."""
+
+    def __init__(self, keyword: str, value: str) -> None:
+        super().__init__(keyword, value)
+        self.keyword = keyword
+        self.value = value
+
+
+def _resolve(keyword: str, base: str, value: str) -> str:
+    """`value` resolved against `base`, without its fragment."""
+    try:
+        # urljoin returns a value unparsed when the base is empty, so parse it explicitly.
+        urlsplit(value)
+        return urldefrag(urljoin(base, value)).url
+    except ValueError:
+        raise _BadUri(keyword, value) from None
 
 
 def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfig) -> FormatAnalysis:
@@ -71,7 +90,13 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
             errors.append(messages.JSON_TOO_DEEP)
 
     # Steps 8 and 9 (a top-level javaType needs no check)
-    return FormatAnalysis(expected_name, _external_refs(schema, id_keyword), errors)
+    try:
+        refs: set[str] | None = _external_refs(schema, id_keyword)
+    except _BadUri as e:
+        # The refs cannot be resolved, so stages D4 and D5 are skipped.
+        errors.append(messages.JSON_INVALID.format(err=f"the {e.keyword} '{e.value}' is not a valid URI"))
+        refs = None
+    return FormatAnalysis(expected_name, refs, errors)
 
 
 def _external_refs(schema: dict[str, Any], id_keyword: str) -> set[str]:
@@ -80,7 +105,7 @@ def _external_refs(schema: dict[str, Any], id_keyword: str) -> set[str]:
     The base starts as the root's `id_keyword` and moves with each string `$id` (or `id` in draft-04) of a subschema.
     """
     root_id = schema.get(id_keyword)
-    root_base = urldefrag(root_id).url if isinstance(root_id, str) else ""
+    root_base = _resolve(id_keyword, "", root_id) if isinstance(root_id, str) else ""
     bases = {root_base}
     found: list[tuple[str, str]] = []  # (ref, base in scope)
     pending: list[tuple[Any, str]] = [(schema, root_base)]
@@ -92,7 +117,7 @@ def _external_refs(schema: dict[str, Any], id_keyword: str) -> set[str]:
         elif isinstance(node, dict):
             node_id = node.get(id_keyword)
             if isinstance(node_id, str) and node is not schema:
-                base = urldefrag(urljoin(base, node_id)).url
+                base = _resolve(id_keyword, base, node_id)
                 bases.add(base)
             for key, value in node.items():
                 if key == "$ref" and isinstance(value, str):
@@ -104,7 +129,7 @@ def _external_refs(schema: dict[str, Any], id_keyword: str) -> set[str]:
     # Pass 2: resolve the refs. "" is the document itself, a base set inside it is one of its subschemas.
     refs: set[str] = set()
     for ref, base in found:
-        target = urldefrag(urljoin(base, ref)).url
+        target = _resolve("$ref", base, ref)
         if target not in bases:
             refs.add(target)
     return refs
