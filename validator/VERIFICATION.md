@@ -3,8 +3,8 @@
 Checked on 2026-11-16 (the secured registry and the Avro namespace follow-up on 2026-11-17) against `confluentinc/cp-schema-registry:7.9.0` on `apache/kafka:3.8.1`, from `integration/docker-compose.yml`, with confluent-kafka-python 2.16.1 and the Confluent 7.9.0 Java serializers.
 
 ```
-.venv/bin/python -m pytest -q                                   # 699 passed
-.venv/bin/python -m pytest integration/tests -m integration -q  # 138 passed, none skipped
+.venv/bin/python -m pytest -q                                   # 721 passed
+.venv/bin/python -m pytest integration/tests -m integration -q  # 142 passed, none skipped
 ```
 
 Every integration test creates its subjects under a fresh namespace (`it` + 10 hex digits, shown below as `<ns>`), so the suite can be rerun against the same registry.
@@ -111,6 +111,8 @@ A further run after the audit fixes (2026-11-17, seed 4, 700 cases per format, 2
 After the whole-branch review fixes (2026-11-17, seed 5, 300 cases per format, 900 schemas): 0 false passes, 0 internal errors; both passed / both rejected 274 / 471; rejected by an own rule 54; rejected by a local parser 101 (Avro 6, JSON 17, Protobuf 78); stage E only 0.
 
 After the JSON top-level rules and the nesting limit (2026-11-17, seed 6, 700 cases per format, 2,100 schemas): 0 false passes, 0 internal errors; both passed / both rejected 616 / 1,109; rejected by an own rule 112; rejected by a local parser 263 (Avro 7, JSON 35, Protobuf 221); stage E only 0.
+
+After the reference versions were chosen per row (2026-11-17, seed 9, 400 cases per format, 1,200 schemas): 0 false passes, 0 internal errors; both passed / both rejected 349 / 639; rejected by an own rule 71; rejected by a local parser 141 (Avro 16, JSON 15, Protobuf 110); stage E only 0.
 
 Code change: an Avro record whose `name` is a list or object gave `Internal validator error`; it now gives `Invalid Avro schema: the record "name" must be a string`.
 
@@ -298,7 +300,7 @@ Rule D (a root `$id` beside a root `$ref` in draft-04, -06 and -07) is pinned ag
 
 ## Coverage
 
-`coverage run --branch --source=schema_validator -m pytest -q` on 2026-11-17: 1,098 statements and 390 branches, all covered by the unit tests alone.
+`coverage run --branch --source=schema_validator -m pytest -q` on 2026-11-17: 1,129 statements and 402 branches, all covered by the unit tests alone.
 
 ## Not verified
 
