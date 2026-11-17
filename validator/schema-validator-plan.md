@@ -185,7 +185,7 @@ How Confluent derives the RecordNameStrategy subject (confirmed in Confluent doc
 ### 5.1 Avro
 
 1. `json.loads` the text. Failure: `Schema is not valid JSON: {err}`.
-2. Top level must be a JSON object with `"type": "record"`. Reject top-level unions (JSON arrays), primitives, arrays, maps, and bare enums/fixed: `The top level of an Avro schema must be a single record.`
+2. Top level must be a JSON object with `"type"` `record`, `enum` or `fixed`. A shared enum or fixed is a Schema of its own, which records reference. Reject top-level unions (JSON arrays), primitives, arrays and maps: `The top level of an Avro schema must be a single record, enum or fixed.` Steps 3 to 7 apply to an enum or fixed as to a record (it has no fields, so no external references of its own).
 3. Full name:
    - if `name` contains a dot, `name` is the full name and `namespace` is ignored;
    - otherwise full name = `namespace + "." + name`.
@@ -202,7 +202,7 @@ fastavro and SR (Java Avro 1.11.4) do not agree on everything, which is fine bec
 
 - fastavro rejects a default that does not match the field type; SR accepts it. Keep the fastavro error: such a schema breaks Java code generation.
 - SR rejects illegal name characters (`T-6`) and duplicate field names; fastavro accepts both. Stage E reports them.
-- SR accepts top-level unions and enums, and records without a namespace. Rules 2 and 4 are the validator's own.
+- SR accepts top-level unions, and records, enums and fixed without a namespace. Rules 2 (unions) and 4 are the validator's own.
 
 ### 5.2 JSON Schema
 

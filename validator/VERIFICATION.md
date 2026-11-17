@@ -137,6 +137,14 @@ Added on 2026-11-17. Money v1 is registered, Line references Money v1, then Mone
 - The registry registers Order with both references. The Python `AvroSerializer` writes Money v2 in both places; a reader that resolves Money v1 everywhere (what the Java serializer does) misreads `total` (`integration/tests/test_python_clients.py::test_two_versions_of_one_type_corrupt_data`).
 - Code change: D7 (spec §4, §6). `validate` answers `'<ns>.Money' is used at more than one version: v1 through '<ns>.Line', v2 directly. ...` and the same for a reference name used for two Schemas (`integration/tests/test_validate_real_sr.py::test_version_conflict_real_sr`). Before, it answered `Warning`.
 
+## Top-level enum and fixed (audit F5)
+
+Tested: `<ns>.Color` (enum) registered as its own Schema, then a record `<ns>.Paint` with a field of type `<ns>.Color` and a reference row for it. `integration/tests/test_python_clients.py::test_avro_shared_enum` validates both (no Warning on the record), registers them, serializes with the Python `AvroSerializer`, produces, and reads the value back with `AvroDeserializer`. `probe.Nested` does the same with Java `KafkaAvroSerializer` (client schema with `AColor` inlined) and reads `{"color": "GREEN"}` back; it prints `Nested: all cases as expected`.
+
+Observed: the registry, Python and Java all accept a record that references a separately registered enum. Before the change `validate` rejected the enum itself with the top-level message, although `AVRO_NESTED_IN_REFERENCE` tells users to move such a type to its own Schema.
+
+Code changed: step 2 of `formats/avro.py` accepts `record`, `enum` and `fixed` (the namespace rule and name derivation are unchanged); `AVRO_TOP_LEVEL` now ends "must be a single record, enum or fixed."; README and spec 5.1 updated.
+
 ## Packaging
 
 `tests/test_packaging.py` builds the wheel from a copy of the tree with `setuptools.build_meta.build_wheel` on every unit-test run and checks that it holds every `.py` file and the 18 `.proto` files under `schema_validator/_proto/`, and no tests.

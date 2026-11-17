@@ -80,7 +80,7 @@ public class Nested {
     pc.put("value.serializer", "org.apache.kafka.common.serialization.ByteArraySerializer");
     producer = new KafkaProducer<>(pc);
     String P = "p7.nested";
-    delete(P + ".PCustomer", P + ".PAddress", P + ".JCustomer", P + ".JAddress", P + ".ACustomer", P + ".AAddress");
+    delete(P + ".PCustomer", P + ".PAddress", P + ".JCustomer", P + ".JAddress", P + ".ACustomer", P + ".AAddress", P + ".AColor", P + ".APaint");
 
     // ---- PROTOBUF: a message and an enum nested in the imported PAddress ----
     System.out.println("\n[PROTOBUF nested message and enum of an imported Schema] " + P + ".PCustomer");
@@ -137,6 +137,17 @@ public class Nested {
     String inlined = acust.replace("\"" + P + ".AAddress\"", aaddr);
     GenericRecord withInline = customer(new Schema.Parser().parse(inlined));
     result("client schema with AAddress inlined", () -> avro.serialize(TOPIC, withInline), b -> avroDe.deserialize(TOPIC, b));
+
+    // ---- AVRO: a top-level enum registered as its own Schema, referenced by a record (audit F5) ----
+    System.out.println("\n[AVRO enum as a Schema of its own] " + P + ".APaint");
+    String acolor = "{\"type\":\"enum\",\"name\":\"AColor\",\"namespace\":\"" + P + "\",\"symbols\":[\"RED\",\"GREEN\"]}";
+    String apaint = "{\"type\":\"record\",\"name\":\"APaint\",\"namespace\":\"" + P + "\",\"fields\":[{\"name\":\"color\",\"type\":\"" + P + ".AColor\"}]}";
+    register(P + ".AColor", "AVRO", acolor);
+    register(P + ".APaint", "AVRO", apaint, P + ".AColor", P + ".AColor");
+    Schema paintSchema = new Schema.Parser().parse(apaint.replace("\"" + P + ".AColor\"", acolor));
+    GenericRecord paint = new GenericData.Record(paintSchema);
+    paint.put("color", new GenericData.EnumSymbol(paintSchema.getField("color").schema(), "GREEN"));
+    expectOk("record with the enum inlined", () -> avro.serialize(TOPIC, paint), b -> avroDe.deserialize(TOPIC, b));
 
     producer.close();
     System.out.println(failures == 0 ? "\nNested: all cases as expected" : "\nNested: " + failures + " case(s) NOT as expected");

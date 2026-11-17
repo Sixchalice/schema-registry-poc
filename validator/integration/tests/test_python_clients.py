@@ -29,7 +29,7 @@ from confluent_kafka.schema_registry import (
     SchemaRegistryError,
     record_subject_name_strategy,
 )
-from confluent_kafka.schema_registry.avro import AvroSerializer
+from confluent_kafka.schema_registry.avro import AvroDeserializer, AvroSerializer
 from confluent_kafka.schema_registry.json_schema import JSONSerializer
 from confluent_kafka.schema_registry.protobuf import ProtobufSerializer
 from confluent_kafka.serialization import MessageField, SerializationContext
@@ -179,6 +179,29 @@ def test_avro_with_reference(
     serializer = AvroSerializer(ck_client, Schema(schema, "AVRO", [SchemaReference(**refs[0])]), conf=CONF)
     check_client(serializer, {"addr": {"city": "TLV"}}, name,
                  registrar(register, name, schema, "AVRO", refs), producer)
+
+
+def test_avro_shared_enum(
+    ck_client: SchemaRegistryClient, register: Register, producer: Producer,
+    config: ValidatorConfig, ns: str,
+) -> None:
+    # An enum is a Schema of its own; a record references it by name (audit F5).
+    color = f"{ns}.Color"
+    color_schema = json.dumps({"type": "enum", "name": "Color", "namespace": ns, "symbols": ["RED", "GREEN"]})
+    accepted_name(color, "AVRO", color_schema, config)
+    registrar(register, color, color_schema, "AVRO")()
+
+    schema = json.dumps({"type": "record", "name": "Paint", "namespace": ns,
+                         "fields": [{"name": "color", "type": color}]})
+    name = accepted_name(f"{ns}.Paint", "AVRO", schema, config, [ReferenceInput(color)])
+    refs = [{"name": color, "subject": color, "version": 1}]
+
+    serializer = AvroSerializer(ck_client, Schema(schema, "AVRO", [SchemaReference(**refs[0])]), conf=CONF)
+    check_client(serializer, {"color": "GREEN"}, name,
+                 registrar(register, name, schema, "AVRO", refs), producer)
+    data = serializer({"color": "GREEN"}, CTX)
+    assert isinstance(data, bytes)
+    assert AvroDeserializer(ck_client)(data, CTX) == {"color": "GREEN"}
 
 
 def test_avro_name_from_a_transitive_reference(

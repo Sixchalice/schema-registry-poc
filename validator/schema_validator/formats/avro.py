@@ -27,7 +27,7 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
         return FormatAnalysis(None, None, [messages.NOT_JSON.format(err=e)])
 
     # Step 2
-    if not isinstance(schema, dict) or schema.get("type") != "record":
+    if not isinstance(schema, dict) or not isinstance(schema.get("type"), str) or schema["type"] not in _NAMED_TYPES:
         return FormatAnalysis(None, None, [messages.AVRO_TOP_LEVEL])
 
     errors: list[str] = []
@@ -55,7 +55,7 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
         errors.append(messages.AVRO_INVALID.format(err=error))
     elif not isinstance(name, str):
         # fastavro lets a list or dict through as a name, or stopped before looking at it.
-        errors.append(messages.AVRO_INVALID.format(err='the record "name" must be a string'))
+        errors.append(messages.AVRO_INVALID.format(err=f'the {schema["type"]} "name" must be a string'))
 
     return FormatAnalysis(expected_name, external_refs, errors)
 

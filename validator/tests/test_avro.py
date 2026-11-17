@@ -10,7 +10,7 @@ from schema_validator.formats import avro
 from schema_validator.formats.avro import analyse
 from schema_validator.models import FormatAnalysis, ValidatorConfig
 
-TOP_LEVEL = ["The top level of an Avro schema must be a single record."]
+TOP_LEVEL = ["The top level of an Avro schema must be a single record, enum or fixed."]
 NAMESPACE = ['Avro schema needs a namespace, for example "namespace": "com.team.domain".']
 
 
@@ -56,9 +56,34 @@ def test_top_level_union() -> None:
 
 
 def test_top_level_enum() -> None:
-    result = run({"type": "enum", "name": "E", "namespace": "com.acme", "symbols": ["A"]})
-    assert result.errors == TOP_LEVEL
-    assert result.external_refs is None
+    result = run({"type": "enum", "name": "Color", "namespace": "a.b", "symbols": ["RED"]})
+    assert result.expected_name == "a.b.Color"
+    assert result.errors == []
+    assert result.external_refs == set()
+
+
+def test_top_level_fixed() -> None:
+    result = run({"type": "fixed", "name": "Id", "namespace": "a.b", "size": 16})
+    assert result.expected_name == "a.b.Id"
+    assert result.errors == []
+    assert result.external_refs == set()
+
+
+def test_top_level_enum_needs_namespace() -> None:
+    result = run({"type": "enum", "name": "Color", "symbols": ["RED"]})
+    assert result.errors == NAMESPACE
+
+
+def test_record_using_a_referenced_enum() -> None:
+    color = json.dumps({"type": "enum", "name": "Color", "namespace": "a.b", "symbols": ["RED"]})
+    result = run(rec("Paint", [field("c", "a.b.Color")], namespace="a.b"), {"a.b.Color": color})
+    assert result.errors == []
+    assert result.external_refs == {"a.b.Color"}
+
+
+def test_top_level_type_that_is_not_a_string() -> None:
+    assert run({"type": ["record"], "name": "R", "fields": []}).errors == TOP_LEVEL
+    assert run({"type": {"type": "record"}}).errors == TOP_LEVEL
 
 
 def test_top_level_primitive() -> None:

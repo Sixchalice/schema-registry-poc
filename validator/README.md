@@ -110,7 +110,7 @@ All errors are collected; a stage is skipped only when it depends on one that fa
 | A4 | `name` is not empty, has no whitespace and does not start with `:` | `Schema name is invalid.` |
 | A5 | No two rows share a `schema_name` or a `ref_string`; no row references `name` | `Reference '{x}' is listed twice.` / `A schema cannot reference itself.` |
 | B, all | Avro and JSON text parses as JSON | `Schema is not valid JSON: {err}` |
-| B, Avro | The top level is one record | `The top level of an Avro schema must be a single record.` |
+| B, Avro | The top level is one record, enum or fixed | `The top level of an Avro schema must be a single record, enum or fixed.` |
 | B, Avro | The full name has a namespace, and no dot-separated part of it is empty (`.Order`, `com..Order`) | `Avro schema needs a namespace, for example "namespace": "com.team.domain".` |
 | B, Avro | Every named type nested in the schema has a namespace: none sets `"namespace"` to `""`, `null` or anything that is not a dotted name (a nested type without a `namespace` inherits the schema's) | `Type '{name}' needs a namespace. Remove its "namespace" entry so it uses the schema's namespace.` |
 | B, Avro | No nested type name has an empty part around a dot (`.Inner`, `Inner.`, `a..B`) | `Type name '{name}' has an empty part around a dot. Use a plain name, for example "Address", or a full name, for example "com.team.domain.Address".` |
