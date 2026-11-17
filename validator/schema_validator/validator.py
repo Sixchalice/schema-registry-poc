@@ -131,7 +131,13 @@ def _sr_failure(err: Exception) -> str:
         return messages.SR_UNAUTHORIZED
     text = str(err)
     reason = invalid_schema_reason(text)
-    return _rejected(text if reason is None else reason)
+    if reason is not None:
+        return _rejected(reason)
+    if text and "{" not in text:
+        return _rejected(text)
+    # No message, or one that embeds a structure (it may echo the schema or a header).
+    code = getattr(err, "code", None)
+    return messages.SR_REJECTED_CODE.format(code=code)
 
 
 def _rejected(reason: str) -> str:

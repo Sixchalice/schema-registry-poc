@@ -568,22 +568,42 @@ def test_sr_says_invalid_without_details(message: str, sr: FakeSchemaRegistry, r
     'Invalid schema {subject=com.acme.Order,schema={"type":"record"}}, details:',
 ])
 def test_sr_rejected_exception_without_details(message: str, sr: FakeSchemaRegistry, run: Callable) -> None:
-    sr.fail_with = SchemaRegistryRejected(message)
+    sr.fail_with = SchemaRegistryRejected(message, 42201)
     result = run(req("AVRO", "order", "com.acme.Order"), sr)
     assert result == ValidationResult(False, "Error", messages.SR_REJECTED_NO_REASON)
     assert "{subject=" not in result.message
 
 
 def test_sr_rejected_exception(sr: FakeSchemaRegistry, run: Callable) -> None:
-    sr.fail_with = SchemaRegistryRejected("Invalid schema {..}, details: boom")
+    sr.fail_with = SchemaRegistryRejected("Invalid schema {..}, details: boom", 42201)
     result = run(req("AVRO", "order", "com.acme.Order"), sr)
     assert result == ValidationResult(False, "Error", "Schema Registry rejected the schema: boom")
 
 
+def test_plain_message_still_shown(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.fail_with = SchemaRegistryRejected("Either the input schema or one its references is invalid", 42201)
+    result = run(req("AVRO", "order", "com.acme.Order"), sr)
+    assert result.message == (
+        "Schema Registry rejected the schema: Either the input schema or one its references is invalid")
+
+
 def test_sr_rejected_exception_without_invalid_prefix(sr: FakeSchemaRegistry, run: Callable) -> None:
-    sr.fail_with = SchemaRegistryRejected("Subject name is too long")
+    sr.fail_with = SchemaRegistryRejected("Subject name is too long", 42201)
     result = run(req("AVRO", "order", "com.acme.Order"), sr)
     assert result.message == "Schema Registry rejected the schema: Subject name is too long"
+
+
+def test_sr_rejected_raw_body_is_never_shown(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.fail_with = SchemaRegistryRejected("", 400)
+    result = run(req("AVRO", "order", "com.acme.Order"), sr)
+    assert result == ValidationResult(False, "Error", "Schema Registry rejected the schema (error code 400).")
+
+
+def test_sr_rejected_structured_message_not_echoed(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.fail_with = SchemaRegistryRejected('Bad request {"headers":{"Authorization":"Basic xyz"}}', 42201)
+    result = run(req("AVRO", "order", "com.acme.Order"), sr)
+    assert result == ValidationResult(False, "Error", messages.SR_REJECTED_CODE.format(code=42201))
+    assert "Authorization" not in result.message
 
 
 def test_sr_unreachable(sr: FakeSchemaRegistry, run: Callable) -> None:
@@ -611,9 +631,9 @@ def test_sr_failure_during_references_still_runs_stages_b_to_d(sr: FakeSchemaReg
 
 @pytest.mark.parametrize("error, expected", [
     (SchemaRegistryUnauthorized("x"), E4),
-    (SchemaRegistryRejected("Invalid schema {..}, details: no such subject"),
+    (SchemaRegistryRejected("Invalid schema {..}, details: no such subject", 42201),
      "Schema Registry rejected the schema: no such subject"),
-    (SchemaRegistryRejected("plain"), "Schema Registry rejected the schema: plain"),
+    (SchemaRegistryRejected("plain", 42201), "Schema Registry rejected the schema: plain"),
 ])
 def test_sr_failure_during_references_maps_like_stage_e(
     error: Exception, expected: str, sr: FakeSchemaRegistry, run: Callable
@@ -672,7 +692,7 @@ def test_no_level_call_when_there_are_errors(sr: FakeSchemaRegistry, run: Callab
 @pytest.mark.parametrize("error, expected", [
     (SchemaRegistryUnavailable("x"), E3),
     (SchemaRegistryUnauthorized("x"), E4),
-    (SchemaRegistryRejected("Invalid schema {..}, details: bad subject"),
+    (SchemaRegistryRejected("Invalid schema {..}, details: bad subject", 42201),
      "Schema Registry rejected the schema: bad subject"),
 ])
 def test_level_lookup_failure_is_an_error(

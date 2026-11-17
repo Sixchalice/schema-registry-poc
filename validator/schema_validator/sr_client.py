@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.parse
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -47,7 +48,15 @@ class SchemaRegistryUnauthorized(SchemaRegistryError):
 
 
 class SchemaRegistryRejected(SchemaRegistryError):
-    """Other 4xx with an error_code; str(e) is SR's message (E1)."""
+    """Other 4xx with an error_code (E1).
+
+    str(e) is the body's `message` field, or "" when it has none; the raw body is
+    never kept, since it may echo request headers.
+    """
+
+    def __init__(self, message: str, code: int) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class SchemaRegistryClient(Protocol):
@@ -158,43 +167,64 @@ class HttpSchemaRegistryClient:
         every other outcome.
         """
         where = f"{method} {path}"
+        started = time.monotonic()
+        response = None
         try:
-            # Inside the guard: quoting raises UnicodeEncodeError on a lone surrogate.
-            url = self._url + path.replace("{s}", _quote(subject))
-            response = self._session.request(
-                method,
-                url,
-                headers={"Content-Type": _CONTENT_TYPE},
-                auth=self._auth,
-                timeout=self._timeout,
-                data=None if request is None else json.dumps(request),
-            )
-        except (requests.RequestException, ValueError) as e:
-            # ValueError covers UnicodeEncodeError from requests' Latin-1 Basic header
-            # (its repr holds the password) and urllib3's timeout <= 0 check.
-            raise SchemaRegistryUnavailable(f"{where}: {type(e).__name__}") from None
-        status = response.status_code
-        if status in (401, 403):
-            raise SchemaRegistryUnauthorized(f"{where}: HTTP {status}")
-        if status >= 500:
-            raise SchemaRegistryUnavailable(f"{where}: HTTP {status}")
-        if 400 <= status < 500:
-            code = _error_code(response)
-            if status == 404 and code not in _NOT_FOUND_CODES:
-                # Not Schema Registry's own "not found": a wrong URL or a proxy, on every call.
-                raise SchemaRegistryUnavailable(f"{where}: HTTP 404 without a not-found error_code")
-            if status == 404 and not_found_ok:
-                return _NOT_FOUND
-            if code is None:
-                # Schema Registry always sends an error_code: this answer is from something else.
-                raise SchemaRegistryUnavailable(f"{where}: HTTP {status} without an error_code")
-            raise SchemaRegistryRejected(_error_message(response))
-        if not 200 <= status < 300:
-            raise SchemaRegistryUnavailable(f"{where}: HTTP {status}")
-        try:
-            return response.json()
-        except (ValueError, RecursionError):
-            raise _bad_body(method, path) from None
+            try:
+                # Inside the guard: quoting raises UnicodeEncodeError on a lone surrogate.
+                url = self._url + path.replace("{s}", _quote(subject))
+                response = self._session.request(
+                    method,
+                    url,
+                    headers={"Content-Type": _CONTENT_TYPE},
+                    auth=self._auth,
+                    timeout=self._timeout,
+                    data=None if request is None else json.dumps(request),
+                    allow_redirects=False,
+                    stream=True,
+                )
+                # `timeout` bounds connect and each read, not the whole response: a
+                # server that trickles bytes would hold the call open, so check the
+                # clock after every chunk. One byte per chunk, because urllib3 waits
+                # for a whole chunk (or the end of the body) before returning it, so
+                # a larger chunk would delay the check by as long as the drip lasts.
+                chunks = []
+                for chunk in response.iter_content(chunk_size=1):
+                    chunks.append(chunk)
+                    if time.monotonic() > started + self._timeout:
+                        raise SchemaRegistryUnavailable(
+                            f"{where}: response took longer than the timeout")
+                raw = b"".join(chunks)
+            except (requests.RequestException, ValueError) as e:
+                # ValueError covers UnicodeEncodeError from requests' Latin-1 Basic header
+                # (its repr holds the password) and urllib3's timeout <= 0 check.
+                raise SchemaRegistryUnavailable(f"{where}: {type(e).__name__}") from None
+            status = response.status_code
+            if status in (401, 403):
+                raise SchemaRegistryUnauthorized(f"{where}: HTTP {status}")
+            if status >= 500:
+                raise SchemaRegistryUnavailable(f"{where}: HTTP {status}")
+            if 400 <= status < 500:
+                body = _parse(raw)
+                code = _error_code(body)
+                if status == 404 and code not in _NOT_FOUND_CODES:
+                    # Not Schema Registry's own "not found": a wrong URL or a proxy, on every call.
+                    raise SchemaRegistryUnavailable(f"{where}: HTTP 404 without a not-found error_code")
+                if status == 404 and not_found_ok:
+                    return _NOT_FOUND
+                if code is None:
+                    # Schema Registry always sends an error_code: this answer is from something else.
+                    raise SchemaRegistryUnavailable(f"{where}: HTTP {status} without an error_code")
+                raise SchemaRegistryRejected(_error_message(body), code)
+            if not 200 <= status < 300:
+                raise SchemaRegistryUnavailable(f"{where}: HTTP {status}")
+            body = _parse(raw)
+            if body is _UNPARSEABLE:
+                raise _bad_body(method, path)
+            return body
+        finally:
+            if response is not None:
+                response.close()
 
 
 def _is_int(value: object) -> bool:
@@ -209,28 +239,27 @@ def _bad_body(method: str, path: str) -> SchemaRegistryUnavailable:
     return SchemaRegistryUnavailable(f"{method} {path}: unexpected response body")
 
 
-def _json_or_none(response: requests.Response) -> object:
+_UNPARSEABLE = object()
+
+
+def _parse(raw: bytes) -> object:
+    """The JSON in `raw`, or _UNPARSEABLE."""
     try:
-        return response.json()
+        return json.loads(raw)
     except (ValueError, RecursionError):
-        return None
+        return _UNPARSEABLE
 
 
-def _error_code(response: requests.Response) -> int | None:
+def _error_code(body: object) -> int | None:
     """The integer `error_code` of a Schema Registry error body, if it has one."""
-    body = _json_or_none(response)
     code = body.get("error_code") if isinstance(body, dict) else None
     return code if _is_int(code) else None
 
 
-def _error_message(response: requests.Response) -> str:
-    """The `message` of a Schema Registry error body, else the raw text.
-
-    Only called for a body with an integer error_code, so the raw text is never empty.
-    """
-    body = _json_or_none(response)
+def _error_message(body: object) -> str:
+    """The `message` of a Schema Registry error body, or "" when it has none."""
     message = body.get("message") if isinstance(body, dict) else None
-    return message if isinstance(message, str) and message else response.text
+    return message if isinstance(message, str) else ""
 
 
 def _parse_version(body: object) -> SchemaVersion | None:

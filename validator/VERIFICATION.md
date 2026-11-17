@@ -169,6 +169,30 @@ Observed: an edit whose `existing_names` listed its own stored name got `NAME_EX
 
 Code changed: C2 leaves entries exactly equal to `previous_name` out on an edit; case variants of other names still count. README and spec C2 updated.
 
+## Request deadline (audit L1)
+
+Tested: `test_slow_body_hits_deadline` (unit); the reviewer's fake registry `t13_failures.py` (`slow` and `drip` cases, run against `fake_sr.py` on port 18999).
+
+Observed: a registry sending one byte every 0.5 s with `sr_timeout_seconds=2` held the call for 10.6 s and then passed; `requests`' `timeout` bounds each read, not the whole response.
+
+Code changed: requests are streamed and the body is read one byte at a time (urllib3 only returns a chunk when complete, so `chunk_size=None` and larger chunks still waited out the drip), with a wall-clock check after each byte against start + `sr_timeout_seconds`. An overrun is E3. After the change `drip` ends in 2.0 s with "Could not reach". Reading 1 MB byte by byte takes about 1.2 s. Spec 7 and README updated.
+
+## No redirects (audit L2)
+
+Tested: `test_redirects_not_followed` (unit) and the `redirect` case of `t13_failures.py`.
+
+Observed: `requests` followed a 302, so Basic credentials could go to another host and a different endpoint could answer.
+
+Code changed: every request has `allow_redirects=False`; a 3xx is E3 ("not 2xx"). Spec 7 updated.
+
+## No raw registry bodies (audit L3)
+
+Tested: `test_raw_body_never_in_rejected`, `test_structured_message_not_echoed`, `test_plain_message_still_shown` (unit); the `e400raw`, `e409` and `e422other` cases of `t13_failures.py`. The 123 integration tests are unchanged.
+
+Observed: a 4xx with an `error_code` but no `message` field showed the whole body, including an echoed `Authorization` header, and a message with the request or the other team's schema embedded was shown as it was.
+
+Code changed: `SchemaRegistryRejected` holds the body's `message` or "" plus `.code`. The stage E text is the `details:` reason, else a non-empty message without `{`, else `Schema Registry rejected the schema (error code {code}).` README and spec 7 updated.
+
 ## Packaging
 
 `tests/test_packaging.py` builds the wheel from a copy of the tree with `setuptools.build_meta.build_wheel` on every unit-test run and checks that it holds every `.py` file and the 18 `.proto` files under `schema_validator/_proto/`, and no tests.

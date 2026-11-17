@@ -165,7 +165,7 @@ Run only if stages A to D produced no errors.
 
 | Code | Check | Message template |
 |---|---|---|
-| E1 | SR accepts the schema as valid | `Schema Registry rejected the schema: {reason}` / `Schema Registry rejected the schema without giving a reason.` |
+| E1 | SR accepts the schema as valid | `Schema Registry rejected the schema: {reason}` / `Schema Registry rejected the schema without giving a reason.` / `Schema Registry rejected the schema (error code {code}).` |
 | E2 | SR reports it compatible with existing versions | `Not {sr_level}-compatible with version {n}: {descriptions}` |
 | E3 | SR reachable | `Could not reach Schema Registry to validate. Try again.` (Error; fail closed) |
 | E4 | SR accepts the validator's credentials (no 401/403) | `The validator is not allowed to query Schema Registry. Contact the platform team.` (Error; fail closed) |
@@ -271,6 +271,8 @@ The validator does not return `resolved` as data. America's registration step re
 
 Thin wrapper; all calls use header `Content-Type: application/vnd.schemaregistry.v1+json`, basic auth, and the configured timeout. URL-encode subject names in paths.
 
+Every request is sent with `allow_redirects=False` and `stream=True`. `sr_timeout_seconds` is a deadline for the whole response, counted from sending the request: the body is read one byte at a time (urllib3 only returns a chunk when it is complete, so a larger chunk would delay the check by as long as a slow server drips) and the clock is checked after each byte, so a registry that sends a byte every second cannot hold the call open. The `timeout` passed to `requests` still bounds connect and each read. An overrun is E3, as is any 3xx (a redirect is never followed, so credentials are never sent to another host). The response is always closed. A rejection (`SchemaRegistryRejected`) carries only the body's `message` (or "") and its `error_code`, never the raw body, which may echo request headers.
+
 | Purpose | Call |
 |---|---|
 | Latest version of a subject | `GET /subjects/{subject}/versions/latest` |
@@ -300,7 +302,7 @@ Response handling (observed on SR 7.9.0; the endpoint behaves the same for a sub
   {validateFields: 'false', compatibility: 'BACKWARD'}
   ```
   Extract every `description` (take the text after the first `, description:` up to the last `}`, cut it at the last `, additionalInfo:`, then remove one leading and one trailing quote, `'` or `"`; they do not always match: JSON opens with `"` and closes with `'`), the `oldSchemaVersion` and the `compatibility` level. Drop `oldSchema`. A message without `errorType` (for example `Incompatible because of different schema type`) is shown as it is. If nothing can be extracted, fall back to the raw messages with any `{oldSchema: ...}` entry removed.
-- `422` with `error_code` 42201, or any other 4xx with an `error_code`: E1 with SR's `message`, cleaned the same way. Not observed on this endpoint, but registration and lookup return 42201, so handle it. A 404 whose `error_code` is not 40401 or 40402 (a wrong URL prefix or a proxy) is E3 on every call. A 4xx without an integer `error_code` is E3.
+- `422` with `error_code` 42201, or any other 4xx with an `error_code`: E1, cleaned the same way. The text shown is, in order: the `details:` reason if the message has one; else the message itself if it is non-empty and has no `{`; else `Schema Registry rejected the schema (error code {code}).` Not observed on this endpoint, but registration and lookup return 42201, so handle it. A 404 whose `error_code` is not 40401 or 40402 (a wrong URL prefix or a proxy) is E3 on every call. A 4xx without an integer `error_code` is E3.
 - `401` / `403`: E4.
 - Timeouts, connection errors, 5xx, and a `200` whose body is not the expected JSON (an HTML page, a missing `is_compatible`): E3.
 

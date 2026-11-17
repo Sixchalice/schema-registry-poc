@@ -60,7 +60,7 @@ result.message         # "" for Ok; otherwise the messages, one per line
 | `sr_url` | `""` | Base URL of Schema Registry |
 | `sr_username` | `None` | Basic auth user; no authentication when `None` |
 | `sr_password` | `None` | Basic auth password; not shown in `repr` |
-| `sr_timeout_seconds` | `10` | Timeout of each HTTP call |
+| `sr_timeout_seconds` | `10` | Time limit of each HTTP call, counted from sending the request to the last byte of the response |
 | `max_schema_bytes` | `500_000` | Largest schema text accepted, in UTF-8 bytes |
 | `allowed_json_drafts` | draft-04, draft-06, draft-07, 2019-09, 2020-12 | Accepted `$schema` values, stored without a trailing `#` (`DEFAULT_JSON_DRAFTS` in `models.py`). This is platform policy: Schema Registry accepts any `$schema` value |
 | `builtin_proto_imports` | 29 paths (`DEFAULT_BUILTIN_PROTO_IMPORTS` in `models.py`) | Import paths that need no reference row: `google/protobuf/` `any`, `api`, `descriptor`, `duration`, `empty`, `field_mask`, `source_context`, `struct`, `timestamp`, `type`, `wrappers`; `google/type/` `calendar_period`, `color`, `date`, `datetime`, `dayofweek`, `decimal`, `expr`, `fraction`, `interval`, `latlng`, `money`, `month`, `phone_number`, `postal_address`, `quaternion`, `timeofday` (each `.proto`); `confluent/meta.proto`, `confluent/type/decimal.proto` |
@@ -137,12 +137,12 @@ All errors are collected; a stage is skipped only when it depends on one that fa
 | D5 | Every row is used in the schema | `'{x}' is selected as a reference but is not used in the schema.` (Protobuf: `'{s}' is selected as a reference but the schema does not import it. Write the import as: import "{path}";`) |
 | D6 | JSON: every row has a non-empty `ref_string` | `Reference to '{s}' needs the text used in the schema (the $ref value).` |
 | D7 | One version per subject and one Schema per reference name, across the whole graph (the rows and everything they reference) | `'{s}' is used at more than one version: {uses}. A schema can use only one version of it. Save the Schemas that use an older version again so that they use v{latest}, then save this schema.` / `The reference name '{x}' is used for more than one Schema: {subjects}. Each Schema needs its own reference name.` |
-| E1 | Schema Registry accepts the schema as valid | `Schema Registry rejected the schema: {reason}` / `Schema Registry rejected the schema without giving a reason.` (an `Invalid schema` message with no reason) |
+| E1 | Schema Registry accepts the schema as valid | `Schema Registry rejected the schema: {reason}` / `Schema Registry rejected the schema without giving a reason.` (an `Invalid schema` message with no reason) / `Schema Registry rejected the schema (error code {code}).` (the registry sent no message, or one that contains `{`) |
 | E2 | Schema Registry finds it compatible with the registered versions | `Not {sr_level}-compatible with version {n}: {descriptions}` (when the registry names no version: `Not {sr_level}-compatible with the existing versions: {descriptions}`) |
-| E3 | Schema Registry is reachable (timeouts, connection errors, 5xx, unreadable responses, a 404 that is not Schema Registry's "subject or version not found", a 4xx without an error_code) | `Could not reach Schema Registry to validate. Try again.` |
+| E3 | Schema Registry is reachable (timeouts, connection errors, 5xx, unreadable responses, a response that is not finished within `sr_timeout_seconds`, a redirect, a 404 that is not Schema Registry's "subject or version not found", a 4xx without an error_code) | `Could not reach Schema Registry to validate. Try again.` |
 | E4 | Schema Registry accepts the validator's credentials (no 401 or 403) | `The validator is not allowed to query Schema Registry. Contact the platform team.` |
 
-E1 shows only the reason Schema Registry gives (the text after `details: `), and E2 only the extracted descriptions, because the registry's raw messages contain the whole schema text. When an `Invalid schema` message has no reason, E1 shows the fixed text above, never the raw message. E3 and E4 also apply to the reference lookups of stage D.
+E1 shows only the reason Schema Registry gives (the text after `details: `), and E2 only the extracted descriptions, because the registry's raw messages contain the whole schema text. When an `Invalid schema` message has no reason, E1 shows the fixed text above, never the raw message. A rejection with no message, or with a message that contains `{` (a structure that may echo the schema or a header) and no `details:` reason, shows `Schema Registry rejected the schema (error code {code}).` and nothing else of the body. E3 and E4 also apply to the reference lookups of stage D.
 
 Warnings, returned as `Warning` when there is no error:
 

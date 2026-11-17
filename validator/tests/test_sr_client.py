@@ -1,4 +1,5 @@
 import json
+from contextlib import nullcontext as _nullcontext
 from typing import Any
 
 import pytest
@@ -25,6 +26,13 @@ class StubResponse:
     def __init__(self, status_code: int, body: Any = None, text: str | None = None) -> None:
         self.status_code = status_code
         self.text = text if text is not None else ("" if body is None else json.dumps(body))
+        self.closed = False
+
+    def iter_content(self, chunk_size: int | None = None):
+        yield self.text.encode()
+
+    def close(self) -> None:
+        self.closed = True
 
     def json(self) -> Any:
         try:
@@ -206,11 +214,12 @@ def test_rejected_42201():
 
 @pytest.mark.parametrize("body", [{"error_code": 42201}, {"error_code": 42201, "message": ""},
                                   {"error_code": 42201, "message": None}, {"error_code": 42201, "message": 5}])
-def test_rejected_without_a_message_keeps_the_raw_body(body):
+def test_rejected_without_a_message_has_an_empty_message(body):
     session = StubSession(StubResponse(422, body))
     with pytest.raises(SchemaRegistryRejected) as e:
         client_for(session).check_compatibility("a.B", "S", "AVRO", [])
-    assert str(e.value) == json.dumps(body)
+    assert str(e.value) == ""
+    assert e.value.code == 42201
 
 
 def test_4xx_without_error_code_is_unavailable():
@@ -366,10 +375,11 @@ def test_unexpected_status_is_unavailable():
     json.dumps({"error_code": 42201, "message": ["Invalid schema X"]}),
     json.dumps({"error_code": 42201}),
 ])
-def test_odd_4xx_body_with_error_code_is_still_rejected_with_raw_text(text):
+def test_odd_4xx_body_with_error_code_is_still_rejected_without_raw_text(text):
     with pytest.raises(SchemaRegistryRejected) as e:
         client_for(StubSession(StubResponse(422, text=text))).check_compatibility("a.B", "S", "AVRO", [])
-    assert str(e.value) == text
+    assert str(e.value) == ""
+    assert e.value.code == 42201
 
 
 @pytest.mark.parametrize("text", [
@@ -575,3 +585,46 @@ def test_config_repr_does_not_contain_the_password():
     assert "s3cret" not in repr(config)
     assert "s3cret" not in str(config)
     assert config.sr_password == "s3cret"
+
+
+# ---- deadline, redirects, raw bodies (audit L1-L3) ---------------------------
+
+class SlowResponse(StubResponse):
+    def iter_content(self, chunk_size: int | None = None):
+        for _ in range(5):
+            yield b" "
+
+
+def test_slow_body_hits_deadline(monkeypatch):
+    clock = iter(range(100))
+    monkeypatch.setattr("schema_validator.sr_client.time.monotonic", lambda: float(next(clock)))
+    response = SlowResponse(200, VERSION_BODY)
+    with pytest.raises(SchemaRegistryUnavailable) as e:
+        client_for(StubSession(response), timeout_seconds=2).get_latest("a.B")
+    assert "longer than the timeout" in str(e.value)
+    assert "a.B" not in str(e.value)
+    assert response.closed
+
+
+def test_redirects_not_followed():
+    session = StubSession(StubResponse(302, text=""))
+    with pytest.raises(SchemaRegistryUnavailable):
+        client_for(session).get_latest("a.B")
+    kwargs = session.last[2]
+    assert kwargs["allow_redirects"] is False
+    assert kwargs["stream"] is True
+
+
+def test_raw_body_never_in_rejected():
+    session = StubSession(StubResponse(400, {"error_code": 400, "detail": "Authorization: Basic xyz"}))
+    with pytest.raises(SchemaRegistryRejected) as e:
+        client_for(session).check_compatibility("a.B", "S", "AVRO", [])
+    assert str(e.value) == ""
+    assert e.value.code == 400
+
+
+def test_response_is_closed_on_every_outcome():
+    for response in (StubResponse(200, AVRO_BODY), StubResponse(500, text=""), StubResponse(401, text="")):
+        with pytest.raises(SchemaRegistryError) if response.status_code != 200 else _nullcontext():
+            client_for(StubSession(response)).get_latest("a.B")
+        assert response.closed
