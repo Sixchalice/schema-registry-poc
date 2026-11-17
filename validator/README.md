@@ -114,7 +114,7 @@ All errors are collected; a stage is skipped only when it depends on one that fa
 | B, Avro | The full name has a namespace, and no dot-separated part of it is empty (`.Order`, `com..Order`) | `Avro schema needs a namespace, for example "namespace": "com.team.domain".` |
 | B, Avro | Every named type nested in the schema has a namespace: none sets `"namespace"` to `""`, `null` or anything that is not a dotted name (a nested type without a `namespace` inherits the schema's) | `Type '{name}' needs a namespace. Remove its "namespace" entry so it uses the schema's namespace.` |
 | B, Avro | No nested type name has an empty part around a dot (`.Inner`, `Inner.`, `a..B`) | `Type name '{name}' has an empty part around a dot. Use a plain name, for example "Address", or a full name, for example "com.team.domain.Address".` |
-| B, Avro | No type is used that is defined inside a referenced schema (Python clients cannot load such a schema) | `Type '{name}' is defined inside the Schema '{schema}'. A type nested in another Schema cannot be used here. Move it to its own Schema and reference that.` |
+| B, Avro | No type is used that is defined inside a referenced schema (the registry accepts it, but neither the Python nor the Java serializer can produce with such a schema) | `Type '{name}' is defined inside the Schema '{schema}'. A type nested in another Schema cannot be used here. Move it to its own Schema and reference that.` |
 | B, Avro | fastavro parses the schema, with its references. A type must be defined before its first use, and a type name is written as a plain string, not as `{"type": "<name>"}` | `Invalid Avro schema: {err}` |
 | B, JSON | The top level is an object with `"type": "object"` | `The top level of a JSON schema must have "type": "object".` |
 | B, JSON | `title` is present | `JSON schema needs a "title"; it becomes the schema name.` |
@@ -199,7 +199,8 @@ The Java checks run in a Maven container on the same network:
 cd integration/java
 docker run --rm --network validator-it_default -v "$PWD:/work" -v "$HOME/.m2:/root/.m2" -w /work \
   maven:3.9.9-eclipse-temurin-17 sh -c 'mvn -q -B package dependency:build-classpath -Dmdep.outputFile=target/cp.txt \
-  && java -cp target/classes:$(cat target/cp.txt) probe.Main && java -cp target/classes:$(cat target/cp.txt) probe.ProtoRefs'
+  && java -cp target/classes:$(cat target/cp.txt) probe.Main && java -cp target/classes:$(cat target/cp.txt) probe.ProtoRefs \
+  && java -cp target/classes:$(cat target/cp.txt) probe.Nested'
 ```
 
 The results of the last run are in [VERIFICATION.md](VERIFICATION.md).

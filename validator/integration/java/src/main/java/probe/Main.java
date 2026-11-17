@@ -60,7 +60,7 @@ public class Main {
     StringBuilder sb = new StringBuilder();
     for (; t != null; t = t.getCause()) sb.append(t.getClass().getSimpleName()).append(": ").append(t.getMessage()).append(" <- ");
     String s = sb.toString().replace("\n", " ");
-    return s.length() > 330 ? s.substring(0, 330) + "..." : s;
+    return s.length() > 330 && System.getenv("FULL") == null ? s.substring(0, 330) + "..." : s;
   }
 
   static byte[] attempt(String label, Ser s) {

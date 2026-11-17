@@ -84,8 +84,8 @@ def _external_refs(
     resolves against the enclosing namespace only: fastavro has no null-namespace
     fallback, so a schema relying on it does not parse in Python clients. A name
     defined inside a referenced schema (an enum nested in a referenced record) is an
-    error: the registry and Java resolve it, the Python serializer cannot load such a
-    schema. It still counts as a use of that reference, so D4 and D5 add nothing.
+    error: the registry resolves it, but neither the Python nor the Java serializer
+    can produce with such a schema. It still counts as a use of that reference, so D4 and D5 add nothing.
     """
     top_level, nested = _reference_names(referenced)
     refs: set[str] = set()

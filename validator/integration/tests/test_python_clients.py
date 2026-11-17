@@ -210,8 +210,8 @@ def test_python_client_cannot_use_a_type_nested_in_a_reference(
     ck_client: SchemaRegistryClient, register: Register, ns: str,
     fields: Callable[[str], list[dict[str, object]]],
 ) -> None:
-    # The enum Country is defined inside the referenced Address. The registry (and Java)
-    # accept a schema that uses <ns>.Country through the Address reference; the Python
+    # The enum Country is defined inside the referenced Address. The registry
+    # accepts a schema that uses <ns>.Country through the Address reference; the Python
     # serializer cannot load it, which is why `validate` rejects this shape
     # (AVRO_NESTED_IN_REFERENCE). If a client release fixes this, the test fails: revisit.
     address = f"{ns}.Address"

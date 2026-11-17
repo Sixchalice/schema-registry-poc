@@ -432,7 +432,7 @@ ADDRESS_WITH_COUNTRY = rec("Address", [field("street", "string"), field("country
     ],
 )
 def test_name_nested_in_a_reference_cannot_be_used(fields: list[dict[str, Any]]) -> None:
-    # The registry and Java resolve it, the Python serializer cannot load such a schema.
+    # The registry resolves it; the Python and Java serializers cannot produce with it.
     # The row still counts as used, so this is the only message.
     result = run(
         rec("Customer", fields, namespace="com.acme"),
