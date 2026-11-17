@@ -212,7 +212,8 @@ def test_python_client_cannot_use_a_type_nested_in_a_reference(
 ) -> None:
     # The enum Country is defined inside the referenced Address. The registry (and Java)
     # accept a schema that uses <ns>.Country through the Address reference; the Python
-    # serializer cannot load it. If a client release fixes this, the test fails: revisit.
+    # serializer cannot load it, which is why `validate` rejects this shape
+    # (AVRO_NESTED_IN_REFERENCE). If a client release fixes this, the test fails: revisit.
     address = f"{ns}.Address"
     registrar(register, address, json.dumps({"type": "record", "name": "Address", "namespace": ns, "fields": [
         {"name": "city", "type": "string"},

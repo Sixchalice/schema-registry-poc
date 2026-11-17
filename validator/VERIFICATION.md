@@ -3,7 +3,7 @@
 Checked on 2026-11-16 (the secured registry and the Avro namespace follow-up on 2026-11-17) against `confluentinc/cp-schema-registry:7.9.0` on `apache/kafka:3.8.1`, from `integration/docker-compose.yml`, with confluent-kafka-python 2.16.1 and the Confluent 7.9.0 Java serializers.
 
 ```
-.venv/bin/python -m pytest -q                                   # 563 passed
+.venv/bin/python -m pytest -q                                   # 566 passed
 .venv/bin/python -m pytest integration/tests -m integration -q  # 114 passed, none skipped
 ```
 
@@ -126,7 +126,7 @@ Added on 2026-11-17. Address references Country; a schema selects only the row f
 - The registry registers it with the one reference, and the Python `AvroSerializer` serializes and produces with it (`integration/tests/test_python_clients.py::test_avro_name_from_a_transitive_reference`).
 - Code change: such a use counts as a use of the row it was loaded for. Before, `validate` answered `Your schema uses '<ns>.Country' but no reference is selected for it.`
 
-**Open: a type nested inside a referenced schema does not work in Python clients.** With the enum `Country` defined inside the referenced `Address`, a schema that uses `<ns>.Country` registers (the registry and Java resolve it), and `validate` passes it, but the Python `AvroSerializer` (confluent-kafka-python 2.16.1) cannot load it: `redefined named type: <ns>.Country` when Address is used too, a `TypeError` when it is not. Pinned by `test_python_client_cannot_use_a_type_nested_in_a_reference`. Whether `validate` should reject this shape is an owner decision.
+**A type nested inside a referenced schema cannot be used from another schema.** With the enum `Country` defined inside the referenced `Address`, a schema that uses `<ns>.Country` registers (the registry and Java resolve it), but the Python `AvroSerializer` (confluent-kafka-python 2.16.1) cannot load it: `redefined named type: <ns>.Country` when Address is used too, a `TypeError` when it is not (`test_python_client_cannot_use_a_type_nested_in_a_reference`). Code change (owner decision, 2026-11-17, replacing OD3): `validate` rejects the use with `Type '<ns>.Country' is defined inside the Schema '<ns>.Address'. ...` (`test_validate_real_sr.py::test_avro_name_nested_in_a_reference`).
 
 ## Packaging
 
@@ -134,7 +134,7 @@ Added on 2026-11-17. Address references Country; a schema selects only the row f
 
 ## Coverage
 
-`coverage run --branch --source=schema_validator -m pytest -q` on 2026-11-17: 886 statements and 324 branches, all covered by the unit tests alone.
+`coverage run --branch --source=schema_validator -m pytest -q` on 2026-11-17: 890 statements and 320 branches, all covered by the unit tests alone.
 
 ## Not verified
 

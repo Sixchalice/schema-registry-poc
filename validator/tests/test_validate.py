@@ -300,12 +300,13 @@ ADDRESS_WITH_COUNTRY = json.dumps({"type": "record", "name": "Address", "namespa
     pytest.param([{"name": "country", "type": "com.acme.Country"}], id="nested-only"),
 ])
 def test_avro_name_nested_in_a_reference(fields: list[dict[str, Any]], sr: FakeSchemaRegistry, run: Callable) -> None:
+    # One message: no D4 for Country and no D5 for the Address row.
     sr.add("com.acme.Address", ADDRESS_WITH_COUNTRY)
     schema = json.dumps({"type": "record", "name": "Customer", "namespace": "com.acme", "fields": fields})
     request = req("AVRO", None, "com.acme.Customer", schema=schema, references=[address_row("AVRO")])
-    assert run(request, sr) == ValidationResult(True, "Warning", PINNED_ADDRESS)
-    assert compat_calls(sr) == [("check_compatibility", "com.acme.Customer", schema, "AVRO",
-                                 (SrReference("com.acme.Address", "com.acme.Address", 1),))]
+    assert run(request, sr) == ValidationResult(
+        False, "Error", messages.AVRO_NESTED_IN_REFERENCE.format(name="com.acme.Country", schema="com.acme.Address"))
+    assert compat_calls(sr) == []
 
 
 def test_avro_nested_null_namespace_type_is_an_error(sr: FakeSchemaRegistry, run: Callable) -> None:
@@ -375,8 +376,7 @@ def _transitive_avro(sr: FakeSchemaRegistry) -> None:
     pytest.param([{"name": "c", "type": "com.acme.Country"}], id="transitive-schema-only"),
     pytest.param([{"name": "a", "type": "com.acme.Address"}, {"name": "c", "type": "com.acme.Country"}],
                  id="row-and-transitive-schema"),
-    pytest.param([{"name": "code", "type": "com.acme.Code"}], id="name-nested-in-transitive-schema"),
-    pytest.param([{"name": "a", "type": "Address"}, {"name": "code", "type": "Code"}], id="unqualified"),
+    pytest.param([{"name": "a", "type": "Address"}, {"name": "c", "type": "Country"}], id="unqualified"),
 ])
 def test_avro_name_from_a_transitive_reference_is_provided_by_the_row(
     fields: list[dict[str, Any]], sr: FakeSchemaRegistry, run: Callable
@@ -389,6 +389,22 @@ def test_avro_name_from_a_transitive_reference_is_provided_by_the_row(
     assert run(request, sr) == ValidationResult(True, "Warning", PINNED_ADDRESS)
     assert compat_calls(sr) == [("check_compatibility", "com.acme.Customer", schema, "AVRO",
                                  (SrReference("com.acme.Address", "com.acme.Address", 1),))]
+
+
+@pytest.mark.parametrize("fields", [
+    pytest.param([{"name": "code", "type": "com.acme.Code"}], id="qualified"),
+    pytest.param([{"name": "a", "type": "Address"}, {"name": "code", "type": "Code"}], id="unqualified"),
+])
+def test_avro_name_nested_in_a_transitive_reference_cannot_be_used(
+    fields: list[dict[str, Any]], sr: FakeSchemaRegistry, run: Callable
+) -> None:
+    # Code is nested in Country, which only Address references. The message names Country.
+    _transitive_avro(sr)
+    schema = json.dumps({"type": "record", "name": "Customer", "namespace": "com.acme", "fields": fields})
+    request = req("AVRO", None, "com.acme.Customer", schema=schema, references=[address_row("AVRO")])
+    assert run(request, sr) == ValidationResult(
+        False, "Error", messages.AVRO_NESTED_IN_REFERENCE.format(name="com.acme.Code", schema="com.acme.Country"))
+    assert compat_calls(sr) == []
 
 
 def test_avro_transitive_name_with_its_own_row_uses_that_row(sr: FakeSchemaRegistry, run: Callable) -> None:

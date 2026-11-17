@@ -58,6 +58,10 @@ AVRO_NESTED_NAME = (
     "Type name '{name}' has an empty part around a dot. "
     "Use a plain name, for example \"Address\", or a full name, for example \"com.team.domain.Address\"."
 )
+AVRO_NESTED_IN_REFERENCE = (
+    "Type '{name}' is defined inside the Schema '{schema}'. A type nested in another Schema "
+    "cannot be used here. Move it to its own Schema and reference that."
+)
 AVRO_INVALID = "Invalid Avro schema: {err}"
 
 # JSON Schema (5.2)

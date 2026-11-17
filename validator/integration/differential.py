@@ -78,7 +78,6 @@ AVRO_SEEDS: list[tuple[dict[str, Any], bool]] = [
     ({"type": "record", "name": "Customer", "namespace": "NS", "fields": [
         {"name": "id", "type": "string"},
         {"name": "address", "type": "ADDR.Address"},
-        {"name": "country", "type": "ADDR.Country"},
         {"name": "others", "type": {"type": "array", "items": "ADDR.Address"}},
     ]}, True),
 ]

@@ -231,7 +231,9 @@ def test_avro_name_nested_in_a_reference(
     ns: str,
     uses_address: bool,
 ) -> None:
-    # The enum Country is defined inside Address: the row for Address provides it.
+    # The enum Country is defined inside Address. The registry accepts its use through the
+    # Address reference; the validator does not, because the Python serializer cannot load it
+    # (test_python_clients.py::test_python_client_cannot_use_a_type_nested_in_a_reference).
     subject = f"{ns}.Address"
     address_text = json.dumps({"type": "record", "name": "Address", "namespace": ns, "fields": [
         {"name": "city", "type": "string"},
@@ -244,7 +246,8 @@ def test_avro_name_nested_in_a_reference(
 
     result = validate(request(f"{ns}.Customer", "AVRO", text, [ReferenceInput(subject)]), client, config)
 
-    assert result == ValidationResult(True, "Warning", messages.PINNED_WARNING.format(list=f"{subject} v1"))
+    assert result == ValidationResult(
+        False, "Error", messages.AVRO_NESTED_IN_REFERENCE.format(name=f"{ns}.Country", schema=subject))
     status, body = register(f"{ns}.Customer", text, "AVRO", [{"name": subject, "subject": subject, "version": 1}])
     assert status == 200, body
 

@@ -431,12 +431,39 @@ ADDRESS_WITH_COUNTRY = rec("Address", [field("street", "string"), field("country
         pytest.param([field("country", "Country")], id="nested-unqualified"),
     ],
 )
-def test_name_nested_in_a_reference_is_provided_by_it(fields: list[dict[str, Any]]) -> None:
+def test_name_nested_in_a_reference_cannot_be_used(fields: list[dict[str, Any]]) -> None:
+    # The registry and Java resolve it, the Python serializer cannot load such a schema.
+    # The row still counts as used, so this is the only message.
     result = run(
         rec("Customer", fields, namespace="com.acme"),
         referenced={"com.acme.Address": json.dumps(ADDRESS_WITH_COUNTRY)},
     )
-    assert result == FormatAnalysis("com.acme.Customer", {"com.acme.Address"}, [])
+    assert result == FormatAnalysis("com.acme.Customer", {"com.acme.Address"}, [
+        "Type 'com.acme.Country' is defined inside the Schema 'com.acme.Address'. A type nested in another "
+        "Schema cannot be used here. Move it to its own Schema and reference that."
+    ])
+    assert result.errors == [
+        messages.AVRO_NESTED_IN_REFERENCE.format(name="com.acme.Country", schema="com.acme.Address")]
+
+
+def test_nested_name_used_twice_is_reported_once() -> None:
+    result = run(
+        rec("Customer", [field("a", "com.acme.Country"), field("b", ["null", "Country"])], namespace="com.acme"),
+        referenced={"com.acme.Address": json.dumps(ADDRESS_WITH_COUNTRY)},
+    )
+    assert len(result.errors) == 1
+
+
+def test_nested_names_are_reported_in_name_order() -> None:
+    address = rec("Address", [field("z", {"type": "fixed", "name": "Zip", "size": 4}), field("country", COUNTRY)],
+                  namespace="com.acme")
+    result = run(
+        rec("Customer", [field("z", "com.acme.Zip"), field("c", "com.acme.Country")], namespace="com.acme"),
+        referenced={"com.acme.Address": json.dumps(address)},
+    )
+    assert result.errors == [
+        messages.AVRO_NESTED_IN_REFERENCE.format(name=n, schema="com.acme.Address")
+        for n in ("com.acme.Country", "com.acme.Zip")]
 
 
 def test_nested_name_maps_to_the_reference_key() -> None:
@@ -446,7 +473,9 @@ def test_nested_name_maps_to_the_reference_key() -> None:
         referenced={"addr": json.dumps(ADDRESS_WITH_COUNTRY)},
     )
     assert result.external_refs == {"addr"}
-    assert result.errors == []
+    # The message names the referenced schema by its own name, not by the row's ref_string.
+    assert result.errors == [
+        messages.AVRO_NESTED_IN_REFERENCE.format(name="com.acme.Country", schema="com.acme.Address")]
 
 
 def test_nested_name_without_its_reference_is_external() -> None:
@@ -470,6 +499,7 @@ def test_local_definition_wins_over_a_reference() -> None:
         referenced={"com.acme.Address": json.dumps(ADDRESS_WITH_COUNTRY)},
     )
     assert result.external_refs == set()
+    assert result.errors == []
 
 
 @pytest.mark.parametrize("text", [
@@ -577,22 +607,22 @@ def test_unknown_type_the_walk_resolved_is_invalid(monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(avro.fastavro, "parse_schema", unknown)
     result = run(
-        rec("Customer", [field("country", "com.acme.Country")], namespace="com.acme"),
-        referenced={"com.acme.Address": json.dumps(ADDRESS_WITH_COUNTRY)},
+        rec("Customer", [field("addr", "com.acme.Address")], namespace="com.acme"),
+        referenced={"com.acme.Address": json.dumps(ADDRESS)},
     )
     assert result.external_refs == {"com.acme.Address"}
     assert result.errors == ["Invalid Avro schema: unknown type 'com.acme.Inner'"]
 
 
-def test_wrapped_use_of_a_name_nested_in_a_reference_names_the_type() -> None:
+def test_wrapped_use_of_a_referenced_name_names_the_type() -> None:
     # fastavro does not resolve {"type": "<name>"}; its UnknownType carries the wrapper.
     result = run(
-        rec("Customer", [field("country", {"type": "com.acme.Country"})], namespace="com.acme"),
-        referenced={"com.acme.Address": json.dumps(ADDRESS_WITH_COUNTRY)},
+        rec("Customer", [field("addr", {"type": "com.acme.Address"})], namespace="com.acme"),
+        referenced={"com.acme.Address": json.dumps(ADDRESS)},
     )
     assert result.errors == [
-        "Invalid Avro schema: write the type 'com.acme.Country' as a plain string, "
-        "not as {\"type\": \"com.acme.Country\"}"
+        "Invalid Avro schema: write the type 'com.acme.Address' as a plain string, "
+        "not as {\"type\": \"com.acme.Address\"}"
     ]
 
 

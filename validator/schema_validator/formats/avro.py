@@ -45,7 +45,8 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
     # Step 6
     defined, used, nested_errors = _names(schema, submitted=True)
     errors.extend(nested_errors)
-    external_refs, unresolved = _external_refs(defined, used, referenced)
+    external_refs, unresolved, nested_in_reference = _external_refs(defined, used, referenced)
+    errors.extend(nested_in_reference)
 
     # Step 7. With a nested-namespace error the walk and fastavro name that type
     # differently, so fastavro not finding a defined name is already explained.
@@ -75,34 +76,39 @@ def _full_name(name: str, namespace: str | None) -> str:
 
 def _external_refs(
     defined: set[str], used: set[str], referenced: dict[str, str]
-) -> tuple[set[str], set[str]]:
-    """The reference names the text needs, and the used names nothing defines.
+) -> tuple[set[str], set[str], list[str]]:
+    """The reference names the text needs, the used names nothing defines, and one
+    error for every used name that is nested inside a referenced schema.
 
     A used name the text does not define itself is external. An unqualified name
     resolves against the enclosing namespace only: fastavro has no null-namespace
     fallback, so a schema relying on it does not parse in Python clients. A name
-    defined inside a referenced schema (an enum nested in a referenced record) is
-    provided by that reference, so it is reported as the reference's key.
+    defined inside a referenced schema (an enum nested in a referenced record) is an
+    error: the registry and Java resolve it, the Python serializer cannot load such a
+    schema. It still counts as a use of that reference, so D4 and D5 add nothing.
     """
     top_level, nested = _reference_names(referenced)
     refs: set[str] = set()
     unresolved: set[str] = set()
-    for name in used - defined:
+    errors: list[str] = []
+    for name in sorted(used - defined):
         if name in top_level:
             refs.add(name)
         elif name in nested:
-            refs.add(nested[name])
+            key, owner = nested[name]
+            refs.add(key)
+            errors.append(messages.AVRO_NESTED_IN_REFERENCE.format(name=name, schema=owner))
         else:
             refs.add(name)
             unresolved.add(name)
-    return refs, unresolved
+    return refs, unresolved, errors
 
 
-def _reference_names(referenced: dict[str, str]) -> tuple[set[str], dict[str, str]]:
+def _reference_names(referenced: dict[str, str]) -> tuple[set[str], dict[str, tuple[str, str]]]:
     """The referenced texts' own (top-level) full names, and every other name they
-    define mapped to the key of the first text that defines it."""
+    define mapped to the first text that defines it: (its key, its own name or else its key)."""
     top_level: set[str] = set()
-    nested: dict[str, str] = {}
+    nested: dict[str, tuple[str, str]] = {}
     for key, text in referenced.items():
         try:
             root = json.loads(text)
@@ -114,7 +120,7 @@ def _reference_names(referenced: dict[str, str]) -> tuple[set[str], dict[str, st
             own = _full_name(root["name"], _own_namespace(root, None))
             top_level.add(own)
         for name in defined - {own}:
-            nested.setdefault(name, key)
+            nested.setdefault(name, (key, own or key))
     return top_level, nested
 
 

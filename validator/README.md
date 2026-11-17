@@ -92,7 +92,7 @@ The `HttpSchemaRegistryClient` takes its URL, credentials and timeout from the c
 | Field | Meaning |
 |---|---|
 | `schema_name` | The Schema deployment selected as the reference (its Schema Registry subject) |
-| `ref_string` | How the reference is written in the schema text. **JSON: required**, the `$ref` value without its `#fragment` (an empty string counts as missing). **AVRO: optional**, defaults to `schema_name` (the referenced record's full name) when missing or empty. A named type defined inside the referenced record (for example a nested enum) is covered by the same row, and so is a schema that the referenced record itself references. **PROTOBUF: ignored**, the import path is always derived from `schema_name` (see below) |
+| `ref_string` | How the reference is written in the schema text. **JSON: required**, the `$ref` value without its `#fragment` (an empty string counts as missing). **AVRO: optional**, defaults to `schema_name` (the referenced record's full name) when missing or empty. A schema that the referenced record itself references is covered by the same row. A type defined inside the referenced record (for example a nested enum) cannot be used from another schema; give it its own Schema. **PROTOBUF: ignored**, the import path is always derived from `schema_name` (see below) |
 
 Reference versions are not part of the request. The validator uses the latest version of each referenced subject and names it in a warning; the registration step looks the versions up again itself.
 
@@ -114,6 +114,7 @@ All errors are collected; a stage is skipped only when it depends on one that fa
 | B, Avro | The full name has a namespace, and no dot-separated part of it is empty (`.Order`, `com..Order`) | `Avro schema needs a namespace, for example "namespace": "com.team.domain".` |
 | B, Avro | Every named type nested in the schema has a namespace: none sets `"namespace"` to `""`, `null` or anything that is not a dotted name (a nested type without a `namespace` inherits the schema's) | `Type '{name}' needs a namespace. Remove its "namespace" entry so it uses the schema's namespace.` |
 | B, Avro | No nested type name has an empty part around a dot (`.Inner`, `Inner.`, `a..B`) | `Type name '{name}' has an empty part around a dot. Use a plain name, for example "Address", or a full name, for example "com.team.domain.Address".` |
+| B, Avro | No type is used that is defined inside a referenced schema (Python clients cannot load such a schema) | `Type '{name}' is defined inside the Schema '{schema}'. A type nested in another Schema cannot be used here. Move it to its own Schema and reference that.` |
 | B, Avro | fastavro parses the schema, with its references. A type must be defined before its first use, and a type name is written as a plain string, not as `{"type": "<name>"}` | `Invalid Avro schema: {err}` |
 | B, JSON | The top level is an object with `"type": "object"` | `The top level of a JSON schema must have "type": "object".` |
 | B, JSON | `title` is present | `JSON schema needs a "title"; it becomes the schema name.` |
