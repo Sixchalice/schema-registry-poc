@@ -87,8 +87,14 @@ def _validate(request: ValidationRequest, sr: SchemaRegistryClient, config: Vali
                 level_warning = messages.LEVEL_WARNING.format(
                     sr_level=level, compatibility=request.compatibility)
                 latest = sr.get_latest(name)
-                if latest is not None and not sr.is_registered(
-                        name, request.schema, schema_type, latest.references):
+                # "Unchanged" also needs the same reference names on the same subjects: the lookup
+                # uses the latest version's own references, which may point elsewhere than the rows.
+                # Versions are not compared (an accepted gap): references re-pinned to newer versions
+                # of the same subjects count as unchanged, and the new versions are not checked.
+                if latest is not None and (
+                        {(r.name, r.subject) for r in latest.references}
+                        != {(r.name, r.subject) for r in resolution.resolved}
+                        or not sr.is_registered(name, request.schema, schema_type, latest.references)):
                     return build_result([messages.LEVEL_AND_SCHEMA_CHANGED.format(
                         sr_level=level, compatibility=request.compatibility)], [])
         except _SR_FAILURES as err:
@@ -150,11 +156,17 @@ def _sr_failure(err: Exception) -> str:
     reason = invalid_schema_reason(text)
     if reason is not None:
         return _rejected(reason)
-    if text and "{" not in text:
-        return _rejected(text)
-    # No message, or one that embeds a structure (it may echo the schema or a header).
     code = getattr(err, "code", None)
+    if text and "{" not in text and _is_registry_code(code):
+        return _rejected(text)
+    # No message, one that embeds a structure (it may echo the schema or a header),
+    # or a code Schema Registry does not use (the body may come from a proxy).
     return messages.SR_REJECTED_CODE.format(code=code)
+
+
+def _is_registry_code(code: object) -> bool:
+    """Schema Registry's own error codes: 409, or five digits from 40000 to 49999."""
+    return code == 409 or (isinstance(code, int) and 40000 <= code <= 49999)
 
 
 def _rejected(reason: str) -> str:

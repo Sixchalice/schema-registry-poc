@@ -599,6 +599,29 @@ def test_sr_rejected_raw_body_is_never_shown(sr: FakeSchemaRegistry, run: Callab
     assert result == ValidationResult(False, "Error", "Schema Registry rejected the schema (error code 400).")
 
 
+@pytest.mark.parametrize("code, expected", [
+    (400, messages.SR_REJECTED_CODE.format(code=400)),
+    (422, messages.SR_REJECTED_CODE.format(code=422)),
+    (39999, messages.SR_REJECTED_CODE.format(code=39999)),
+    (50001, messages.SR_REJECTED_CODE.format(code=50001)),
+    (40000, "Schema Registry rejected the schema: plain words"),
+    (42201, "Schema Registry rejected the schema: plain words"),
+    (49999, "Schema Registry rejected the schema: plain words"),
+    (409, "Schema Registry rejected the schema: plain words"),
+])
+def test_sr_rejected_message_shown_only_with_a_registry_error_code(
+    code: int, expected: str, sr: FakeSchemaRegistry, run: Callable
+) -> None:
+    # Review F-L2: a 4xx whose error_code is not Schema Registry's may come from a proxy.
+    sr.fail_with = SchemaRegistryRejected("plain words", code)
+    assert run(req("AVRO", "order", "com.acme.Order"), sr) == ValidationResult(False, "Error", expected)
+
+
+def test_sr_rejected_details_reason_shown_whatever_the_code(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.fail_with = SchemaRegistryRejected("Invalid schema {..}, details: boom", 400)
+    assert run(req("AVRO", "order", "com.acme.Order"), sr).message == "Schema Registry rejected the schema: boom"
+
+
 def test_sr_rejected_structured_message_not_echoed(sr: FakeSchemaRegistry, run: Callable) -> None:
     sr.fail_with = SchemaRegistryRejected('Bad request {"headers":{"Authorization":"Basic xyz"}}', 42201)
     result = run(req("AVRO", "order", "com.acme.Order"), sr)
@@ -672,6 +695,16 @@ def test_import_mode_is_an_error(sr: FakeSchemaRegistry, run: Callable) -> None:
     sr.modes["com.acme.Order"] = "IMPORT"
     result = run(req("AVRO", "order", "com.acme.Order"), sr)
     assert result == ValidationResult(False, "Error", E5.format(mode="IMPORT"))
+
+
+def test_incompatible_and_readonly_gives_only_the_incompatibility(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.verdict = CompatibilityVerdict(False, tuple(AVRO))
+    sr.modes["com.acme.Order"] = "READONLY"
+    result = run(req("AVRO", "order", "com.acme.Order"), sr)
+    assert result == ValidationResult(False, "Error", (
+        "Not BACKWARD-compatible with version 1: The field 'zip' at path '/fields/1' "
+        "in the new schema has no default value and is missing in the old schema"))
+    assert "get_mode" not in call_names(sr)
 
 
 def test_mode_failure_maps_like_other_stage_e_calls(sr: FakeSchemaRegistry, run: Callable) -> None:
@@ -765,6 +798,33 @@ def test_lookup_uses_latest_versions_own_references(sr: FakeSchemaRegistry, run:
     assert lookup[4] == (old_ref,)
     check = next(c for c in sr.calls if c[0] == "check_compatibility")
     assert check[4] != (old_ref,)
+
+
+def test_level_change_with_repointed_reference_is_an_error(sr: FakeSchemaRegistry, run: Callable) -> None:
+    # Same text and ref_string, but the row now points at another Schema: the schema changed (review F-I2).
+    sr.add("com.acme.Address", load("JSON", "address"), "JSON")
+    sr.add("com.acme.Address2", load("JSON", "address").replace("com.acme.Address", "com.acme.Address2"), "JSON")
+    sr.add("com.acme.Customer", load("JSON", "customer"), "JSON",
+           references=[SrReference("address.json", "com.acme.Address", 1)])
+    sr.levels["com.acme.Customer"] = "NONE"
+    request = req("JSON", "customer", "com.acme.Customer",
+                  references=[ReferenceInput("com.acme.Address2", "address.json")],
+                  previous_name="com.acme.Customer", compatibility="FULL")
+    assert run(request, sr) == ValidationResult(False, "Error", messages.LEVEL_AND_SCHEMA_CHANGED.format(
+        sr_level="NONE", compatibility="FULL"))
+    assert "check_compatibility" not in call_names(sr)
+
+
+def test_level_change_with_the_same_reference_subjects_warns(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.add("com.acme.Address", load("JSON", "address"), "JSON")
+    sr.add("com.acme.Customer", load("JSON", "customer"), "JSON",
+           references=[SrReference("address.json", "com.acme.Address", 1)])
+    sr.levels["com.acme.Customer"] = "NONE"
+    request = req("JSON", "customer", "com.acme.Customer", references=[address_row("JSON")],
+                  previous_name="com.acme.Customer", compatibility="FULL")
+    result = run(request, sr)
+    assert result == ValidationResult(True, "Warning", PINNED_ADDRESS + "\n" + messages.LEVEL_WARNING.format(
+        sr_level="NONE", compatibility="FULL"))
 
 
 def test_no_registry_call_when_stages_a_to_d_have_errors(sr: FakeSchemaRegistry, run: Callable) -> None:
