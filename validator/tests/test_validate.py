@@ -767,15 +767,31 @@ def test_lookup_uses_latest_versions_own_references(sr: FakeSchemaRegistry, run:
     assert check[4] != (old_ref,)
 
 
+def test_no_registry_call_when_stages_a_to_d_have_errors(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.add("com.acme.Order", load("AVRO", "order"))
+    sr.levels["com.acme.Order"] = "NONE"
+    request = req("AVRO", "order", "com.acme.Wrong", previous_name="com.acme.Wrong", compatibility="FULL")
+    assert run(request, sr).validationType == "Error"
+    assert sr.calls == []
+
+
 @pytest.mark.parametrize("method", ["get_latest", "is_registered"])
+@pytest.mark.parametrize("error, expected", [
+    (SchemaRegistryUnavailable("x"), E3),
+    (SchemaRegistryUnauthorized("x"), E4),
+    (SchemaRegistryRejected("Invalid schema {..}, details: bad subject", 42201),
+     "Schema Registry rejected the schema: bad subject"),
+])
 def test_level_change_lookup_failure_is_an_error(
-    method: str, sr: FakeSchemaRegistry, run: Callable, monkeypatch: pytest.MonkeyPatch
+    method: str, error: Exception, expected: str,
+    sr: FakeSchemaRegistry, run: Callable, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     sr.add("com.acme.Order", load("AVRO", "order"))
     sr.levels["com.acme.Order"] = "NONE"
-    monkeypatch.setattr(sr, method, raiser(SchemaRegistryUnavailable("x")))
+    monkeypatch.setattr(sr, method, raiser(error))
     request = req("AVRO", "order", "com.acme.Order", previous_name="com.acme.Order", compatibility="FULL")
-    assert run(request, sr) == ValidationResult(False, "Error", E3)
+    assert run(request, sr) == ValidationResult(False, "Error", expected)
+    assert "check_compatibility" not in call_names(sr)
 
 
 @pytest.mark.parametrize("error, expected", [

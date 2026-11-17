@@ -329,6 +329,28 @@ def test_level_change_with_unchanged_schema_warns(
         True, "Warning", messages.LEVEL_WARNING.format(sr_level="NONE", compatibility="FULL"))
 
 
+def test_level_change_with_reformatted_unchanged_schema(
+    client: HttpSchemaRegistryClient,
+    config: ValidatorConfig,
+    register: Register,
+    set_subject_level: Callable[[str, str], Response],
+    ns: str,
+) -> None:
+    name = f"{ns}.Order"
+    assert set_subject_level(name, "NONE")[0] == 200
+    assert register(name, order("AVRO", ns))[0] == 200
+    parsed = json.loads(order("AVRO", ns))
+    reformatted = json.dumps(dict(reversed(parsed.items())), indent=4)
+    assert reformatted != order("AVRO", ns)
+
+    result = validate(request(name, "AVRO", reformatted, previous_name=name, compatibility="FULL"),
+                      client, config)
+
+    # The registry compares parsed schemas, so a reformatted text still counts as registered.
+    assert result == ValidationResult(
+        True, "Warning", messages.LEVEL_WARNING.format(sr_level="NONE", compatibility="FULL"))
+
+
 def test_readonly_subject_rejected(
     client: HttpSchemaRegistryClient,
     config: ValidatorConfig,

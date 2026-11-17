@@ -65,6 +65,7 @@ class FakeSchemaRegistry:
                       references: Sequence[SrReference]) -> bool:
         self.calls.append(("is_registered", subject, schema, schema_type, tuple(references)))
         self._check_fail()
+        # Exact text match; the real registry compares parsed schemas (covered by integration).
         return any(v.schema == schema and v.schema_type == schema_type
                    and tuple(v.references) == tuple(references)
                    for v in self._subjects.get(subject, []))
