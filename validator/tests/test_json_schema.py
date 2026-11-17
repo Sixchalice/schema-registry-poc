@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 import pytest
@@ -11,6 +12,7 @@ from schema_validator.models import DEFAULT_JSON_DRAFTS, FormatAnalysis, Validat
 from tests.fake_sr import FakeSchemaRegistry
 
 cfg = ValidatorConfig()
+D7 = "http://json-schema.org/draft-07/schema#"
 
 TITLE_MISSING = 'JSON schema needs a "title"; it becomes the schema name.'
 TITLE_FORMAT = (
@@ -25,12 +27,12 @@ def run(d: Any) -> FormatAnalysis:
 
 
 def schema(**extra: Any) -> dict[str, Any]:
-    return {"title": "com.acme.Order", "type": "object", **extra}
+    return {"$schema": D7, "title": "com.acme.Order", "type": "object", **extra}
 
 
 def test_valid() -> None:
     result = run(
-        {"title": "com.acme.Order", "type": "object", "properties": {"id": {"type": "string"}}}
+        {"$schema": D7, "title": "com.acme.Order", "type": "object", "properties": {"id": {"type": "string"}}}
     )
     assert result == FormatAnalysis(expected_name="com.acme.Order", external_refs=set(), errors=[])
 
@@ -51,7 +53,7 @@ def test_top_level_array() -> None:
 
 
 def test_missing_title() -> None:
-    result = run({"type": "object"})
+    result = run({"$schema": D7, "type": "object"})
     assert result.errors == [TITLE_MISSING]
     assert result.expected_name is None
 
@@ -70,7 +72,7 @@ def test_missing_title() -> None:
     ],
 )
 def test_bad_titles(title: str) -> None:
-    result = run({"title": title, "type": "object"})
+    result = run({"$schema": D7, "title": title, "type": "object"})
     assert result.errors == [TITLE_FORMAT]
     assert result.expected_name is None
 
@@ -105,13 +107,15 @@ def test_invalid_schema() -> None:
     assert "'nope' is not of type 'object'" in result.errors[0]
 
 
-def test_no_schema_keyword_uses_draft7() -> None:
+def test_missing_schema_keyword_is_an_error() -> None:
+    # Audit issue 3: the Python serializer reads it as 2020-12, Confluent as draft-07.
     d: dict[str, Any] = {
         "title": "a.B",
         "type": "object",
-        "properties": {"x": {"type": "array", "items": [{"type": "string"}]}},
+        "properties": {"t": {"type": "array", "items": [{"type": "string"}]}},
     }
-    assert run(d).errors == []
+    assert messages.JSON_SCHEMA_MISSING in run(d).errors
+    assert run(d).errors == [messages.JSON_SCHEMA_MISSING]  # the draft-07 meta-schema check still ran
 
     d["$schema"] = "https://json-schema.org/draft/2020-12/schema"
     errors = run(d).errors
@@ -202,7 +206,7 @@ def test_non_string_schema_keyword() -> None:
 
 def test_non_string_title() -> None:
     # The meta-schema check also rejects the title, so there are two messages.
-    result = run({"title": 5, "type": "object"})
+    result = run({"$schema": D7, "title": 5, "type": "object"})
     assert result.errors == [TITLE_MISSING, "Invalid JSON schema: 5 is not of type 'string'"]
     assert result.expected_name is None
 
@@ -222,7 +226,7 @@ def test_javatype_allowed() -> None:
 
 
 def test_several_errors() -> None:
-    result = run({"type": "array"})
+    result = run({"$schema": D7, "type": "array"})
     assert result.errors == [TITLE_MISSING, TOP_LEVEL]
 
 
@@ -247,14 +251,6 @@ def test_relative_ref_under_id_resolves_to_absolute() -> None:
     assert result.external_refs == {"https://acme.example/schemas/address.json"}
 
 
-def test_ref_to_internal_id_is_internal() -> None:
-    # J5
-    result = run(schema(**{"$id": "https://acme.example/o5.json",
-                           "definitions": {"x": {"$id": "https://acme.example/x.json", "type": "string"}},
-                           "properties": {"x": {"$ref": "https://acme.example/x.json"}}}))
-    assert result.external_refs == set()
-
-
 def test_ref_to_own_id_with_fragment_is_internal() -> None:
     # J5b
     result = run(schema(**{"$id": "https://acme.example/o5b.json",
@@ -263,23 +259,10 @@ def test_ref_to_own_id_with_fragment_is_internal() -> None:
     assert result.external_refs == set()
 
 
-def test_nested_id_moves_the_base() -> None:
-    result = run(schema(properties={"s": {"$id": "https://x/sub/", "properties": {"a": {"$ref": "a.json"}}}}))
-    assert result.external_refs == {"https://x/sub/a.json"}
-
-
-def test_fragment_id_keeps_the_base() -> None:
-    result = run(schema(**{"$id": "https://x/root.json",
-                           "properties": {"s": {"$id": "#foo", "properties": {"a": {"$ref": "a.json"}}}}}))
-    assert result.external_refs == {"https://x/a.json"}
-
-
-def test_fragment_id_without_root_id_keeps_the_empty_base() -> None:
-    sub = {"s": {"$id": "#foo", "properties": {"a": {"$ref": "a.json"}}}}
-    result = run(schema(**{"$schema": "http://json-schema.org/draft-07/schema#", "properties": sub}))
-    assert result.external_refs == {"a.json"}
-    # Without $schema the 2020-12 reading (the Python client's) also applies: urljoin("#foo", "a.json").
-    assert run(schema(properties=sub)).external_refs == {"a.json", "/a.json"}
+def test_fragment_only_root_id_keeps_the_empty_base() -> None:
+    result = run(schema(**{"$id": "#foo", "properties": {"a": {"$ref": "#/definitions/x"},
+                                                         "b": {"$ref": "address.json"}}}))
+    assert result.external_refs == {"address.json"}
 
 
 def test_non_string_id_is_ignored() -> None:
@@ -311,8 +294,6 @@ def test_malformed_id_is_an_error() -> None:
     bad = "Invalid JSON schema: the $id 'http://[x' is not a valid URI"
     root = run(schema(**{"$id": "http://[x", "properties": {"a": {"$ref": "a.json"}}}))
     assert root.errors == [bad] and root.external_refs is None
-    nested = run(schema(properties={"s": {"$id": "http://[x"}}))
-    assert nested.errors == [bad] and nested.external_refs is None
     draft04 = run(schema(**{"$schema": "http://json-schema.org/draft-04/schema#", "id": "http://[x"}))
     assert draft04.errors == [bad.replace("$id", "id")] and draft04.external_refs is None
 
@@ -325,96 +306,136 @@ def test_malformed_ref_is_an_error() -> None:
 
 ROOT = "https://acme.example/o.json"
 A = "https://acme.example/a.json"
-DRAFT_07 = "http://json-schema.org/draft-07/schema#"
-# Audit-fix review F-I1: an $id the Python client (`referencing`) does not register is not internal.
-UNREGISTERED_ID_SHAPES = {
-    "defs-in-draft-07": schema(**{"$schema": DRAFT_07, "$id": ROOT,
-                                  "$defs": {"A": {"$id": A, "type": "string"}},
-                                  "properties": {"p": {"$ref": A}}}),
-    "unknown-keyword": schema(**{"$id": ROOT, "x-defs": {"A": {"$id": A, "type": "string"}},
-                                 "properties": {"p": {"$ref": A}}}),
-    "id-beside-ref-draft-07": schema(**{"$schema": DRAFT_07, "$id": ROOT,
-                                        "properties": {"p": {"$id": "https://acme.example/sub/", "$ref": "a.json"}}}),
+DRAFT_07 = D7
+DRAFT_04 = "http://json-schema.org/draft-04/schema#"
+DRAFT_2020 = "https://json-schema.org/draft/2020-12/schema"
+
+
+def nested_id(paths: str, kw: str = "$id") -> str:
+    return messages.JSON_NESTED_ID.format(kw=kw, paths=paths)
+
+
+# Shapes whose nested "$id" the Python client does not register, or reads differently: all rule A now.
+NESTED_ID_SHAPES = {
+    "defs-in-draft-07": (schema(**{"$id": ROOT, "$defs": {"A": {"$id": A, "type": "string"}},
+                                   "properties": {"p": {"$ref": A}}}), "/$defs/A"),
+    "unknown-keyword": (schema(**{"$id": ROOT, "x-defs": {"A": {"$id": A, "type": "string"}},
+                                  "properties": {"p": {"$ref": A}}}), "/x-defs/A"),
+    "id-beside-ref-draft-07": (schema(**{"$id": ROOT, "properties": {
+        "p": {"$id": "https://acme.example/sub/", "$ref": "a.json"}}}), "/properties/p"),
+    "id-beside-ref-2020-12": (schema(**{"$schema": DRAFT_2020, "$id": ROOT, "properties": {
+        "p": {"$id": "https://acme.example/sub/", "$ref": "a.json"}}}), "/properties/p"),
+    "id-with-fragment": (schema(**{"$id": ROOT, "definitions": {"x": {"$id": A + "#frag"}},
+                                   "properties": {"p": {"$ref": A}}}), "/definitions/x"),
+    "id-under-nested-schema": (schema(**{"$schema": DRAFT_2020, "$id": ROOT, "properties": {
+        "s": {"$schema": D7, "properties": {"t": {"$id": "t.json"}}}}}), "/properties/s/properties/t"),
 }
 
 
-@pytest.mark.parametrize("shape", UNREGISTERED_ID_SHAPES)
-def test_id_the_client_does_not_register_is_external(shape: str) -> None:
-    result = run(UNREGISTERED_ID_SHAPES[shape])
-    assert result.errors == []
-    assert result.external_refs == {A}
+@pytest.mark.parametrize("shape", NESTED_ID_SHAPES)
+def test_nested_id_shapes_are_rule_errors(shape: str) -> None:
+    d, path = NESTED_ID_SHAPES[shape]
+    result = run(d)
+    assert nested_id(f"'{path}'") in result.errors
+    assert result.external_refs is None
 
 
-@pytest.mark.parametrize("shape", UNREGISTERED_ID_SHAPES)
-def test_id_the_client_does_not_register_needs_a_reference(shape: str) -> None:
+@pytest.mark.parametrize("shape", NESTED_ID_SHAPES)
+def test_nested_id_shapes_fail_validate_without_the_registry(shape: str) -> None:
     request = ValidationRequest(name="com.acme.Order", schema_type="JSON",
-                                schema=json.dumps(UNREGISTERED_ID_SHAPES[shape]), compatibility="BACKWARD",
+                                schema=json.dumps(NESTED_ID_SHAPES[shape][0]), compatibility="BACKWARD",
                                 references=[], previous_name=None, existing_names=[])
     sr = FakeSchemaRegistry()
-    assert validate(request, sr, cfg) == ValidationResult(False, "Error", messages.REF_MISSING_ROW.format(x=A))
+    result = validate(request, sr, cfg)
+    assert result.validationType == "Error" and not result.valid
     assert sr.calls == []
 
 
-def test_id_beside_ref_moves_the_base_from_2019_09() -> None:
-    result = run(schema(**{"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": ROOT,
-                           "properties": {"p": {"$id": "https://acme.example/sub/", "$ref": "a.json"}}}))
-    assert result.external_refs == {"https://acme.example/sub/a.json"}
+def test_nested_schema_keyword_is_an_error() -> None:
+    # Audit issue 2: the registry reads "$schema" by the draft above it; the Python client by its own.
+    result = run(schema(**{"$schema": DRAFT_2020, "$id": ROOT,
+                           "properties": {"p": {"$schema": D7, "properties": {
+                               "t": {"$id": "https://acme.example/sub/", "$ref": "a.json"}}}}}))
+    assert result.errors == [nested_id("'/properties/p/properties/t'"),
+                             messages.JSON_NESTED_SCHEMA.format(paths="'/properties/p'")]
+    assert result.external_refs is None
 
 
-def test_without_schema_keyword_both_readings_need_a_reference() -> None:
-    # Confluent reads such a schema as draft-07; the Python client's validator class is 2020-12.
-    result = run(schema(**{"$id": ROOT, "properties": {"p": {"$id": "https://acme.example/sub/", "$ref": "a.json"}}}))
-    assert result.external_refs == {A, "https://acme.example/sub/a.json"}
-    assert run(schema(**{"$id": ROOT, "$defs": {"A": {"$id": A}}, "properties": {"p": {"$ref": A}}})).external_refs \
-        == {A}
+def test_nested_id_under_unknown_keyword_is_an_error() -> None:
+    result = run(schema(**{"$id": ROOT, "x-defs": {"A": {"$id": A, "type": "string"}}}))
+    assert result.errors == [nested_id("'/x-defs/A'")]
 
 
-def test_base_under_an_unknown_keyword_depends_on_how_the_ref_is_reached() -> None:
-    # Through "#/x-defs/A" the client applies q's $id; through a pointer straight to r it does not.
-    result = run(schema(**{"$id": "https://x/root.json",
-                           "x-defs": {"A": {"properties": {"q": {"$id": "https://y/",
-                                                                 "properties": {"r": {"$ref": "b.json"}}}}}}}))
-    assert result.external_refs == {"https://x/b.json", "https://y/b.json"}
+def test_long_nested_id_chain_is_one_error_and_fast() -> None:
+    # 2,000 siblings and a 100-level chain: a deep chain cannot even be parsed, so this is the widest case.
+    siblings = {f"d{n}": {"$id": f"d{n}/", "x": 1} for n in range(2000)}
+    chain: dict[str, Any] = {"$ref": "leaf.json"}
+    for n in range(100):
+        chain = {"$id": f"c{n}/", "x": chain}
+    d = schema(**{"x-defs": siblings, "x-chain": chain})
+    total = 2000 + 100
+    start = time.perf_counter()
+    result = run(d)
+    assert time.perf_counter() - start < 1
+    assert len(result.errors) == 1
+    assert result.errors[0].startswith("Only the top level of a JSON schema may have \"$id\". Remove it from '/")
+    assert f"' and {total - 3} more." in result.errors[0]
+    assert result.external_refs is None
 
 
-def test_same_document_ref_under_an_unregistered_id_is_external() -> None:
-    result = run(schema(**{"$schema": DRAFT_07, "$id": ROOT,
-                           "x-defs": {"A": {"properties": {"q": {"$id": "https://y/", "$ref": "#/definitions/z"},
-                                                           "r": {"$id": "https://z/",
-                                                                 "items": {"$ref": "#/definitions/z"}}}}}}))
-    # q's $id is ignored beside its $ref, so its ref stays in the document; r's $id is not registered.
-    assert result.external_refs == {"https://z/"}
+def test_more_than_three_paths_are_summarised() -> None:
+    d = schema(**{"x-defs": {f"n{i}": {"$id": f"n{i}/"} for i in (4, 1, 3, 0, 2)}})
+    assert run(d).errors == [nested_id("'/x-defs/n0', '/x-defs/n1', '/x-defs/n2' and 2 more")]
 
 
-def test_id_under_a_nested_schema_keyword_is_not_internal() -> None:
-    # referencing reads a subschema with its own $schema by that draft, which can drop the $id.
-    result = run(schema(**{"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": ROOT,
-                           "properties": {"s": {"$schema": DRAFT_07, "$id": A, "$ref": "#/$defs/z",
-                                                "properties": {"t": {"$id": "t.json"}}},
-                                          "u": {"$ref": A}, "v": {"$ref": "https://acme.example/t.json"}},
-                           "$defs": {"z": {"type": "string"}}}))
-    assert result.external_refs == {A, "https://acme.example/t.json"}
+def test_paths_are_json_pointers() -> None:
+    d = schema(**{"x-defs": {"a/b": {"$id": "x/"}, "c~d": {"$id": "y/"}}, "allOf": [{"$id": "z/"}]})
+    assert run(d).errors == [nested_id("'/allOf/0', '/x-defs/a~1b', '/x-defs/c~0d'")]
 
 
-def test_id_with_a_fragment_is_registered_with_it() -> None:
-    # Draft-07 keeps the fragment of a subschema $id, and lookups drop the fragment of the $ref.
-    result = run(schema(**{"$schema": DRAFT_07, "$id": ROOT,
-                           "definitions": {"x": {"$id": A + "#frag", "type": "string"}},
-                           "properties": {"p": {"$ref": A}}}))
-    assert result.external_refs == {A}
+def test_root_id_beside_root_ref_in_draft07_is_an_error() -> None:
+    d = schema(**{"$id": ROOT, "$ref": "#/definitions/O", "definitions": {"O": {"type": "object"}}})
+    assert run(d).errors == [messages.JSON_ROOT_ID_WITH_REF.format(kw="$id")]
+    assert run(d).external_refs is None
+    assert run({**d, "$schema": DRAFT_2020}).errors == []
+    d04 = {**d, "$schema": DRAFT_04, "id": ROOT}
+    assert run(d04).errors == [messages.JSON_ROOT_ID_WITH_REF.format(kw="id")]
 
 
-def test_keyword_of_the_wrong_type_for_one_reading_does_not_raise() -> None:
-    # Without $schema, "$defs": 5 is fine in draft-07 and wrong in 2020-12.
-    assert run(schema(**{"$defs": 5, "properties": {"p": {"$ref": "a.json"}}})) == FormatAnalysis(
-        "com.acme.Order", {"a.json"}, [])
-
-
-def test_id_in_data_or_as_a_property_name_does_not_move_the_base() -> None:
+def test_keyword_names_as_property_names_or_data_are_not_flagged() -> None:
     result = run(schema(**{
-        "$id": "https://x/root.json",
-        "properties": {"$id": {"type": "string"}, "a": {"$ref": "a.json"}},
-        "default": {"$id": "https://other/"}, "const": {"$id": "https://other/"},
-        "enum": [{"$id": "https://other/"}], "examples": [{"$id": "https://other/"}],
+        "properties": {"$id": {"type": "string"}, "id": {"type": "string"}, "$schema": {"type": "string"}},
+        "default": {"$id": "x", "$schema": "y"}, "const": {"$id": "x", "$schema": "y"},
+        "enum": [{"$id": "x", "$schema": "y"}], "examples": [{"$id": "x", "$schema": "y"}],
     }))
-    assert result.external_refs == {"https://x/a.json"}
+    assert result.errors == []
+    assert result.external_refs == set()
+
+
+def test_only_the_drafts_own_id_keyword_is_flagged() -> None:
+    nested = {"properties": {"p": {"type": "string", "$id": "x/"}}}
+    assert run(schema(**{"$schema": DRAFT_04, **nested})).errors == []
+    assert run(schema(**{"$schema": DRAFT_04, "properties": {"p": {"id": "x/"}}})).errors == [
+        nested_id("'/properties/p'", "id")]
+    assert run(schema(**{"properties": {"p": {"id": "x/"}}})).errors == []
+
+
+def test_rule_errors_skip_reference_checks() -> None:
+    nested = run(schema(properties={"p": {"$id": "x/"}, "q": {"$ref": "other.json"}}))
+    assert nested.external_refs is None
+    missing = run({"title": "a.B", "type": "object", "properties": {"q": {"$ref": "other.json"}}})
+    assert missing.errors == [messages.JSON_SCHEMA_MISSING]
+    assert missing.external_refs == {"other.json"}
+
+
+def test_rules_with_an_unusable_schema_keyword_use_dollar_id() -> None:
+    # JSON_DRAFT is reported; the id keyword is "$id" and rule D is skipped.
+    d = schema(**{"$schema": 7, "$id": ROOT, "$ref": "#/x", "properties": {"p": {"$id": "x/"}}})
+    assert run(d).errors == ["Unsupported JSON Schema draft '7'.", nested_id("'/properties/p'")]
+
+
+def test_ref_under_id_and_absolute_ids() -> None:
+    # A ref to the root's own document is internal, with or without a fragment; an absolute root resolves.
+    result = run(schema(**{"$id": ROOT + "#", "properties": {"a": {"$ref": ROOT}, "b": {"$ref": "#/x"},
+                                                           "c": {"$ref": "b.json#/y"}, "d": {"$ref": ""}}}))
+    assert result.external_refs == {"https://acme.example/b.json"}

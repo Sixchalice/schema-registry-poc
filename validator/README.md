@@ -92,7 +92,7 @@ The `HttpSchemaRegistryClient` takes its URL, credentials and timeout from the c
 | Field | Meaning |
 |---|---|
 | `schema_name` | The Schema deployment selected as the reference (its Schema Registry subject) |
-| `ref_string` | How the reference is written in the schema text. **JSON: required**, the `$ref` value without its `#fragment` (an empty string counts as missing). Under an `$id` it is the absolute URI the `$ref` resolves to, as the Python serializer resolves it. A `$ref` to an `$id` that the serializer does not register needs a row too: an `$id` under a keyword the draft does not know (such as `$defs` in draft-07, or `x-defs`), or next to a `$ref` in draft-07 and earlier. **AVRO: optional**, leave it empty or write `schema_name` (the referenced record's full name); any other text is rejected. A schema that the referenced record itself references is covered by the same row. A type defined inside the referenced record (for example a nested enum) cannot be used from another schema; give it its own Schema. **PROTOBUF: ignored**, the import path is always derived from `schema_name` (see below) |
+| `ref_string` | How the reference is written in the schema text. **JSON: required**, the `$ref` value without its `#fragment` (an empty string counts as missing). Under a top-level `$id` it is the absolute URI the `$ref` resolves to, as the Python serializer resolves it (a nested `$id` is not allowed). **AVRO: optional**, leave it empty or write `schema_name` (the referenced record's full name); any other text is rejected. A schema that the referenced record itself references is covered by the same row. A type defined inside the referenced record (for example a nested enum) cannot be used from another schema; give it its own Schema. **PROTOBUF: ignored**, the import path is always derived from `schema_name` (see below) |
 
 Reference versions are not part of the request. The validator uses the latest version of each referenced subject and names it in a warning; the registration step looks the versions up again itself.
 
@@ -119,9 +119,13 @@ All errors are collected; a stage is skipped only when it depends on one that fa
 | B, JSON | The top level is an object with `"type": "object"` | `The top level of a JSON schema must have "type": "object".` |
 | B, JSON | `title` is present | `JSON schema needs a "title"; it becomes the schema name.` |
 | B, JSON | `title` matches `^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$` | `The "title" must be a dotted name made of letters, digits and underscores, for example "com.team.domain.Order".` |
-| B, JSON | `$schema`, if present, is in `allowed_json_drafts` | `Unsupported JSON Schema draft '{x}'.` |
+| B, JSON | `$schema` is present | `JSON schema needs a "$schema", for example "$schema": "http://json-schema.org/draft-07/schema#".` |
+| B, JSON | `$schema` is in `allowed_json_drafts` | `Unsupported JSON Schema draft '{x}'.` |
 | B, JSON | The schema passes its draft's meta-schema (draft-07 when `$schema` is absent) | `Invalid JSON schema: {err}` |
 | B, JSON | The schema is not nested so deeply that the meta-schema check overflows the stack | `JSON schema is nested too deeply.` |
+| B, JSON | In draft-04, -06 and -07 the top level does not have both `$ref` and `$id` (`id` in draft-04) | `In draft-07 and earlier, a "$ref" at the top level makes the "{kw}" next to it ignored. Move the "$ref" into "allOf".` |
+| B, JSON | No nested object has `$id` (`id` in draft-04); `{paths}` are up to 3 JSON Pointers, then `and {n} more` | `Only the top level of a JSON schema may have "{kw}". Remove it from {paths}. A type that needs its own "{kw}" belongs in its own Schema, referenced with "$ref".` |
+| B, JSON | No nested object has `$schema` | `Only the top level of a JSON schema may have "$schema". Remove it from {paths}. A JSON schema uses one draft.` |
 | B, Protobuf | Every reference's import path (derived, or read from Schema Registry) is not empty, is relative, has no `..` path segment, contains no backslash or NUL character, and can be written (it does not collide with `__main__.proto` or another reference's directory) | `Invalid import path '{x}'.` |
 | B, Protobuf | protoc compiles the schema with its references | `Invalid Protobuf schema: {err}` / `Invalid Protobuf schema: the Protobuf compiler did not finish in 10 seconds.` |
 | B, Protobuf | `package` is set | `Protobuf schema needs a package, for example "package com.team.domain;".` |

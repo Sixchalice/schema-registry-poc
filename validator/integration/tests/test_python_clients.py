@@ -33,9 +33,11 @@ from confluent_kafka.schema_registry.avro import AvroDeserializer, AvroSerialize
 from confluent_kafka.schema_registry.json_schema import JSONSerializer
 from confluent_kafka.schema_registry.protobuf import ProtobufSerializer
 from confluent_kafka.serialization import MessageField, SerializationContext
+from jsonschema.exceptions import SchemaError
 from jsonschema.validators import Draft202012Validator, validator_for
 
 from schema_validator import (
+    messages,
     HttpSchemaRegistryClient,
     ReferenceInput,
     ValidationRequest,
@@ -400,36 +402,76 @@ def test_json_id_absolute_ref_string_works(
         serializer({"a": {"street": 1}}, CTX)
 
 
-def test_json_internal_id_ref_works(
-    ck_client: SchemaRegistryClient, register: Register, producer: Producer, config: ValidatorConfig, ns: str,
+def test_json_nested_id_is_rejected(
+    ck_client: SchemaRegistryClient, register: Register, config: ValidatorConfig, ns: str,
 ) -> None:
+    # A nested $id was once treated as internal. Only the top level may have one now.
     schema = json.dumps({"$schema": DRAFT_07, "$id": "https://acme.example/o5.json", "title": f"{ns}.O5",
                          "type": "object",
                          "definitions": {"x": {"$id": "https://acme.example/x.json", "type": "string"}},
                          "properties": {"x": {"$ref": "https://acme.example/x.json"}}})
     result = validated(f"{ns}.O5", schema, config, [])
-    assert result.validationType == "Ok", result.message
-    check_client(JSONSerializer(schema, ck_client, conf=CONF), {"x": "ok"}, f"{ns}.O5",
-                 registrar(register, f"{ns}.O5", schema, "JSON"), producer)
+    assert result.validationType == "Error"
+    assert result.message == messages.JSON_NESTED_ID.format(kw="$id", paths="'/definitions/x'")
 
 
-def test_json_id_under_a_keyword_the_draft_does_not_know_is_external(
+def test_json_id_under_a_keyword_the_draft_does_not_know_is_rejected(
     ck_client: SchemaRegistryClient, register: Register, config: ValidatorConfig, ns: str,
 ) -> None:
-    # Audit-fix review F-I1: draft-07 has "definitions", not "$defs", so the Python client
-    # (referencing) never registers the $id under "$defs" and cannot resolve a $ref to it.
+    # Draft-07 has "definitions", not "$defs", so the Python client (referencing) never registers
+    # the $id under "$defs" and cannot resolve a $ref to it. The validator rejects the nested $id.
     target = "https://acme.example/a.json"
     schema = json.dumps({"$schema": DRAFT_07, "$id": "https://acme.example/o.json", "title": f"{ns}.OD",
                          "type": "object", "$defs": {"A": {"$id": target, "type": "string"}},
                          "properties": {"p": {"$ref": target}}})
     result = validated(f"{ns}.OD", schema, config, [])
     assert result.validationType == "Error"
-    assert result.message == f"Your schema uses '{target}' but no reference is selected for it."
+    assert result.message == messages.JSON_NESTED_ID.format(kw="$id", paths="'/$defs/A'")
 
     # The registry accepts the schema; the serializer cannot use it.
     registrar(register, f"{ns}.OD", schema, "JSON")()
     with pytest.raises(Exception, match=f"Unresolvable: {re.escape(target)}"):
         JSONSerializer(schema, ck_client, conf=CONF)({"p": "x"}, CTX)
+
+
+def test_json_without_schema_keyword_is_rejected(
+    ck_client: SchemaRegistryClient, register: Register, config: ValidatorConfig, ns: str,
+) -> None:
+    # Audit issue 3: Confluent reads it as draft-07, the Python serializer as 2020-12, where the
+    # array form of "items" is not a schema.
+    schema = json.dumps({"title": f"{ns}.NoDraft", "type": "object",
+                         "properties": {"t": {"type": "array", "items": [{"type": "string"}]}}})
+    result = validated(f"{ns}.NoDraft", schema, config, [])
+    assert result.validationType == "Error"
+    assert result.message == messages.JSON_SCHEMA_MISSING
+
+    registrar(register, f"{ns}.NoDraft", schema, "JSON")()
+    with pytest.raises(SchemaError):
+        JSONSerializer(schema, ck_client, conf=CONF)({"t": ["a"]}, CTX)
+
+
+def test_json_nested_schema_keyword_is_rejected(
+    ck_client: SchemaRegistryClient, register: Register, config: ValidatorConfig, ns: str,
+) -> None:
+    # Audit issue 2: the nested $schema moves the Python client to draft-07 for that subtree,
+    # where the nested $id beside a $ref is ignored, so "a.json" is looked up under the root's $id.
+    address = register_address(register, ns)
+    schema = json.dumps({
+        "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://acme.example/o.json",
+        "title": f"{ns}.Nested", "type": "object",
+        "properties": {"p": {"$schema": DRAFT_07, "properties": {
+            "t": {"$id": "https://acme.example/sub/", "$ref": "a.json"}}}}})
+    result = validated(f"{ns}.Nested", schema, config, [ReferenceInput(address, "https://acme.example/sub/a.json")])
+    assert result.validationType == "Error"
+    assert result.message == (
+        messages.JSON_NESTED_ID.format(kw="$id", paths="'/properties/p/properties/t'") + "\n"
+        + messages.JSON_NESTED_SCHEMA.format(paths="'/properties/p'"))
+
+    refs = [{"name": "https://acme.example/sub/a.json", "subject": address, "version": 1}]
+    registrar(register, f"{ns}.Nested", schema, "JSON", refs)()
+    serializer = JSONSerializer(Schema(schema, "JSON", [SchemaReference(**refs[0])]), ck_client, conf=CONF)
+    with pytest.raises(Exception, match="Unresolvable"):
+        serializer({"p": {"t": {"street": "x"}}}, CTX)
 
 
 def test_python_client_reads_https_draft07_as_2020_12(config: ValidatorConfig, ns: str) -> None:

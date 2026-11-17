@@ -84,6 +84,21 @@ JSON_TITLE_FORMAT = (
 JSON_TOP_LEVEL = "The top level of a JSON schema must have \"type\": \"object\"."
 JSON_DRAFT = "Unsupported JSON Schema draft '{x}'."
 JSON_INVALID = "Invalid JSON schema: {err}"
+JSON_SCHEMA_MISSING = (
+    'JSON schema needs a "$schema", for example "$schema": "http://json-schema.org/draft-07/schema#".'
+)
+JSON_NESTED_ID = (
+    'Only the top level of a JSON schema may have "{kw}". Remove it from {paths}. '
+    'A type that needs its own "{kw}" belongs in its own Schema, referenced with "$ref".'
+)
+JSON_NESTED_SCHEMA = (
+    'Only the top level of a JSON schema may have "$schema". Remove it from {paths}. '
+    'A JSON schema uses one draft.'
+)
+JSON_ROOT_ID_WITH_REF = (
+    'In draft-07 and earlier, a "$ref" at the top level makes the "{kw}" next to it ignored. '
+    'Move the "$ref" into "allOf".'
+)
 JSON_TOO_DEEP = "JSON schema is nested too deeply."
 
 # Protobuf (5.3)

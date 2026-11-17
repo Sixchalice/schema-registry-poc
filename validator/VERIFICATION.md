@@ -247,9 +247,19 @@ Re-run of the reviewer's scripts against this code (the Java parts of the script
 
 ## Whole-branch review fixes, 2026-11-17
 
-- F-I1, JSON `$id` false pass. Observed with the Python serializer (confluent-kafka 2.16.1, jsonschema 4.26.0, referencing 0.37.0): under a root `$id` of `https://acme.example/o.json`, a `$ref` to `https://acme.example/a.json` defined by an `$id` under draft-07 `$defs`, or under an unknown keyword such as `x-defs`, fails with `Unresolvable`, and in draft-07 an `$id` next to a `$ref` is ignored (the `$ref` resolves against the parent's base). `validate` had passed all three. Also observed: without `$schema` the serializer uses a 2020-12 validator, where an `$id` next to a `$ref` does move the base; below an unknown keyword the base depends on whether a pointer reaches the `$ref` directly or descends to it; and a subtree with its own `$schema` is registered by that draft. Code changed: the external refs follow `referencing` (spec 5.2 step 8). Pinned by the F2 row's review tests and (int) `test_json_id_under_a_keyword_the_draft_does_not_know_is_external`.
+- F-I1, JSON `$id` false pass. Observed with the Python serializer (confluent-kafka 2.16.1, jsonschema 4.26.0, referencing 0.37.0): under a root `$id` of `https://acme.example/o.json`, a `$ref` to `https://acme.example/a.json` defined by an `$id` under draft-07 `$defs`, or under an unknown keyword such as `x-defs`, fails with `Unresolvable`, and in draft-07 an `$id` next to a `$ref` is ignored (the `$ref` resolves against the parent's base). `validate` had passed all three. Also observed: without `$schema` the serializer uses a 2020-12 validator, where an `$id` next to a `$ref` does move the base; below an unknown keyword the base depends on whether a pointer reaches the `$ref` directly or descends to it; and a subtree with its own `$schema` is registered by that draft. Code changed: the external refs follow `referencing` (spec 5.2 step 8). Pinned by the F2 row's review tests and (int) `test_json_id_under_a_keyword_the_draft_does_not_know_is_external` (since replaced, see the JSON rules entry below).
 - F-I2, E6 ignored the subjects of the references. Code changed: see "Level change and schema change in one save".
 - F-L2, a rejection's message is shown only with Schema Registry's own error codes. See "No raw registry bodies".
+
+## JSON `$id` and `$schema` rules, 2026-11-17
+
+The resolver that mirrored `referencing` gave way to rules, because it took 90 s and 438 MB on a 277 KB chain of nested `$id`s and still passed a nested `$schema`. Only the top level may have `$id` (`id` in draft-04) or `$schema`; `$schema` is required; and in draft-07 and earlier the top level may not have an id beside a `$ref`. Observed with confluent-kafka 2.16.1, jsonschema 4.26.0 and referencing 0.37.0:
+
+1. A schema without `$schema` and `"items": [{"type": "string"}]`: the registry takes it as draft-07; `JSONSerializer` fails with `SchemaError`, because it uses 2020-12. Pinned by `test_missing_schema_keyword_is_an_error`; (int) `test_json_without_schema_keyword_is_rejected`.
+2. A 2020-12 root with `$id` `https://acme.example/o.json`, a subschema with its own draft-07 `$schema`, and below it `{"$id": "https://acme.example/sub/", "$ref": "a.json"}`: the nested `$schema` moves the client to draft-07 for that subtree, the `$id` beside the `$ref` is ignored, and the serializer fails with `Unresolvable` even with a row named `https://acme.example/sub/a.json`. Pinned by `test_nested_schema_keyword_is_an_error`; (int) `test_json_nested_schema_keyword_is_rejected`.
+3. A draft-07 `$ref` to an `$id` under `$defs` or `x-defs`: the serializer fails with `Unresolvable`, the registry accepts it. Pinned by `test_nested_id_under_unknown_keyword_is_an_error`, `test_nested_id_shapes_are_rule_errors`; (int) `test_json_id_under_a_keyword_the_draft_does_not_know_is_rejected`, `test_json_nested_id_is_rejected`.
+
+The rejection of long chains is pinned by `test_long_nested_id_chain_is_one_error_and_fast` (2,100 nested ids, one message, under 1 s). Supersedes the F-I1 entry above.
 
 ## Packaging
 
