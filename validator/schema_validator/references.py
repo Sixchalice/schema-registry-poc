@@ -18,7 +18,7 @@ def normalise_rows(
     """Fill in each row's ref_string. Returns (rows, D6 errors).
 
     Gives the same value as `rules._effective_ref_string`, so stages A and D agree:
-    AVRO defaults a missing (None or empty) ref_string to schema_name, PROTOBUF always
+    AVRO always uses schema_name (stage A rejects any other text), PROTOBUF always
     derives it from schema_name, and JSON keeps the given value. A JSON row without a
     ref_string (None or empty) gets D6 and is left out. Stage A stops unsupported types
     before this stage, so anything that is not AVRO or PROTOBUF is handled as JSON.
@@ -29,7 +29,7 @@ def normalise_rows(
         if schema_type == "PROTOBUF":
             rows.append(ReferenceInput(ref.schema_name, proto_import_path(ref.schema_name)))
         elif schema_type == "AVRO":
-            rows.append(ReferenceInput(ref.schema_name, ref.ref_string or ref.schema_name))
+            rows.append(ReferenceInput(ref.schema_name, ref.schema_name))  # stage A: equal or empty
         elif not ref.ref_string:
             errors.append(messages.REF_STRING_REQUIRED.format(s=ref.schema_name))
         else:

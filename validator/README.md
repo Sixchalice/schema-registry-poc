@@ -92,7 +92,7 @@ The `HttpSchemaRegistryClient` takes its URL, credentials and timeout from the c
 | Field | Meaning |
 |---|---|
 | `schema_name` | The Schema deployment selected as the reference (its Schema Registry subject) |
-| `ref_string` | How the reference is written in the schema text. **JSON: required**, the `$ref` value without its `#fragment` (an empty string counts as missing). **AVRO: optional**, defaults to `schema_name` (the referenced record's full name) when missing or empty. A schema that the referenced record itself references is covered by the same row. A type defined inside the referenced record (for example a nested enum) cannot be used from another schema; give it its own Schema. **PROTOBUF: ignored**, the import path is always derived from `schema_name` (see below) |
+| `ref_string` | How the reference is written in the schema text. **JSON: required**, the `$ref` value without its `#fragment` (an empty string counts as missing). **AVRO: optional**, leave it empty or write `schema_name` (the referenced record's full name); any other text is rejected. A schema that the referenced record itself references is covered by the same row. A type defined inside the referenced record (for example a nested enum) cannot be used from another schema; give it its own Schema. **PROTOBUF: ignored**, the import path is always derived from `schema_name` (see below) |
 
 Reference versions are not part of the request. The validator uses the latest version of each referenced subject and names it in a warning; the registration step looks the versions up again itself.
 
@@ -105,10 +105,10 @@ All errors are collected; a stage is skipped only when it depends on one that fa
 | Code | Checks | Message |
 |---|---|---|
 | A1 | `schema_type` is AVRO, JSON or PROTOBUF | `Unsupported schema format '{x}'. Use AVRO, JSON or PROTOBUF.` |
-| A2 | The schema is not empty or whitespace only, and its UTF-8 size is within `max_schema_bytes` | `Schema is empty.` / `Schema is too large ({n} bytes, limit {max}).` |
+| A2 | The schema is valid text, is not empty or whitespace only, and its UTF-8 size is within `max_schema_bytes` | `Schema contains characters that are not valid text.` / `Schema is empty.` / `Schema is too large ({n} bytes, limit {max}).` |
 | A3 | `compatibility` is a known level | `Unknown compatibility level '{x}'.` |
 | A4 | `name` is not empty, has no whitespace and does not start with `:` | `Schema name is invalid.` |
-| A5 | No two rows share a `schema_name` or a `ref_string`; no row references `name` | `Reference '{x}' is listed twice.` / `A schema cannot reference itself.` |
+| A5 | No two rows share a `schema_name` or a `ref_string`; no row references `name`; an Avro row's `ref_string` is empty or equals its `schema_name` | `Reference '{x}' is listed twice.` / `A schema cannot reference itself.` / `For an Avro reference to '{s}', leave the reference text empty or write '{s}'.` |
 | B, all | Avro and JSON text parses as JSON | `Schema is not valid JSON: {err}` |
 | B, Avro | The top level is one record, enum or fixed | `The top level of an Avro schema must be a single record, enum or fixed.` |
 | B, Avro | The full name has a namespace, and no dot-separated part of it is empty (`.Order`, `com..Order`) | `Avro schema needs a namespace, for example "namespace": "com.team.domain".` |
@@ -127,7 +127,7 @@ All errors are collected; a stage is skipped only when it depends on one that fa
 | B, Protobuf | `package` is set | `Protobuf schema needs a package, for example "package com.team.domain;".` |
 | B, Protobuf | Exactly one top-level message | `A Protobuf schema must define exactly one top-level message (found {n}). Nest the others inside it or move them to their own Schema.` |
 | C1 | On edit, `name` equals `previous_name` | `A schema's name cannot change after creation (was '{previous_name}'). Create a new Schema instead.` |
-| C2 | `name` is not in `existing_names`, ignoring case | `A Schema named '{name}' already exists (names are compared case-insensitively).` |
+| C2 | `name` is not in `existing_names`, ignoring case (on an edit, the schema's own stored name is not counted) | `A Schema named '{name}' already exists (names are compared case-insensitively).` |
 | C3 | `name` equals the name derived from the schema, case-sensitively | `The name must match the schema. It should be '{expected_name}'.` |
 | C1 + C3 | On edit, the name derived from the schema changed (replaces C1 and C3) | `The schema's full name changed from '{previous_name}' to '{expected_name}'. A schema's name cannot change; revert the namespace/name or create a new Schema.` |
 | D1 | Each referenced subject is registered | `Referenced schema '{s}' is not registered in Schema Registry yet.` |

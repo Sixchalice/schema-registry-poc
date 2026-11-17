@@ -31,13 +31,18 @@ def check_input(request: ValidationRequest, config: ValidatorConfig) -> InputChe
         fatal = True
 
     # A2
-    size = len(request.schema.encode("utf-8"))
-    if not request.schema.strip():
-        errors.append(messages.SCHEMA_EMPTY)
+    try:
+        size = len(request.schema.encode("utf-8"))
+    except UnicodeEncodeError:  # a lone surrogate
+        errors.append(messages.SCHEMA_NOT_TEXT)
         fatal = True
-    elif size > config.max_schema_bytes:
-        errors.append(messages.SCHEMA_TOO_LARGE.format(n=size, max=config.max_schema_bytes))
-        fatal = True
+    else:
+        if not request.schema.strip():
+            errors.append(messages.SCHEMA_EMPTY)
+            fatal = True
+        elif size > config.max_schema_bytes:
+            errors.append(messages.SCHEMA_TOO_LARGE.format(n=size, max=config.max_schema_bytes))
+            fatal = True
 
     # A3
     if request.compatibility not in COMPATIBILITY_LEVELS:
@@ -97,6 +102,13 @@ def _reference_errors(
                 reported.add(value)
             seen.add(value)
 
+    if schema_type == "AVRO":
+        errors.extend(
+            messages.AVRO_REF_STRING.format(s=ref.schema_name)
+            for ref in references
+            if ref.ref_string not in (None, "", ref.schema_name)
+        )
+
     if self_reference:
         errors.append(messages.SELF_REFERENCE)
     return errors
@@ -108,7 +120,9 @@ def check_name(request: ValidationRequest, expected_name: str | None) -> list[st
     is_edit = previous_name is not None
 
     duplicate: list[str] = []
-    if request.name.lower() in {n.lower() for n in request.existing_names}:
+    # On an edit the schema's own stored name is not a clash (other case variants are).
+    others = (n for n in request.existing_names if n != previous_name)
+    if request.name.lower() in {n.lower() for n in others}:
         duplicate.append(messages.NAME_EXISTS.format(name=request.name))
 
     # The schema's own full name moved away from the stored name: one message

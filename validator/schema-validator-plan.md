@@ -53,7 +53,7 @@ class ReferenceInput:
     schema_name: str          # the Schema deployment selected in the dropdown (= SR subject)
     ref_string: str | None    # how it is written in the schema text.
                               # JSON: required (the $ref value without its #fragment).
-                              # AVRO: optional, defaults to schema_name.
+                              # AVRO: optional; empty or schema_name (anything else is rejected, A5).
                               # PROTOBUF: ignored; derived from schema_name (section 6).
 
 @dataclass(frozen=True)
@@ -114,10 +114,10 @@ Collect all errors; do not stop at the first one. A stage is skipped only when i
 | Code | Check | Message template |
 |---|---|---|
 | A1 | `schema_type` is one of AVRO, JSON, PROTOBUF | `Unsupported schema format '{x}'. Use AVRO, JSON or PROTOBUF.` |
-| A2 | `schema` is not empty or whitespace only, and its UTF-8 size is within `max_schema_bytes` | `Schema is empty.` / `Schema is too large ({n} bytes, limit {max}).` |
+| A2 | `schema` is text that encodes as UTF-8, is not empty or whitespace only, and its UTF-8 size is within `max_schema_bytes` | `Schema contains characters that are not valid text.` / `Schema is empty.` / `Schema is too large ({n} bytes, limit {max}).` |
 | A3 | `compatibility` is one of BACKWARD, BACKWARD_TRANSITIVE, FORWARD, FORWARD_TRANSITIVE, FULL, FULL_TRANSITIVE, NONE | `Unknown compatibility level '{x}'.` |
 | A4 | `name` is non-empty, has no whitespace, does not start with `:` | `Schema name is invalid.` |
-| A5 | No two reference rows share a `ref_string` or a `schema_name`; no row references `name` itself | `Reference '{x}' is listed twice.` / `A schema cannot reference itself.` |
+| A5 | No two reference rows share a `ref_string` or a `schema_name`; no row references `name` itself; an AVRO row's `ref_string` is empty or equals its `schema_name` (one message per offending row, in row order, after the duplicate messages) | `Reference '{x}' is listed twice.` / `A schema cannot reference itself.` / `For an Avro reference to '{s}', leave the reference text empty or write '{s}'.` |
 
 If A1 or A2 fails, stop and return. If A5 fails, stage D is skipped (no reference lookups, no D4/D5); stages B and C still run.
 
@@ -132,7 +132,7 @@ If the text cannot be analysed (Avro and JSON: not JSON, or the wrong top level;
 | Code | Check | Message template |
 |---|---|---|
 | C1 | Edit only: `name == previous_name` | `A schema's name cannot change after creation (was '{previous_name}'). Create a new Schema instead.` |
-| C2 | `name.lower()` not in lowercased `existing_names` | `A Schema named '{name}' already exists (names are compared case-insensitively).` |
+| C2 | `name.lower()` not in lowercased `existing_names`; on an edit, entries exactly equal to `previous_name` are left out (the schema's own stored name), other case variants still count | `A Schema named '{name}' already exists (names are compared case-insensitively).` |
 | C3 | `name == expected_name`, exact and case-sensitive | `The name must match the schema. It should be '{expected_name}'.` |
 
 On edit, if the user changed the namespace or record name inside the schema, C3 fires with the new expected name while C1 holds the name fixed. In that case replace both with one message: `The schema's full name changed from '{previous_name}' to '{expected_name}'. A schema's name cannot change; revert the namespace/name or create a new Schema.`
@@ -151,7 +151,7 @@ On edit, if the user changed the namespace or record name inside the schema, C3 
 
 A nested reference that is not registered gives D1 with the nested subject.
 
-For AVRO, a missing `ref_string` defaults to `schema_name`. For PROTOBUF, `ref_string` is always derived: `schema_name.replace(".", "/") + ".proto"`.
+For AVRO, a missing `ref_string` defaults to `schema_name`; any other value is rejected by A5, so stage D always uses `schema_name`. For PROTOBUF, `ref_string` is always derived: `schema_name.replace(".", "/") + ".proto"`.
 
 D3, D4 and D5 exist only in the validator. Verified: SR accepts unused reference rows in every format, accepts a Protobuf reference whose name differs from the import path (a Java consumer then fails with `"X" is not defined`), and does not detect cycles for Protobuf or JSON (Avro fails only by accident, with `Can't redefine`).
 

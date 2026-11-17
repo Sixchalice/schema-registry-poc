@@ -145,6 +145,30 @@ Observed: the registry, Python and Java all accept a record that references a se
 
 Code changed: step 2 of `formats/avro.py` accepts `record`, `enum` and `fixed` (the namespace rule and name derivation are unchanged); `AVRO_TOP_LEVEL` now ends "must be a single record, enum or fixed."; README and spec 5.1 updated.
 
+## Avro reference text (audit L6)
+
+Tested: unit tests (`tests/test_rules.py`, `tests/test_validate.py`), no registry needed.
+
+Observed: an Avro row with its own `ref_string` (for example `address.avsc` for `a.Address`) passed stage A, although the registry resolves Avro types by full name.
+
+Code changed: A5 gives `AVRO_REF_STRING` for each Avro row whose `ref_string` is neither empty nor `schema_name`, one per row in row order, and skips stage D; `normalise_rows` always uses `schema_name` for Avro. README and spec 3.1, A5 updated.
+
+## Schema that is not text (audit L8b)
+
+Tested: `test_lone_surrogate_schema`: schema `"\ud800"`.
+
+Observed: `.encode("utf-8")` in A2 raised `UnicodeEncodeError` out of `check_input`.
+
+Code changed: A2 gives the fatal `SCHEMA_NOT_TEXT`. Only `schema` is checked. README and spec A2 updated.
+
+## Own name on an edit (audit L9)
+
+Tested: `test_edit_ignores_own_name_in_existing_names` and `test_edit_still_catches_other_case_variant`.
+
+Observed: an edit whose `existing_names` listed its own stored name got `NAME_EXISTS`.
+
+Code changed: C2 leaves entries exactly equal to `previous_name` out on an edit; case variants of other names still count. README and spec C2 updated.
+
 ## Packaging
 
 `tests/test_packaging.py` builds the wheel from a copy of the tree with `setuptools.build_meta.build_wheel` on every unit-test run and checks that it holds every `.py` file and the 18 `.proto` files under `schema_validator/_proto/`, and no tests.

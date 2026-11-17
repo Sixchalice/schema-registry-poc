@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from schema_validator import messages
 from schema_validator.models import ReferenceInput, ValidationRequest, ValidatorConfig
 from schema_validator.rules import InputCheck, check_input, check_name
 
@@ -72,7 +73,7 @@ def test_duplicate_reference_subject() -> None:
 
 def test_duplicate_ref_string() -> None:
     refs = [ReferenceInput("a.B", "x.json"), ReferenceInput("a.C", "x.json")]
-    result = check_input(req(references=refs), CONFIG)
+    result = check_input(req(schema_type="JSON", references=refs), CONFIG)
     assert result.errors == ["Reference 'x.json' is listed twice."]
     assert result.references_ok is False
 
@@ -84,10 +85,36 @@ def test_self_reference() -> None:
 
 
 def test_avro_ref_string_defaults_to_schema_name() -> None:
+    # a.C's own text 'a.B' is a custom ref_string (L6) and also repeats a.B's name.
     refs = [ReferenceInput("a.B"), ReferenceInput("a.C", "a.B")]
     result = check_input(req(references=refs), CONFIG)
-    assert result.errors == ["Reference 'a.B' is listed twice."]
+    assert result.errors == [
+        "Reference 'a.B' is listed twice.",
+        "For an Avro reference to 'a.C', leave the reference text empty or write 'a.C'.",
+    ]
     assert result.references_ok is False
+
+
+def test_avro_custom_ref_string_rejected() -> None:
+    refs = [ReferenceInput("a.Address", "address.avsc"), ReferenceInput("a.Money", "m")]
+    result = check_input(req(references=refs), CONFIG)
+    assert result.errors == [
+        messages.AVRO_REF_STRING.format(s="a.Address"), messages.AVRO_REF_STRING.format(s="a.Money")]
+    assert result.references_ok is False
+    assert result.fatal is False
+
+
+@pytest.mark.parametrize("ref_string", [None, "", "a.Address"])
+def test_avro_ref_string_equal_to_name_allowed(ref_string: str | None) -> None:
+    result = check_input(req(references=[ReferenceInput("a.Address", ref_string)]), CONFIG)
+    assert result.errors == []
+    assert result.references_ok is True
+
+
+def test_lone_surrogate_schema() -> None:
+    result = check_input(req(schema="\ud800"), CONFIG)
+    assert result.errors == [messages.SCHEMA_NOT_TEXT]
+    assert result.fatal is True
 
 
 def test_avro_same_row_twice_reports_once() -> None:
@@ -169,6 +196,16 @@ def test_duplicate_case_insensitive() -> None:
         "A Schema named 'com.acme.Order' already exists "
         "(names are compared case-insensitively)."
     ]
+
+
+def test_edit_ignores_own_name_in_existing_names() -> None:
+    request = req(previous_name="a.B", name="a.B", existing_names=["a.B"])
+    assert check_name(request, "a.B") == []
+
+
+def test_edit_still_catches_other_case_variant() -> None:
+    request = req(previous_name="a.B", name="a.B", existing_names=["A.b"])
+    assert check_name(request, "a.B") == [messages.NAME_EXISTS.format(name="a.B")]
 
 
 def test_rename_on_edit() -> None:

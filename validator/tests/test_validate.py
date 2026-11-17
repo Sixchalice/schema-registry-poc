@@ -237,6 +237,17 @@ def test_version_conflict_is_an_error(sr: FakeSchemaRegistry, run: Callable) -> 
     assert compat_calls(sr) == []
 
 
+def test_avro_custom_ref_string_rejected(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.add("a.Address", json.dumps({"type": "record", "name": "Address", "namespace": "a",
+                                    "fields": [{"name": "street", "type": "string"}]}))
+    schema = json.dumps({"type": "record", "name": "Order", "namespace": "a", "fields": [
+        {"name": "to", "type": "a.Address"}]})
+    result = run(req("AVRO", None, "a.Order", schema=schema,
+                     references=[ReferenceInput("a.Address", "address.avsc")]), sr)
+    assert result == ValidationResult(False, "Error", messages.AVRO_REF_STRING.format(s="a.Address"))
+    assert compat_calls(sr) == []
+
+
 def test_json_row_without_ref_string(sr: FakeSchemaRegistry, run: Callable) -> None:
     sr.add("com.acme.Address", load("JSON", "address"), "JSON")
     request = req("JSON", "customer", "com.acme.Customer", references=[ReferenceInput("com.acme.Address")])
@@ -359,11 +370,6 @@ CUSTOMER_BARE_COUNTRY = json.dumps({"type": "record", "name": "Customer", "names
 
 
 @pytest.mark.parametrize("subject, text, row", [
-    pytest.param(
-        "com.acme.Address",
-        json.dumps({"type": "record", "name": "Address", "namespace": "com.acme", "fields": [
-            {"name": "country", "type": {"type": "enum", "name": "Country", "namespace": "", "symbols": ["NL"]}}]}),
-        ReferenceInput("com.acme.Address", "com.acme.Country"), id="ref-string-names-the-type"),
     pytest.param(
         "com.acme.Country", json.dumps({"type": "enum", "name": "Country", "symbols": ["NL"]}),
         ReferenceInput("com.acme.Country"), id="subject-holds-a-null-namespace-type"),

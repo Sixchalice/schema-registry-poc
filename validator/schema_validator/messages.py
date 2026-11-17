@@ -3,10 +3,12 @@
 # Stage A
 UNSUPPORTED_FORMAT = "Unsupported schema format '{x}'. Use AVRO, JSON or PROTOBUF."
 SCHEMA_EMPTY = "Schema is empty."
+SCHEMA_NOT_TEXT = "Schema contains characters that are not valid text."
 SCHEMA_TOO_LARGE = "Schema is too large ({n} bytes, limit {max})."
 UNKNOWN_COMPATIBILITY = "Unknown compatibility level '{x}'."
 NAME_INVALID = "Schema name is invalid."
 REFERENCE_DUPLICATE = "Reference '{x}' is listed twice."
+AVRO_REF_STRING = "For an Avro reference to '{s}', leave the reference text empty or write '{s}'."
 SELF_REFERENCE = "A schema cannot reference itself."
 
 # Stage C
