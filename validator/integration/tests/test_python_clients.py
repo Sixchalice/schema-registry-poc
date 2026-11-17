@@ -515,7 +515,7 @@ def test_json_deeper_than_the_python_client_can_check_is_rejected(
     schema = json.dumps({"$schema": DRAFT_07, "title": f"{ns}.Deep", "type": "object", "properties": {"p": node}})
     result = validated(f"{ns}.Deep", schema, config, [])
     assert result.validationType == "Error"
-    assert result.message == messages.SCHEMA_TOO_DEEP.format(max=100)
+    assert result.message == messages.SCHEMA_TOO_DEEP.format(max=config.max_nesting_depth)
 
     status, body = register(f"{ns}.Deep", schema, "JSON")
     assert status == 200, body

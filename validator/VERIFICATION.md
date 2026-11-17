@@ -3,7 +3,7 @@
 Checked on 2026-11-16 (the secured registry and the Avro namespace follow-up on 2026-11-17) against `confluentinc/cp-schema-registry:7.9.0` on `apache/kafka:3.8.1`, from `integration/docker-compose.yml`, with confluent-kafka-python 2.16.1 and the Confluent 7.9.0 Java serializers.
 
 ```
-.venv/bin/python -m pytest -q                                   # 691 passed
+.venv/bin/python -m pytest -q                                   # 699 passed
 .venv/bin/python -m pytest integration/tests -m integration -q  # 138 passed, none skipped
 ```
 
@@ -263,7 +263,7 @@ The resolver that mirrored `referencing` gave way to rules, because it took 90 s
 
 The rejection of long chains is pinned by `test_long_nested_id_chain_is_one_error_and_fast` (2,000 sibling ids and a 100-deep chain of nested ids, one message, under 1 s). Supersedes the F-I1 entry above.
 
-### Maximum nesting depth (2026-11-17, owner decision: 100)
+### Maximum nesting depth (2026-11-17, owner decision: 64, first 100)
 
 Measured against the test registry, jsonschema 4.26.0, fastavro and protoc (grpcio-tools). Depth counts nested JSON objects and arrays, the root being 1.
 
@@ -275,12 +275,12 @@ Measured against the test registry, jsonschema 4.26.0, fastavro and protoc (grpc
 | 2019-09 | 199 | 165 | 124 | 100 |
 | 2020-12 | 199 | 165 | 124 | 124 |
 
-`check_schema` needs about 10 frames per level, so for 2019-09 and 2020-12 a schema at depth about 90 to 100 that passes `validate` can still raise `RecursionError` in a producer called from a deep stack (a web framework, asyncio, Celery). `JSON schema is nested too deeply.` can therefore still occur at the default `max_nesting_depth` for those shapes. Pinned at the margin by `test_schema_shaped_at_limit_2020_12_items` (an `items` chain at depth 100 gives no error on a shallow stack).
+`check_schema` needs about 10 frames per level. The default `max_nesting_depth` is 64 (owner decision, 2026-11-17, lowered from 100): the tightest shape, a 2019-09 `items` chain, then uses about 640 of the 1000 frames, which leaves about 360 for a producer's own stack (a web framework, asyncio, Celery). At 100 a 2019-09 or 2020-12 schema at depth about 90 to 100 could pass `validate` and still raise `RecursionError` in a producer called from a deep stack. Pinned by `test_schema_shaped_at_limit_items` (2019-09 and 2020-12 `items` chains at depth 64 give no error) and `test_items_chain_at_the_old_limit_is_too_deep` (depth 100 is refused).
 - The registry rejects JSON and Avro from about depth 1000 (`422 Invalid schema`), and Python's `json.loads` raises `RecursionError` there too.
 - Avro: fastavro is fine up to depth 990.
 - Protobuf: protoc stops at 31 nested message definitions (`Reached maximum recursion limit for nested messages.`), the registry accepts 500, and a chain of 5,000 separate messages compiles. Protobuf gets no limit; `test_protobuf_nesting_limit_is_protocs` pins protoc's.
 
-The limit is `max_nesting_depth`, 100, checked before every other step of Avro and JSON analysis. Pinned by `test_json_depth`, and for each of Avro and JSON `test_depth_at_limit_passes_the_depth_check`, `test_depth_above_limit_is_an_error`, `test_parser_recursion_is_too_deep`, `test_configured_limit_is_used`; `test_json_too_deep_still_reported_above_the_configured_limit`; (int) `test_json_deeper_than_the_python_client_can_check_is_rejected` (depth 603: the registry accepts it, the Python serializer raises `RecursionError`).
+The limit is `max_nesting_depth`, 64, checked before every other step of Avro and JSON analysis. Pinned by `test_json_depth`, and for each of Avro and JSON `test_depth_at_limit_passes_the_depth_check`, `test_depth_above_limit_is_an_error`, `test_parser_recursion_is_too_deep`, `test_configured_limit_is_used`; `test_json_too_deep_still_reported_above_the_configured_limit`; (int) `test_json_deeper_than_the_python_client_can_check_is_rejected` (depth 603: the registry accepts it, the Python serializer raises `RecursionError`).
 
 Rule D (a root `$id` beside a root `$ref` in draft-04, -06 and -07) is pinned against the client by (int) `test_python_client_ignores_root_id_beside_root_ref_in_draft07`: with root `$id` `https://acme.example/o.json` and a relative `$ref` `a.json` below it, the serializer finds a reference named `a.json` and fails with `Unresolvable` for one named `https://acme.example/a.json`, so the `$id` is not the base.
 
@@ -290,7 +290,7 @@ Rule D (a root `$id` beside a root `$ref` in draft-04, -06 and -07) is pinned ag
 
 ## Coverage
 
-`coverage run --branch --source=schema_validator -m pytest -q` on 2026-11-17: 1,088 statements and 388 branches, all covered by the unit tests alone.
+`coverage run --branch --source=schema_validator -m pytest -q` on 2026-11-17: 1,098 statements and 390 branches, all covered by the unit tests alone.
 
 ## Not verified
 

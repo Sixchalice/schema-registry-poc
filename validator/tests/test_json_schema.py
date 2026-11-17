@@ -227,16 +227,16 @@ def nested(depth: int) -> str:
     return "[" * depth + "]" * depth
 
 
-TOO_DEEP = ["Schema is nested more than 100 levels deep."]
+TOO_DEEP = ["Schema is nested more than 64 levels deep."]
 
 
 def test_depth_at_limit_passes_the_depth_check() -> None:
-    result = analyse(nested(100), {}, cfg)
-    assert messages.SCHEMA_TOO_DEEP.format(max=100) not in result.errors
+    result = analyse(nested(64), {}, cfg)
+    assert messages.SCHEMA_TOO_DEEP.format(max=64) not in result.errors
 
 
 def test_depth_above_limit_is_an_error() -> None:
-    result = analyse(nested(101), {}, cfg)
+    result = analyse(nested(65), {}, cfg)
     assert result.errors == TOO_DEEP
     assert result.external_refs is None
 
@@ -531,15 +531,27 @@ def test_root_id_fragment_comes_after_rule_d() -> None:
     ]
 
 
-def test_schema_shaped_at_limit_2020_12_items() -> None:
-    # An "items" chain at depth exactly 100 is not SCHEMA_TOO_DEEP. check_schema needs about 10 frames
-    # per level and follows an "items" chain to depth 124 on a shallow stack, so there is a margin of
-    # about 24 levels: this passes from under pytest too.
+def _items_chain(draft: str, depth: int) -> str:
     node: dict[str, Any] = {"type": "string"}
-    for _ in range(99):
+    for _ in range(depth - 1):
         node = {"items": node}
-    text = json.dumps(schema(**{"$schema": "https://json-schema.org/draft/2020-12/schema", **node}))
-    assert json_depth(json.loads(text), 1000) == 100
-    result = analyse(text, {}, cfg)
+    text = json.dumps(schema(**{"$schema": draft, **node}))
+    assert json_depth(json.loads(text), 1000) == depth
+    return text
+
+
+@pytest.mark.parametrize("draft", ["https://json-schema.org/draft/2019-09/schema",
+                                   "https://json-schema.org/draft/2020-12/schema"])
+def test_schema_shaped_at_limit_items(draft: str) -> None:
+    # The tightest shape: check_schema overflows an "items" chain from depth 100 (2019-09) or 124
+    # (2020-12) on a shallow stack, at about 10 frames per level. At the limit of 64 that leaves about
+    # 360 frames for the producer's own stack, so the chain passes cleanly.
+    result = analyse(_items_chain(draft, 64), {}, cfg)
     assert result.errors == []
     assert result.external_refs == set()
+
+
+def test_items_chain_at_the_old_limit_is_too_deep() -> None:
+    # Depth 100, the earlier default, is where 2019-09 "items" overflows check_schema: now refused first.
+    result = analyse(_items_chain("https://json-schema.org/draft/2019-09/schema", 100), {}, cfg)
+    assert result.errors == TOO_DEEP

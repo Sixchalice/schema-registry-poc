@@ -45,16 +45,16 @@ def nested(depth: int) -> str:
     return "[" * depth + "]" * depth
 
 
-TOO_DEEP = ["Schema is nested more than 100 levels deep."]
+TOO_DEEP = ["Schema is nested more than 64 levels deep."]
 
 
 def test_depth_at_limit_passes_the_depth_check() -> None:
-    result = analyse(nested(100), {}, ValidatorConfig())
-    assert messages.SCHEMA_TOO_DEEP.format(max=100) not in result.errors
+    result = analyse(nested(64), {}, ValidatorConfig())
+    assert messages.SCHEMA_TOO_DEEP.format(max=64) not in result.errors
 
 
 def test_depth_above_limit_is_an_error() -> None:
-    result = analyse(nested(101), {}, ValidatorConfig())
+    result = analyse(nested(65), {}, ValidatorConfig())
     assert result.errors == TOO_DEEP
     assert result.external_refs is None
 

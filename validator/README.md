@@ -62,7 +62,7 @@ result.message         # "" for Ok; otherwise the messages, one per line
 | `sr_password` | `None` | Basic auth password; not shown in `repr` |
 | `sr_timeout_seconds` | `10` | Time limit of each HTTP call, counted from sending the request. It is checked after the headers arrive and after each piece of the body, so a stalled read can take up to one more per-read timeout (about 2 × `sr_timeout_seconds` at worst), and headers sent byte by byte are not interrupted |
 | `max_schema_bytes` | `500_000` | Largest schema text accepted, in UTF-8 bytes |
-| `max_nesting_depth` | `100` | Deepest nesting of JSON objects and arrays in an Avro or JSON schema, the root counting as 1 |
+| `max_nesting_depth` | `64` | Deepest nesting of JSON objects and arrays in an Avro or JSON schema, the root counting as 1 |
 | `allowed_json_drafts` | draft-04, draft-06, draft-07, 2019-09, 2020-12 | Accepted `$schema` values, stored without a trailing `#` (`DEFAULT_JSON_DRAFTS` in `models.py`). This is platform policy: Schema Registry accepts any `$schema` value |
 | `builtin_proto_imports` | 29 paths (`DEFAULT_BUILTIN_PROTO_IMPORTS` in `models.py`) | Import paths that need no reference row: `google/protobuf/` `any`, `api`, `descriptor`, `duration`, `empty`, `field_mask`, `source_context`, `struct`, `timestamp`, `type`, `wrappers`; `google/type/` `calendar_period`, `color`, `date`, `datetime`, `dayofweek`, `decimal`, `expr`, `fraction`, `interval`, `latlng`, `money`, `month`, `phone_number`, `postal_address`, `quaternion`, `timeofday` (each `.proto`); `confluent/meta.proto`, `confluent/type/decimal.proto` |
 
