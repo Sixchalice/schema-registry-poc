@@ -112,7 +112,10 @@ def resolve(
     for subject, versions in sorted(uses.items()):
         if len(versions) > 1:
             own = [v for v, parents in versions.items() if None in parents]
-            if own:
+            if own and own[0] < max(versions):
+                report(messages.REF_VERSION_CONFLICT_DIRECT_OLDER.format(
+                    s=subject, uses=_describe_uses(versions), latest=max(versions)))
+            elif own:
                 report(messages.REF_VERSION_CONFLICT_DIRECT.format(
                     s=subject, uses=_describe_uses(versions), chosen=own[0]))
             else:
@@ -123,7 +126,8 @@ def resolve(
             report(messages.REF_NAME_CONFLICT.format(
                 x=ref_name, subjects=", ".join(f"'{s}'" for s in sorted(subjects))))
 
-    return Resolution(resolved=resolved, referenced=referenced, errors=errors, provided_by=provided_by,
+    return Resolution(
+        resolved=resolved, referenced=referenced, errors=errors, provided_by=provided_by,
         latest=latest_versions)
 
 

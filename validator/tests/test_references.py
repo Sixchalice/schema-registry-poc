@@ -478,3 +478,33 @@ def test_version_conflict_with_own_row_suggests_selecting(sr: FakeSchemaRegistry
         "Schemas it comes through, or update those Schemas to v2: select v2 for 'a.Money' in "
         "their references and save them."
     ]
+
+
+def test_version_conflict_with_an_older_own_row_suggests_the_newer_version(sr: FakeSchemaRegistry) -> None:
+    _money_setup(sr)
+    sr.add("a.Line", "Line", references=[SrReference("a.Money", "a.Money", 2)])
+    result = resolve(MAIN, "AVRO", [row("a.Line", "a.Line", 1), row("a.Money", "a.Money", 1)], sr)
+    assert result.errors == [
+        "'a.Money' is used at more than one version: v1 directly, v2 through 'a.Line'. "
+        "A schema can use only one version of it. Select v2 for 'a.Money', the version the "
+        "Schemas it comes through use."
+    ]
+
+
+def test_wrong_format_checks_the_pinned_version(sr: FakeSchemaRegistry) -> None:
+    # v1 is AVRO, the latest (v2) is JSON: the row pinned to v1 is fine for AVRO, and one pinned
+    # to v2 is not.
+    sr.add("a.B", B1)
+    sr.add("a.B", "{}", "JSON")
+    ok = resolve(MAIN, "AVRO", [row("a.B", "a.B", 1)], sr)
+    assert ok.errors == [] and ok.resolved == [SrReference("a.B", "a.B", 1)]
+    bad = resolve(MAIN, "AVRO", [row("a.B", "a.B", 2)], sr)
+    assert bad.errors == ["'a.B' is a JSON schema; a AVRO schema can only reference AVRO schemas."]
+    assert bad.resolved == []
+
+
+def test_wrong_format_of_an_older_pinned_version(sr: FakeSchemaRegistry) -> None:
+    sr.add("a.B", "{}", "JSON")
+    sr.add("a.B", B1)
+    bad = resolve(MAIN, "AVRO", [row("a.B", "a.B", 1)], sr)
+    assert bad.errors == ["'a.B' is a JSON schema; a AVRO schema can only reference AVRO schemas."]

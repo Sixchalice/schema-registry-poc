@@ -234,6 +234,18 @@ def test_version_conflict_is_an_error(sr: FakeSchemaRegistry, run: Callable) -> 
     assert compat_calls(sr) == []
 
 
+def test_compatibility_check_gets_the_chosen_version(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.add("com.acme.Address", load("AVRO", "address"))
+    sr.add("com.acme.Address", load("AVRO", "address"))
+    request = req("AVRO", "customer", "com.acme.Customer", references=[address_row("AVRO")])
+    result = run(request, sr)
+    assert result == ValidationResult(
+        True, "Warning",
+        "References will be pinned to: com.acme.Address v1 (latest is v2). "
+        "To update one, select a newer version for it.")
+    assert compat_calls(sr)[0][4] == (SrReference("com.acme.Address", "com.acme.Address", 1),)
+
+
 def test_avro_custom_ref_string_rejected(sr: FakeSchemaRegistry, run: Callable) -> None:
     sr.add("a.Address", json.dumps({"type": "record", "name": "Address", "namespace": "a",
                                     "fields": [{"name": "street", "type": "string"}]}))

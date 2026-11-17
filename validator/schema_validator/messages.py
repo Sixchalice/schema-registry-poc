@@ -129,6 +129,10 @@ REF_VERSION_CONFLICT_DIRECT = (
     "Select the same version for '{s}' as the Schemas it comes through, or update those "
     "Schemas to v{chosen}: select v{chosen} for '{s}' in their references and save them."
 )
+REF_VERSION_CONFLICT_DIRECT_OLDER = (
+    "'{s}' is used at more than one version: {uses}. A schema can use only one version of it. "
+    "Select v{latest} for '{s}', the version the Schemas it comes through use."
+)
 REF_NAME_CONFLICT = (
     "The reference name '{x}' is used for more than one Schema: {subjects}. "
     "Each Schema needs its own reference name."

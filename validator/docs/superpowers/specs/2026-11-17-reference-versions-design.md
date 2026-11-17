@@ -47,7 +47,8 @@ Choosing the version per row makes every save predictable: what the user sees in
 - **Unknown version:** a version the subject doesn't have gives `'{s}' has no version {v} (the latest is {latest}).`
 - **D2 and the walk** use the chosen version.
 - **F1 (one version per subject):** unchanged as a check.
-  - When one of the conflicting versions is this schema's own row, the message offers the fix the user can make: `'{s}' is used at more than one version: {uses}. A schema can use only one version of it. Select the same version for '{s}' as the Schemas it comes through, or update those Schemas to v{chosen}: select v{chosen} for '{s}' in their references and save them.`
+  - When one of the conflicting versions is this schema's own row and it is the highest, the message offers the fix the user can make: `'{s}' is used at more than one version: {uses}. A schema can use only one version of it. Select the same version for '{s}' as the Schemas it comes through, or update those Schemas to v{chosen}: select v{chosen} for '{s}' in their references and save them.`
+  - When this schema's own row is older than another conflicting version, selecting the older one for the others would be a downgrade, so: `'{s}' is used at more than one version: {uses}. A schema can use only one version of it. Select v{latest} for '{s}', the version the Schemas it comes through use.`
   - Otherwise: `'{s}' is used at more than one version: {uses}. A schema can use only one version of it. Update the Schemas that use an older version to v{latest}: select v{latest} for '{s}' in their references and save them. Then save this schema.` (Re-saving no longer moves a reference to the latest, so today's "save them again" advice would not work.)
 
 **Stage E and warnings.**

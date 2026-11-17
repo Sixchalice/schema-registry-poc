@@ -72,6 +72,17 @@ def test_missing_version_is_required(version: object) -> None:
     assert result.fatal is False
 
 
+def test_stage_a_reference_messages_are_ordered() -> None:
+    refs = [ReferenceInput("a.B", None, 1), ReferenceInput("a.B", None, 1),
+            ReferenceInput("a.C", "custom", None)]
+    result = check_input(req(references=refs), CONFIG)
+    assert result.errors == [
+        messages.REFERENCE_DUPLICATE.format(x="a.B"),
+        messages.REF_VERSION_REQUIRED.format(s="a.C"),
+        messages.AVRO_REF_STRING.format(s="a.C"),
+    ]
+
+
 def test_duplicate_reference_subject() -> None:
     refs = [ReferenceInput("a.B", None, 1), ReferenceInput("a.B", None, 1)]
     result = check_input(req(references=refs), CONFIG)
