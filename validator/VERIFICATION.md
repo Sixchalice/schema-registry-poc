@@ -267,7 +267,7 @@ The rejection of long chains is pinned by `test_long_nested_id_chain_is_one_erro
 
 Measured against the test registry, jsonschema 4.26.0, fastavro and protoc (grpcio-tools). Depth counts nested JSON objects and arrays, the root being 1.
 
-- JSON Schema: the registry accepts depth 601; `jsonschema`'s `check_schema` (also run by the Python client) raises `RecursionError` somewhere between 322 and 601.
+- JSON Schema: the registry accepts depth 601; `jsonschema`'s `check_schema` (also run by the Python client) raises `RecursionError` somewhere between 322 and 601. (601 is the probe measurement; the pinned integration test uses depth 603.)
 - The registry rejects JSON and Avro from about depth 1000 (`422 Invalid schema`), and Python's `json.loads` raises `RecursionError` there too.
 - Avro: fastavro is fine up to depth 990.
 - Protobuf: protoc stops at 31 nested message definitions (`Reached maximum recursion limit for nested messages.`), the registry accepts 500, and a chain of 5,000 separate messages compiles. Protobuf gets no limit; `test_protobuf_nesting_limit_is_protocs` pins protoc's.
