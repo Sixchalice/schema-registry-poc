@@ -8,6 +8,7 @@ import fastavro
 from fastavro.schema import UnknownType
 
 from schema_validator import messages
+from schema_validator.formats._avro_defaults import default_errors
 from schema_validator.formats._depth import json_depth
 from schema_validator.models import FormatAnalysis, ValidatorConfig
 
@@ -20,7 +21,7 @@ _NAMED_TYPES = frozenset({"record", "enum", "fixed"})
 
 
 def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfig) -> FormatAnalysis:
-    """Steps 1 to 7 of spec 5.1. `referenced` maps reference names to schema texts, in dependency order."""
+    """Steps 1 to 8 of spec 5.1. `referenced` maps reference names to schema texts, in dependency order."""
     # Step 1
     try:
         schema = json.loads(schema_text)
@@ -55,12 +56,15 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
 
     # Step 7. With a nested-namespace error the walk and fastavro name that type
     # differently, so fastavro not finding a defined name is already explained.
-    error = _parse_error(schema, referenced, defined, unresolved, explained=bool(nested_errors))
+    error, parsed, named = _parse_error(schema, referenced, defined, unresolved, explained=bool(nested_errors))
     if error is not None:
         errors.append(messages.AVRO_INVALID.format(err=error))
     elif not isinstance(name, str):
         # fastavro lets a list or dict through as a name, or stopped before looking at it.
         errors.append(messages.AVRO_INVALID.format(err=f'the {schema["type"]} "name" must be a string'))
+    elif parsed is not None:
+        # Step 8: only when fastavro accepted the whole schema (not when it stopped early).
+        errors.extend(default_errors(parsed, named))
 
     return FormatAnalysis(expected_name, external_refs, errors)
 
@@ -199,8 +203,9 @@ def _names(schema: Any, submitted: bool = False) -> tuple[set[str], set[str], li
 def _parse_error(
     schema: dict[str, Any], referenced: dict[str, str], defined: set[str], unresolved: set[str],
     explained: bool = False,
-) -> str | None:
-    """fastavro's error for the schema, parsed after its references; None if it parses.
+) -> tuple[str | None, dict[str, Any] | None, dict[str, Any]]:
+    """fastavro's error for the schema, parsed after its references (None if there is none
+    to report), fastavro's parsed schema (None if it did not parse) and the named types.
 
     `defined` are the names the text defines and `unresolved` the used names the walk
     found no definition for. fastavro stops at the first unknown type, so after one the
@@ -215,31 +220,39 @@ def _parse_error(
             # A reference fastavro cannot parse is not this schema's error.
             pass
     try:
-        fastavro.parse_schema(schema, named_schemas=named)
+        parsed = fastavro.parse_schema(schema, named_schemas=named)
     except UnknownType as e:
         # Caught first: it is not a SchemaParseException.
-        name = e.name
-        while isinstance(name, dict):  # fastavro gives {"type": "X"} for a wrapped name
-            name = name.get("type")
-        missing = isinstance(name, str) and name in unresolved and name not in referenced
-        if isinstance(e.name, dict) and isinstance(name, str) and not missing:
-            # The registry resolves a wrapped name; fastavro (Python clients) does not.
-            return f"write the type '{name}' as a plain string, not as {{\"type\": \"{name}\"}}"
-        if isinstance(name, str) and name in unresolved:
-            if name not in referenced:
-                return None  # A missing reference; stage D (D4) explains it.
-            # A row carries this name, so D4 stays silent, but its text does not define it.
-            return f"type '{name}' is not defined by the reference selected for it"
-        if isinstance(name, str) and name in defined:
-            if explained:
-                return None
-            return f"type '{name}' is used before it is defined"
-        # The walk took this name as provided, so nothing else would report the stop.
-        return f"unknown type {name!r}" if isinstance(name, str) else f"unknown type {e.name!r}"
+        return _unknown_type_error(e, defined, unresolved, referenced, explained), None, named
     except KeyError as e:
         # A type without a required entry: {"type": "array"} has no "items".
-        return f"a type is missing its {e.args[0]!r} entry" if e.args else "a type is missing an entry"
+        error = f"a type is missing its {e.args[0]!r} entry" if e.args else "a type is missing an entry"
+        return error, None, named
     except Exception as e:
         # SchemaParseException, and also TypeError, ValueError etc. on malformed schemas.
-        return str(e)
-    return None
+        return str(e), None, named
+    return None, parsed, named
+
+
+def _unknown_type_error(
+    e: UnknownType, defined: set[str], unresolved: set[str], referenced: dict[str, str], explained: bool
+) -> str | None:
+    """The error for fastavro's UnknownType, or None when another step explains it."""
+    name = e.name
+    while isinstance(name, dict):  # fastavro gives {"type": "X"} for a wrapped name
+        name = name.get("type")
+    missing = isinstance(name, str) and name in unresolved and name not in referenced
+    if isinstance(e.name, dict) and isinstance(name, str) and not missing:
+        # The registry resolves a wrapped name; fastavro (Python clients) does not.
+        return f"write the type '{name}' as a plain string, not as {{\"type\": \"{name}\"}}"
+    if isinstance(name, str) and name in unresolved:
+        if name not in referenced:
+            return None  # A missing reference; stage D (D4) explains it.
+        # A row carries this name, so D4 stays silent, but its text does not define it.
+        return f"type '{name}' is not defined by the reference selected for it"
+    if isinstance(name, str) and name in defined:
+        if explained:
+            return None
+        return f"type '{name}' is used before it is defined"
+    # The walk took this name as provided, so nothing else would report the stop.
+    return f"unknown type {name!r}" if isinstance(name, str) else f"unknown type {e.name!r}"

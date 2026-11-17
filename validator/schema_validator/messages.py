@@ -80,6 +80,11 @@ AVRO_NESTED_IN_REFERENCE = (
     "cannot be used here. Move it to its own Schema and reference that."
 )
 AVRO_INVALID = "Invalid Avro schema: {err}"
+AVRO_UNION_DEFAULT = (
+    "The default of field '{field}' in '{record}' must be a value of the first type in its union ({first}). "
+    "Put the type of the default first in the union."
+)
+AVRO_DEFAULT_INVALID = "The default of field '{field}' in '{record}' is not a valid {type} value."
 
 # JSON Schema (5.2)
 JSON_TITLE_MISSING = "JSON schema needs a \"title\"; it becomes the schema name."

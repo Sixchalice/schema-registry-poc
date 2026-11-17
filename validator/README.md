@@ -120,6 +120,7 @@ All errors are collected; a stage is skipped only when it depends on one that fa
 | B, Avro | No nested type name has an empty part around a dot (`.Inner`, `Inner.`, `a..B`) | `Type name '{name}' has an empty part around a dot. Use a plain name, for example "Address", or a full name, for example "com.team.domain.Address".` |
 | B, Avro | No type is used that is defined inside a referenced schema (the registry accepts it, but neither the Python nor the Java serializer can produce with such a schema) | `Type '{name}' is defined inside the Schema '{schema}'. A type nested in another Schema cannot be used here. Move it to its own Schema and reference that.` |
 | B, Avro | fastavro parses the schema, with its references. A type must be defined before its first use, and a type name is written as a plain string, not as `{"type": "<name>"}` | `Invalid Avro schema: {err}` |
+| B, Avro | When fastavro accepts the schema: every field default in the schema's own records is a value of the field's type, as Java Avro checks it (fastavro checks only primitive types). A union's default is a value of its first type; a record default has every field that has no default of its own; an `int` or `long` is in range; `float` and `double` also take `"NaN"`, `"Infinity"` and `"-Infinity"`. Also, where Java does not check: an enum default is one of its symbols, a fixed default has exactly `size` characters, and a bytes or fixed default has only characters U+0000 to U+00FF. One message per field; `{record}` is the record's full name, `{first}` and `{type}` a primitive's name, a named type's full name, `array` or `map` (a logical type is its underlying type) | `The default of field '{field}' in '{record}' must be a value of the first type in its union ({first}). Put the type of the default first in the union.` / `The default of field '{field}' in '{record}' is not a valid {type} value.` |
 | B, JSON | The top level is an object with `"type": "object"` | `The top level of a JSON schema must have "type": "object".` |
 | B, JSON | `title` is present | `JSON schema needs a "title"; it becomes the schema name.` |
 | B, JSON | `title` matches `^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$` | `The "title" must be a dotted name made of letters, digits and underscores, for example "com.team.domain.Order".` |
@@ -210,15 +211,16 @@ docker compose -p validator-it -f integration/docker-compose.yml up -d   # SR on
 .venv/bin/python integration/differential.py --cases 700 --seed 2 --out /tmp/differential.tsv
 ```
 
-The Java checks run in a Maven container on the same network:
+The Java checks run in a Maven container on the same network. `probe.Defaults` parses the cases of `tests/schemas/avro_defaults.json` (also used by the unit tests) with Java Avro and needs neither the registry nor Kafka; the validator directory is mounted at `/repo` for it:
 
 ```bash
 cd integration/java
-docker run --rm --network validator-it_default -v "$PWD:/work" -v "$HOME/.m2:/root/.m2" -w /work \
+docker run --rm --network validator-it_default -v "$PWD:/work" -v "$PWD/../..:/repo" -v "$HOME/.m2:/root/.m2" -w /work \
   maven:3.9.9-eclipse-temurin-17 sh -c 'mvn -q -B package dependency:build-classpath -Dmdep.outputFile=target/cp.txt \
   && java -cp target/classes:$(cat target/cp.txt) probe.Main && java -cp target/classes:$(cat target/cp.txt) probe.ProtoRefs \
   && java -cp target/classes:$(cat target/cp.txt) probe.Nested \
-  && java -cp target/classes:$(cat target/cp.txt) probe.Pinned'
+  && java -cp target/classes:$(cat target/cp.txt) probe.Pinned \
+  && java -cp target/classes:$(cat target/cp.txt) probe.Defaults /repo/tests/schemas/avro_defaults.json'
 ```
 
 The results of the last run are in [VERIFICATION.md](VERIFICATION.md).

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from schema_validator import messages
 from schema_validator.formats import avro
+from schema_validator.formats._avro_defaults import default_errors
 from schema_validator.formats.avro import analyse
 from schema_validator.models import FormatAnalysis, ValidatorConfig
 
@@ -27,6 +29,7 @@ def field(name: str, type_: Any, **kw: Any) -> dict[str, Any]:
 
 
 ADDRESS = rec("Address", [field("street", "string")], namespace="com.acme")
+SCHEMAS = Path(__file__).parent / "schemas"
 
 
 def test_valid() -> None:
@@ -426,6 +429,124 @@ def test_bad_default() -> None:
     result = run(rec("Order", [field("a", "string", default=5)], namespace="com.acme"))
     assert len(result.errors) == 1
     assert result.errors[0].startswith("Invalid Avro schema: ")
+
+
+CASES = json.loads((SCHEMAS / "avro_defaults.json").read_text())
+
+
+@pytest.mark.parametrize("case", CASES, ids=lambda c: c["label"])
+def test_default_cases(case: dict) -> None:
+    result = analyse(json.dumps(case["schema"]), {}, ValidatorConfig())
+    assert (result.errors == []) == (case["validator"] == "ok")
+
+
+def test_union_default_message() -> None:
+    schema = {"type": "record", "name": "R", "namespace": "t",
+              "fields": [{"name": "u", "type": ["null", "string"], "default": "x"}]}
+    assert analyse(json.dumps(schema), {}, ValidatorConfig()).errors == [
+        messages.AVRO_UNION_DEFAULT.format(field="u", record="t.R", first="null")]
+
+
+def test_invalid_default_message_names_the_type() -> None:
+    schema = {"type": "record", "name": "R", "namespace": "t", "fields": [
+        {"name": "g", "type": {"type": "record", "name": "G", "fields": [{"name": "x", "type": "int"}]},
+         "default": {}}]}
+    assert analyse(json.dumps(schema), {}, ValidatorConfig()).errors == [
+        messages.AVRO_DEFAULT_INVALID.format(field="g", record="t.R", type="t.G")]
+
+
+def test_default_in_a_nested_record_is_checked() -> None:
+    # Reported against the nested record's own full name.
+    inner = {"type": "record", "name": "Inner", "fields": [{"name": "n", "type": ["null", "int"], "default": 1}]}
+    schema = {"type": "record", "name": "R", "namespace": "t", "fields": [{"name": "i", "type": inner}]}
+    assert analyse(json.dumps(schema), {}, ValidatorConfig()).errors == [
+        messages.AVRO_UNION_DEFAULT.format(field="n", record="t.Inner", first="null")]
+
+
+def test_default_of_a_referenced_type() -> None:
+    address = '{"type":"record","name":"Address","namespace":"t","fields":[{"name":"zip","type":"string"}]}'
+    schema = {"type": "record", "name": "R", "namespace": "t",
+              "fields": [{"name": "a", "type": "t.Address", "default": {"street": "x"}}]}
+    assert analyse(json.dumps(schema), {"t.Address": address}, ValidatorConfig()).errors == [
+        messages.AVRO_DEFAULT_INVALID.format(field="a", record="t.R", type="t.Address")]
+
+
+def test_two_bad_defaults_give_two_messages_in_order() -> None:
+    bad = {"type": ["null", "string"], "default": "x"}
+    schema = {"type": "record", "name": "R", "namespace": "t",
+              "fields": [{"name": "b", **bad}, {"name": "a", **bad}]}
+    assert analyse(json.dumps(schema), {}, ValidatorConfig()).errors == [
+        messages.AVRO_UNION_DEFAULT.format(field=f, record="t.R", first="null") for f in ("b", "a")]
+
+
+@pytest.mark.parametrize(
+    "type_, default, described",
+    [
+        ("int", True, "int"),  # fastavro takes a bool for an int
+        ({"type": "array", "items": "int"}, ["a"], "array"),
+        ({"type": "map", "values": "int"}, {"k": "a"}, "map"),
+        ({"type": "bytes", "logicalType": "decimal", "precision": 4, "scale": 2}, "\u20ac", "bytes"),
+        ({"type": "enum", "name": "E", "symbols": ["A"]}, "Z", "t.E"),
+        ({"type": "fixed", "name": "F", "namespace": "o", "size": 2}, "abc", "o.F"),
+    ],
+)
+def test_invalid_default_message_describes_the_type(type_: Any, default: Any, described: str) -> None:
+    schema = {"type": "record", "name": "R", "namespace": "t", "fields": [{"name": "f", "type": type_, "default": default}]}
+    assert analyse(json.dumps(schema), {}, ValidatorConfig()).errors == [
+        messages.AVRO_DEFAULT_INVALID.format(field="f", record="t.R", type=described)]
+
+
+def test_second_use_of_a_named_type_is_checked_by_its_definition() -> None:
+    s = {"type": "record", "name": "S", "fields": [{"name": "x", "type": "int"}]}
+    schema = {"type": "record", "name": "R", "namespace": "t",
+              "fields": [{"name": "a", "type": s}, {"name": "b", "type": "S", "default": {"x": "s"}}]}
+    assert analyse(json.dumps(schema), {}, ValidatorConfig()).errors == [
+        messages.AVRO_DEFAULT_INVALID.format(field="b", record="t.R", type="t.S")]
+
+
+def test_defaults_inside_a_referenced_text_are_not_walked() -> None:
+    # The reference's own bad default is its own Schema's error, not this one's.
+    address = {"type": "record", "name": "Address", "namespace": "t",
+               "fields": [{"name": "zip", "type": ["null", "string"], "default": "x"}]}
+    schema = {"type": "record", "name": "R", "namespace": "t", "fields": [{"name": "a", "type": "t.Address"}]}
+    assert analyse(json.dumps(schema), {"t.Address": json.dumps(address)}, ValidatorConfig()).errors == []
+
+
+def test_defaults_are_not_checked_when_fastavro_stopped_early() -> None:
+    # A missing reference: fastavro stops at it, D4 reports it, and nothing is parsed to walk.
+    schema = {"type": "record", "name": "R", "namespace": "t",
+              "fields": [{"name": "a", "type": "t.Address"}, {"name": "u", "type": ["null", "string"], "default": "x"}]}
+    assert analyse(json.dumps(schema), {}, ValidatorConfig()).errors == []
+
+
+def _record(type_: Any, **default: Any) -> dict[str, Any]:
+    return {"type": "record", "name": "t.R", "fields": [{"name": "f", "type": type_, **default}]}
+
+
+def _invalid(type_: str) -> list[str]:
+    return [messages.AVRO_DEFAULT_INVALID.format(field="f", record="t.R", type=type_)]
+
+
+@pytest.mark.parametrize(
+    "parsed, named, expected",
+    [
+        pytest.param(_record("t.X", default=1), {"t.X": {"type": "t.X"}}, _invalid("t.X"), id="name-cycle"),
+        pytest.param(_record("t.Missing", default={}), {}, _invalid("t.Missing"), id="unknown-name"),
+        pytest.param(_record(5, default=1), {}, _invalid("unknown"), id="type-not-a-schema"),
+        pytest.param({"type": "record", "name": "t.R", "fields": {"f": 1}}, {}, [], id="fields-not-a-list"),
+        pytest.param(_record({"type": "record", "name": "t.S", "fields": None}, default={}), {}, _invalid("t.S"),
+                     id="value-record-fields-not-a-list"),
+        pytest.param(_record({"type": "record", "name": "t.S", "fields": [5]}, default={}), {}, _invalid("t.S"),
+                     id="value-record-field-not-a-dict"),
+        pytest.param(_record({"type": "enum", "name": "t.E"}, default="A"), {}, _invalid("t.E"), id="enum-without-symbols"),
+        pytest.param(
+            _record({"type": {"type": "record", "name": "t.S", "fields": [{"name": "x", "type": "int", "default": "s"}]}}),
+            {}, [messages.AVRO_DEFAULT_INVALID.format(field="x", record="t.S", type="int")], id="wrapped-record-is-walked"),
+    ],
+)
+def test_default_check_on_shapes_fastavro_does_not_produce(parsed: Any, named: Any, expected: list[str]) -> None:
+    # The check must not raise on any shape, and must not pass a default it cannot check.
+    assert default_errors(parsed, named) == expected
 
 
 def test_missing_reference_not_reported_here() -> None:
