@@ -3,12 +3,14 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from schema_validator.formats.protobuf import analyse
+from schema_validator._text import shorten
+from schema_validator.formats.protobuf import _clean_stderr, _imports, analyse
 from schema_validator.models import DEFAULT_BUILTIN_PROTO_IMPORTS, FormatAnalysis, ValidatorConfig
 
 P = 'syntax = "proto3";\npackage com.acme;\n'
@@ -368,3 +370,35 @@ def test_protobuf_nesting_limit_is_protocs() -> None:
     assert len(result.errors) == 1
     assert result.errors[0].startswith("Invalid Protobuf schema: ")
     assert "Reached maximum recursion limit for nested messages." in result.errors[0]
+
+
+def test_unclosed_comments_are_fast_and_short() -> None:
+    text = 'syntax = "proto3";\npackage a.b;\nmessage M { int32 x = 1; }\n' + "/* " * 160000
+    started = time.monotonic()
+    result = analyse(text, {}, ValidatorConfig())
+    assert time.monotonic() - started < 10
+    assert len(result.errors) == 1 and result.errors[0].startswith("Invalid Protobuf schema: ")
+    assert len(result.errors[0]) <= len("Invalid Protobuf schema: ") + 1000
+    assert "more" in result.errors[0]
+
+
+def test_imports_scan_is_linear() -> None:
+    # 240 KB took 37 s with the old pattern.
+    started = time.monotonic()
+    assert _imports('import "a/b.proto";\n' + "/* " * 80000) == {"a/b.proto"}
+    assert time.monotonic() - started < 1
+
+
+def test_import_after_a_closed_comment_is_found() -> None:
+    assert _imports('/* import "x/y.proto"; */ import "a/b.proto";') == {"a/b.proto"}
+
+
+def test_six_errors_show_five_and_one_more() -> None:
+    lines = [f"__main__.proto:{i}:1: Expected type name." for i in range(1, 7)]
+    assert _clean_stderr(lines, "/tmp/x") == "; ".join(
+        f"{i}:1: Expected type name." for i in range(1, 6)) + "; and 1 more"
+
+
+def test_shorten() -> None:
+    assert shorten("abc", 3) == "abc"
+    assert shorten("abcd ef", 6) == "abcd…"

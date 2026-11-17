@@ -133,6 +133,7 @@ All errors are collected; a stage is skipped only when it depends on one that fa
 | B, JSON | No nested object has `$schema` | `Only the top level of a JSON schema may have "$schema". Remove it from {paths}. A JSON schema uses one draft.` |
 | B, Protobuf | Every reference's import path (derived, or read from Schema Registry) is not empty, is relative, has no `..` path segment, contains no backslash or NUL character, and can be written (it does not collide with `__main__.proto` or another reference's directory) | `Invalid import path '{x}'.` |
 | B, Protobuf | protoc compiles the schema with its references | `Invalid Protobuf schema: {err}` / `Invalid Protobuf schema: the Protobuf compiler did not finish in 10 seconds.` |
+| B, Protobuf | protoc reports more than 5 errors | `Invalid Protobuf schema: ` plus the first 5 errors, then `and {n} more` (the whole message is at most 1,000 characters) |
 | B, Protobuf | `package` is set | `Protobuf schema needs a package, for example "package com.team.domain;".` |
 | B, Protobuf | Exactly one top-level message | `A Protobuf schema must define exactly one top-level message (found {n}). Nest the others inside it or move them to their own Schema.` |
 | C1 | On edit, `name` equals `previous_name` | `A schema's name cannot change after creation (was '{previous_name}'). Create a new Schema instead.` |

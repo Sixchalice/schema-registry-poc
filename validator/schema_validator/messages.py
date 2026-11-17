@@ -114,6 +114,7 @@ SCHEMA_TOO_DEEP = "Schema is nested more than {max} levels deep."
 # Protobuf (5.3)
 PROTO_IMPORT_PATH = "Invalid import path '{x}'."
 PROTO_INVALID = "Invalid Protobuf schema: {err}"
+PROTO_MORE_ERRORS = "and {n} more"
 PROTO_PACKAGE = "Protobuf schema needs a package, for example \"package com.team.domain;\"."
 PROTO_MESSAGE_COUNT = (
     "A Protobuf schema must define exactly one top-level message (found {n}). "

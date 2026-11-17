@@ -13,15 +13,18 @@ from google.protobuf import descriptor_pb2
 from google.protobuf.message import DecodeError
 
 from schema_validator import messages
+from schema_validator._text import shorten
 from schema_validator.models import FormatAnalysis, ValidatorConfig
 
 _MAIN = "__main__.proto"
 _DESCRIPTOR_SET = "out.pb"
 _PROTOC_TIMEOUT_SECONDS = 10
+_PROTOC_ERRORS_SHOWN = 5
+_PROTOC_MESSAGE_LIMIT = 1000
 
 # String literals are matched too, so that "//" inside a string is not taken for a comment.
 _STRING_OR_COMMENT = re.compile(
-    r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|//[^\n]*|/\*.*?\*/', re.DOTALL
+    r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|//[^\n]*|/\*.*?(?:\*/|\Z)', re.DOTALL
 )
 _IMPORT = re.compile(r'\bimport\s+(?:(?:public|weak)\s+)?(?:"([^"\n]*)"|\'([^\'\n]*)\')\s*;')
 _NOT_FOUND = re.compile(r"(.+): File not found\.")
@@ -170,4 +173,7 @@ def _clean_stderr(lines: list[str], tmp: str) -> str:
         line = line.removeprefix(_MAIN + ":").strip()
         if line:
             kept.append(line)
-    return "; ".join(kept)
+    shown = kept[:_PROTOC_ERRORS_SHOWN]
+    if len(kept) > _PROTOC_ERRORS_SHOWN:
+        shown.append(messages.PROTO_MORE_ERRORS.format(n=len(kept) - _PROTOC_ERRORS_SHOWN))
+    return shorten("; ".join(shown), _PROTOC_MESSAGE_LIMIT)
