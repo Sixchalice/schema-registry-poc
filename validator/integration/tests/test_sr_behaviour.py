@@ -17,7 +17,7 @@ from schema_validator import HttpSchemaRegistryClient, ValidationRequest, Valida
 from schema_validator import messages
 from schema_validator.formats import protobuf
 from schema_validator.models import DEFAULT_BUILTIN_PROTO_IMPORTS
-from schema_validator.sr_client import CompatibilityVerdict, SchemaRegistryUnavailable
+from schema_validator.sr_client import CompatibilityVerdict, SchemaRegistryUnavailable, SrReference
 from schema_validator.sr_messages import invalid_schema_reason, parse_incompatibility
 
 FORMATS = ("AVRO", "JSON", "PROTOBUF")
@@ -438,6 +438,38 @@ def test_lookup_is_reference_order_sensitive(
     assert lookup(refs).status_code == 200
     reversed_lookup = lookup(list(reversed(refs)))
     assert (reversed_lookup.status_code, reversed_lookup.json()["error_code"]) == (404, 40403)
+
+
+def test_registering_an_older_versions_text_reuses_its_id(
+    register: Register, sr: HttpSchemaRegistryClient, raw_get: Callable[[str], Response], ns: str
+) -> None:
+    # F1: the registry does not add a version for text it already holds; the producers get v1's id back.
+    name = f"{ns}.Order"
+    v1 = _avro("Order", ns, [{"name": "id", "type": "string"}])
+    v2 = _avro("Order", ns, [{"name": "id", "type": "string"},
+                             {"name": "note", "type": ["null", "string"], "default": None}])
+    status1, body1 = register(name, v1)
+    assert status1 == 200, body1
+    assert register(name, v2)[0] == 200
+    status, again = register(name, v1)
+    assert status == 200, again
+    assert again == body1  # type: ignore[comparison-overlap]
+    assert raw_get(f"/subjects/{name}/versions") == (200, [1, 2])
+    assert sr.registered_version(name, v1, "AVRO", []) == 1
+
+
+def test_lookup_with_another_reference_version_is_not_found(
+    register: Register, sr: HttpSchemaRegistryClient, ns: str
+) -> None:
+    address, customer = f"{ns}.Address", f"{ns}.Customer"
+    assert register(address, _avro("Address", ns, [{"name": "city", "type": "string"}]))[0] == 200
+    assert register(address, _avro("Address", ns, [{"name": "city", "type": "string"},
+                                                   {"name": "zip", "type": "string", "default": ""}]))[0] == 200
+    text = _avro("Customer", ns, [{"name": "addr", "type": address}])
+    status, body = register(customer, text, "AVRO", [{"name": address, "subject": address, "version": 1}])
+    assert status == 200, body
+    assert sr.registered_version(customer, text, "AVRO", [SrReference(address, address, 1)]) == 1
+    assert sr.registered_version(customer, text, "AVRO", [SrReference(address, address, 2)]) is None
 
 
 # Mode lookups (spec §7, E5)

@@ -193,9 +193,9 @@ def test_no_references_key_when_empty():
     assert "references" not in json.loads(session.last[2]["data"])
 
 
-def test_is_registered_request_and_200():
+def test_registered_version_request_and_200():
     session = StubSession(StubResponse(200, {"subject": "a.B", "id": 1, "version": 2, "schema": "S"}))
-    assert client_for(session).is_registered("a.B", "S", "PROTOBUF", REFS) is True
+    assert client_for(session).registered_version("a.B", "S", "PROTOBUF", REFS) == 2
     method, url, kwargs = session.last
     assert method == "POST"
     assert url.endswith("/subjects/a.B")
@@ -206,27 +206,32 @@ def test_is_registered_request_and_200():
 
 
 @pytest.mark.parametrize("code", [40401, 40403])
-def test_is_registered_404_is_false(code):
+def test_registered_version_404_is_none(code):
     session = StubSession(StubResponse(404, {"error_code": code, "message": "not found"}))
-    assert client_for(session).is_registered("a.B", "S", "AVRO", []) is False
+    assert client_for(session).registered_version("a.B", "S", "AVRO", []) is None
 
 
-def test_is_registered_404_other_code_is_unavailable():
+def test_registered_version_404_other_code_is_unavailable():
     session = StubSession(StubResponse(404, {"error_code": 40402, "message": "x"}))
     with pytest.raises(SchemaRegistryUnavailable):
-        client_for(session).is_registered("a.B", "S", "AVRO", [])
+        client_for(session).registered_version("a.B", "S", "AVRO", [])
 
 
 def test_403_on_lookup_is_unauthorized():
     with pytest.raises(SchemaRegistryUnauthorized):
-        client_for(StubSession(StubResponse(403, {"error_code": 40301, "message": "x"}))).is_registered(
+        client_for(StubSession(StubResponse(403, {"error_code": 40301, "message": "x"}))).registered_version(
             "a.B", "S", "AVRO", [])
 
 
-@pytest.mark.parametrize("body", [[], "x", None, 3])
-def test_is_registered_bad_body(body):
+def test_registered_version_reads_the_version_field():
+    body = {"subject": "a.B", "id": 7, "version": 3, "schema": "S"}
+    assert client_for(StubSession(StubResponse(200, body))).registered_version("a.B", "S", "AVRO", []) == 3
+
+
+@pytest.mark.parametrize("body", [[], "x", None, 3, {}, {"version": "3"}, {"version": True}])
+def test_registered_version_bad_body(body):
     with pytest.raises(SchemaRegistryUnavailable):
-        client_for(StubSession(StubResponse(200, body))).is_registered("a.B", "S", "AVRO", [])
+        client_for(StubSession(StubResponse(200, body))).registered_version("a.B", "S", "AVRO", [])
 
 
 def test_other_calls_still_reject_40403():

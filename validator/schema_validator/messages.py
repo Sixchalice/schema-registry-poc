@@ -59,6 +59,16 @@ LEVEL_REFERENCE_ORDER = (
     "The references are listed in a different order than in the registered version ({order}). "
     "Keep that order, so that only the compatibility level changes."
 )
+FORMAT_CHANGED = (
+    "'{name}' is registered as {registered}. Its format cannot change: "
+    "to use {requested}, create a new Schema."
+)
+SCHEMA_IS_OLDER_VERSION = (
+    "This schema is identical to version {n} of '{name}', and the latest is version {latest}. "
+    "Schema Registry would not register it again, so producers would keep using version {latest}. "
+    "Change the schema so that it differs from every registered version."
+)
+SCHEMA_UNCHANGED = "This is already version {n} of '{name}'. Saving it changes nothing in Schema Registry."
 SR_UNAUTHORIZED = "The validator is not allowed to query Schema Registry. Contact the platform team."
 LEVEL_WARNING = (
     "Compatibility was checked using the current level '{sr_level}', "

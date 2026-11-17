@@ -83,14 +83,14 @@ class SchemaRegistryClient(Protocol):
         references: Sequence[SrReference],
     ) -> CompatibilityVerdict: ...
 
-    def is_registered(
+    def registered_version(
         self,
         subject: str,
         schema: str,
         schema_type: str,
         references: Sequence[SrReference],
-    ) -> bool:
-        """Whether this schema, with these references, is already a version of the subject."""
+    ) -> int | None:
+        """The version of the subject that holds this schema with these references, or None."""
         ...
 
 
@@ -169,22 +169,23 @@ class HttpSchemaRegistryClient:
             raise _bad_body("POST", path)
         return CompatibilityVerdict(is_compatible, tuple(messages))
 
-    def is_registered(
+    def registered_version(
         self,
         subject: str,
         schema: str,
         schema_type: str,
         references: Sequence[SrReference],
-    ) -> bool:
+    ) -> int | None:
         request = _schema_request(schema, schema_type, references)
         path = "/subjects/{s}"
         body = self._call("POST", path, subject, request, not_found_ok=True,
                           not_found_codes=_LOOKUP_NOT_FOUND_CODES)
         if body is _NOT_FOUND:
-            return False
-        if not isinstance(body, dict):
+            return None
+        version = body.get("version") if isinstance(body, dict) else None
+        if not isinstance(version, int) or isinstance(version, bool):
             raise _bad_body("POST", path)
-        return True
+        return version
 
     def _get_version(self, path: str, subject: str) -> SchemaVersion | None:
         body = self._call("GET", path, subject, not_found_ok=True)

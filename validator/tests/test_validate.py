@@ -763,8 +763,8 @@ def test_same_level_unchanged_behaviour(sr: FakeSchemaRegistry, run: Callable) -
     request = req("AVRO", "order", "com.acme.Order", previous_name="com.acme.Order", compatibility="FULL")
     assert run(request, sr).validationType == "Error"
     names = call_names(sr)
-    assert "get_latest" not in names and "is_registered" not in names
-    assert names.index("get_compatibility_level") < names.index("check_compatibility")
+    assert names.count("get_latest") == 1 and names.count("registered_version") == 1
+    assert names.index("registered_version") < names.index("get_compatibility_level") < names.index("check_compatibility")
 
 
 def test_level_and_schema_change_together_is_an_error(sr: FakeSchemaRegistry, run: Callable) -> None:
@@ -789,7 +789,7 @@ def test_level_change_without_versions_is_not_blocked(sr: FakeSchemaRegistry, ru
     sr.levels["com.acme.Order"] = "NONE"
     request = req("AVRO", "order", "com.acme.Order", previous_name="com.acme.Order", compatibility="FULL")
     assert run(request, sr).validationType == "Warning"
-    assert "is_registered" not in call_names(sr)
+    assert "registered_version" not in call_names(sr)
     assert "check_compatibility" in call_names(sr)
 
 
@@ -803,7 +803,7 @@ def test_lookup_uses_the_selected_versions(sr: FakeSchemaRegistry, run: Callable
                   previous_name="com.acme.Customer", compatibility="FULL")
     result = run(request, sr)
     assert result.validationType == "Warning"
-    lookup = next(c for c in sr.calls if c[0] == "is_registered")
+    lookup = next(c for c in sr.calls if c[0] == "registered_version")
     assert lookup[4] == (chosen,)
 
 
@@ -831,7 +831,7 @@ def test_level_change_with_the_same_reference_version_warns(sr: FakeSchemaRegist
     result = run(request, sr)
     assert result.validationType == "Warning"
     assert messages.LEVEL_WARNING.format(sr_level="NONE", compatibility="FULL") in result.message
-    assert "is_registered" in call_names(sr)
+    assert "registered_version" in call_names(sr)
     assert "check_compatibility" in call_names(sr)
 
 
@@ -882,7 +882,7 @@ def test_no_registry_call_when_stages_a_to_d_have_errors(sr: FakeSchemaRegistry,
     assert sr.calls == []
 
 
-@pytest.mark.parametrize("method", ["get_latest", "is_registered"])
+@pytest.mark.parametrize("method", ["get_latest", "registered_version"])
 @pytest.mark.parametrize("error, expected", [
     (SchemaRegistryUnavailable("x"), E3),
     (SchemaRegistryUnauthorized("x"), E4),
@@ -1061,5 +1061,87 @@ def test_level_change_with_reordered_references_says_keep_the_order(sr: FakeSche
         previous_name="a.Main", existing_names=[])
     assert run(request, sr) == ValidationResult(False, "Error", messages.LEVEL_REFERENCE_ORDER.format(
         order="a.One v1, a.Two v1"))
-    assert "is_registered" not in call_names(sr)
     assert "check_compatibility" not in call_names(sr)
+
+
+# Stage E on an edit: the format, an older version, and the lookup (audit 2 F1, F3).
+ORDER = "com.acme.Order"
+ORDER_V1 = load("AVRO", "order")
+ORDER_V2 = json.dumps({**json.loads(ORDER_V1), "fields": json.loads(ORDER_V1)["fields"] + [
+    {"name": "note", "type": ["null", "string"], "default": None}]})
+
+
+def _order_with_two_versions(sr: FakeSchemaRegistry) -> None:
+    sr.add(ORDER, ORDER_V1)
+    sr.add(ORDER, ORDER_V2)
+
+
+def test_edit_identical_to_an_older_version_is_an_error(sr: FakeSchemaRegistry, run: Callable) -> None:
+    _order_with_two_versions(sr)
+    request = req("AVRO", "order", ORDER, previous_name=ORDER)
+    assert run(request, sr) == ValidationResult(False, "Error", messages.SCHEMA_IS_OLDER_VERSION.format(
+        n=1, name=ORDER, latest=2))
+    assert "check_compatibility" not in call_names(sr)
+
+
+def test_older_version_with_a_level_change_is_the_older_version_error(sr: FakeSchemaRegistry, run: Callable) -> None:
+    _order_with_two_versions(sr)
+    sr.levels[ORDER] = "NONE"
+    request = req("AVRO", "order", ORDER, previous_name=ORDER, compatibility="FULL")
+    assert run(request, sr) == ValidationResult(False, "Error", messages.SCHEMA_IS_OLDER_VERSION.format(
+        n=1, name=ORDER, latest=2))
+    assert "get_compatibility_level" not in call_names(sr)
+
+
+def test_edit_identical_to_the_latest_warns_unchanged(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.add(ORDER, ORDER_V1)
+    sr.levels[ORDER] = "FULL"
+    request = req("AVRO", "order", ORDER, previous_name=ORDER, compatibility="FULL")
+    result = run(request, sr)
+    assert result.validationType == "Warning"
+    assert messages.SCHEMA_UNCHANGED.format(n=1, name=ORDER) in result.message
+    assert messages.LEVEL_WARNING.format(sr_level="FULL", compatibility="FULL") not in result.message
+
+
+def test_unchanged_warning_follows_the_pinned_warning(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.add("com.acme.Address", load("AVRO", "address"))
+    sr.add("com.acme.Customer", load("AVRO", "customer"),
+           references=[SrReference("com.acme.Address", "com.acme.Address", 1)])
+    request = req("AVRO", "customer", "com.acme.Customer", references=[address_row("AVRO")],
+                  previous_name="com.acme.Customer")
+    assert run(request, sr) == ValidationResult(True, "Warning", PINNED_ADDRESS + "\n" + messages.SCHEMA_UNCHANGED.format(
+        n=1, name="com.acme.Customer"))
+
+
+def test_format_change_on_edit_is_an_error(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.add(ORDER, ORDER_V1)
+    sr.levels[ORDER] = "NONE"
+    schema = json.dumps({"$schema": "http://json-schema.org/draft-07/schema#", "title": ORDER, "type": "object"})
+    request = ValidationRequest(name=ORDER, schema_type="JSON", schema=schema, compatibility="NONE",
+                                references=[], previous_name=ORDER, existing_names=[])
+    assert run(request, sr) == ValidationResult(False, "Error", messages.FORMAT_CHANGED.format(
+        name=ORDER, registered="AVRO", requested="JSON"))
+    assert "registered_version" not in call_names(sr)
+    assert "get_compatibility_level" not in call_names(sr)
+
+
+def test_edit_reads_latest_and_looks_up_once(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.add(ORDER, ORDER_V2)
+    request = req("AVRO", "order", ORDER, previous_name=ORDER)
+    run(request, sr)
+    names = call_names(sr)
+    assert names.count("get_latest") == 1 and names.count("registered_version") == 1
+    assert names.index("get_latest") < names.index("registered_version") < names.index("check_compatibility")
+
+
+def test_create_makes_no_lookup(sr: FakeSchemaRegistry, run: Callable) -> None:
+    run(req("AVRO", "order", ORDER), sr)
+    assert ("get_latest", ORDER) not in sr.calls
+    assert "registered_version" not in call_names(sr)
+
+
+def test_older_version_lookup_failure_is_unreachable(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.add(ORDER, ORDER_V2)
+    sr.fail_only("registered_version", SchemaRegistryUnavailable("x"))
+    request = req("AVRO", "order", ORDER, previous_name=ORDER)
+    assert run(request, sr) == ValidationResult(False, "Error", messages.SR_UNREACHABLE)

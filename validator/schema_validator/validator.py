@@ -78,30 +78,43 @@ def _validate(request: ValidationRequest, sr: SchemaRegistryClient, config: Vali
             err=f"the {schema_type} analyser gave no name or references and no error")], [])
 
     # Stage E
-    # E6: the registry checks under the level in force, so a level change cannot come with a schema change.
+    # An edit reads the latest version (one call): its format must be the same, the text must not be
+    # an older version's, and the level rule below uses what the lookup found.
     level_warning = None
+    unchanged_warning = None
     if request.previous_name is not None:
         try:
+            latest = sr.get_latest(name)
+            found = None
+            if latest is not None:
+                # The platform never sends a format change; this guards against a platform bug.
+                if latest.schema_type != schema_type:
+                    return build_result([messages.FORMAT_CHANGED.format(
+                        name=name, registered=latest.schema_type, requested=schema_type)], [])
+                found = sr.registered_version(name, request.schema, schema_type, resolution.resolved)
+                if found is not None and found != latest.version:
+                    # The registry would return the older version's id and register nothing.
+                    return build_result([messages.SCHEMA_IS_OLDER_VERSION.format(
+                        n=found, name=name, latest=latest.version)], [])
+            # E6: the registry checks under the level in force, so a level change cannot come with a schema change.
             level = sr.get_compatibility_level(name)
             if level != request.compatibility:
                 level_warning = messages.LEVEL_WARNING.format(
                     sr_level=level, compatibility=request.compatibility)
-                latest = sr.get_latest(name)
-                # "Unchanged" also needs the same reference names on the same subjects at the same
-                # versions as the rows; the lookup then uses the rows' references.
                 if latest is not None:
+                    # "Unchanged" also needs the same reference names on the same subjects at the same
+                    # versions as the rows; the lookup uses the rows' references.
                     registered = [(r.name, r.subject, r.version) for r in latest.references]
                     requested = [(r.name, r.subject, r.version) for r in resolution.resolved]
                     if set(registered) == set(requested) and registered != requested:
                         # The registry's lookup is order-sensitive: a reordered save would register a new version.
                         return build_result([messages.LEVEL_REFERENCE_ORDER.format(
                             order=", ".join(f"{s} v{v}" for _, s, v in registered))], [])
-                if latest is not None and (
-                        {(r.name, r.subject, r.version) for r in latest.references}
-                        != {(r.name, r.subject, r.version) for r in resolution.resolved}
-                        or not sr.is_registered(name, request.schema, schema_type, resolution.resolved)):
-                    return build_result([messages.LEVEL_AND_SCHEMA_CHANGED.format(
-                        sr_level=level, compatibility=request.compatibility)], [])
+                    if set(registered) != set(requested) or found is None:
+                        return build_result([messages.LEVEL_AND_SCHEMA_CHANGED.format(
+                            sr_level=level, compatibility=request.compatibility)], [])
+            elif latest is not None and found == latest.version:
+                unchanged_warning = messages.SCHEMA_UNCHANGED.format(n=latest.version, name=name)
         except _SR_FAILURES as err:
             return build_result([_sr_failure(err)], [])
     try:
@@ -126,6 +139,8 @@ def _validate(request: ValidationRequest, sr: SchemaRegistryClient, config: Vali
         warnings.append(pinned_warning(resolution.resolved, resolution.latest))
     if level_warning is not None:
         warnings.append(level_warning)
+    if unchanged_warning is not None:
+        warnings.append(unchanged_warning)
     return build_result([], warnings)
 
 

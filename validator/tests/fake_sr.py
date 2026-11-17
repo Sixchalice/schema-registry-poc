@@ -20,6 +20,8 @@ class FakeSchemaRegistry:
         self.global_mode = "READWRITE"
         self.verdict: CompatibilityVerdict = CompatibilityVerdict(True)
         self.fail_with: Exception | None = None
+        # When set, fail_with applies only to the named methods; None means every method.
+        self.fail_methods: set[str] | None = None
         self.calls: list[tuple] = []
 
     def add(self, subject: str, schema: str, schema_type: str = "AVRO",
@@ -29,8 +31,14 @@ class FakeSchemaRegistry:
         versions.append(SchemaVersion(subject, version, schema_type, schema, tuple(references)))
         return version
 
+    def fail_only(self, method: str, error: Exception) -> None:
+        """Make just this method raise `error`."""
+        self.fail_with = error
+        self.fail_methods = {method}
+
     def _check_fail(self) -> None:
-        if self.fail_with is not None:
+        method = self.calls[-1][0]
+        if self.fail_with is not None and (self.fail_methods is None or method in self.fail_methods):
             raise self.fail_with
 
     def get_latest(self, subject: str) -> SchemaVersion | None:
@@ -61,11 +69,13 @@ class FakeSchemaRegistry:
         self._check_fail()
         return self.verdict
 
-    def is_registered(self, subject: str, schema: str, schema_type: str,
-                      references: Sequence[SrReference]) -> bool:
-        self.calls.append(("is_registered", subject, schema, schema_type, tuple(references)))
+    def registered_version(self, subject: str, schema: str, schema_type: str,
+                           references: Sequence[SrReference]) -> int | None:
+        self.calls.append(("registered_version", subject, schema, schema_type, tuple(references)))
         self._check_fail()
         # Exact text match; the real registry compares parsed schemas (covered by integration).
-        return any(v.schema == schema and v.schema_type == schema_type
-                   and tuple(v.references) == tuple(references)
-                   for v in self._subjects.get(subject, []))
+        for v in self._subjects.get(subject, []):
+            if (v.schema == schema and v.schema_type == schema_type
+                    and tuple(v.references) == tuple(references)):
+                return v.version
+        return None

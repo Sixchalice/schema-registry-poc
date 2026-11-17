@@ -68,7 +68,7 @@ def test_fail_with_raises_from_every_method():
         lambda: sr.get_compatibility_level("s"),
         lambda: sr.get_mode("s"),
         lambda: sr.check_compatibility("s", "t", "AVRO", []),
-        lambda: sr.is_registered("s", "t", "AVRO", []),
+        lambda: sr.registered_version("s", "t", "AVRO", []),
     ):
         with pytest.raises(SchemaRegistryUnavailable):
             call()
@@ -79,13 +79,24 @@ def test_default_constants_sizes():
     assert len(DEFAULT_JSON_DRAFTS) == 5
 
 
-def test_is_registered_matches_text_type_and_references():
+def test_registered_version_matches_text_type_and_references():
     sr = FakeSchemaRegistry()
     ref = SrReference("n", "s2", 3)
+    sr.add("s", "x", "AVRO", [ref])
     sr.add("s", "t", "AVRO", [ref])
-    assert sr.is_registered("s", "t", "AVRO", [ref])
-    assert not sr.is_registered("s", "t", "AVRO", [])
-    assert not sr.is_registered("s", "t", "JSON", [ref])
-    assert not sr.is_registered("s", "u", "AVRO", [ref])
-    assert not sr.is_registered("other", "t", "AVRO", [ref])
-    assert sr.calls[-1] == ("is_registered", "other", "t", "AVRO", (ref,))
+    sr.add("s", "t", "AVRO", [ref])
+    assert sr.registered_version("s", "t", "AVRO", [ref]) == 2
+    assert sr.registered_version("s", "x", "AVRO", [ref]) == 1
+    assert sr.registered_version("s", "t", "AVRO", []) is None
+    assert sr.registered_version("s", "t", "JSON", [ref]) is None
+    assert sr.registered_version("s", "u", "AVRO", [ref]) is None
+    assert sr.registered_version("other", "t", "AVRO", [ref]) is None
+    assert sr.calls[-1] == ("registered_version", "other", "t", "AVRO", (ref,))
+
+
+def test_fail_only_raises_from_the_named_method_alone():
+    sr = FakeSchemaRegistry()
+    sr.fail_only("registered_version", SchemaRegistryUnavailable("x"))
+    assert sr.get_latest("s") is None
+    with pytest.raises(SchemaRegistryUnavailable):
+        sr.registered_version("s", "t", "AVRO", [])

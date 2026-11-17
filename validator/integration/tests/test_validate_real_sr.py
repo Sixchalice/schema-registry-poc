@@ -330,6 +330,58 @@ def test_level_change_with_unchanged_schema_warns(
         True, "Warning", messages.LEVEL_WARNING.format(sr_level="NONE", compatibility="FULL"))
 
 
+def test_edit_identical_to_an_older_version_is_an_error(
+    client: HttpSchemaRegistryClient,
+    config: ValidatorConfig,
+    register: Register,
+    ns: str,
+) -> None:
+    name = f"{ns}.Order"
+    v1 = order("AVRO", ns)
+    v2 = json.dumps({"type": "record", "name": "Order", "namespace": ns, "fields": [
+        {"name": "id", "type": "string"}, {"name": "note", "type": ["null", "string"], "default": None}]})
+    assert register(name, v1)[0] == 200
+    assert register(name, v2)[0] == 200
+
+    result = validate(request(name, "AVRO", v1, previous_name=name), client, config)
+
+    assert result == ValidationResult(False, "Error", messages.SCHEMA_IS_OLDER_VERSION.format(
+        n=1, name=name, latest=2))
+
+
+def test_edit_identical_to_the_latest_warns_unchanged(
+    client: HttpSchemaRegistryClient,
+    config: ValidatorConfig,
+    register: Register,
+    ns: str,
+) -> None:
+    name = f"{ns}.Order"
+    assert register(name, order("AVRO", ns))[0] == 200
+
+    result = validate(request(name, "AVRO", order("AVRO", ns), previous_name=name), client, config)
+
+    assert result == ValidationResult(True, "Warning", messages.SCHEMA_UNCHANGED.format(n=1, name=name))
+
+
+def test_format_change_on_edit_is_an_error(
+    client: HttpSchemaRegistryClient,
+    config: ValidatorConfig,
+    register: Register,
+    set_subject_level: Callable[[str, str], Response],
+    ns: str,
+) -> None:
+    # Under NONE the registry would accept a JSON schema as the next version of an Avro subject.
+    name = f"{ns}.Order"
+    assert set_subject_level(name, "NONE")[0] == 200
+    assert register(name, order("AVRO", ns))[0] == 200
+
+    result = validate(request(name, "JSON", order("JSON", ns), previous_name=name, compatibility="NONE"),
+                      client, config)
+
+    assert result == ValidationResult(False, "Error", messages.FORMAT_CHANGED.format(
+        name=name, registered="AVRO", requested="JSON"))
+
+
 def test_level_change_gap_is_closed(
     client: HttpSchemaRegistryClient,
     config: ValidatorConfig,

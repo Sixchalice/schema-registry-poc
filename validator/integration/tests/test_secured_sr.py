@@ -176,9 +176,9 @@ def test_schema_lookup_by_validator_user(ns: str) -> None:
     register_as_admin(name, avro("Order", ns, ORDER_FIELDS))
     client = HttpSchemaRegistryClient(SECURED_SR_URL, "validator", "validator-secret")
 
-    assert client.is_registered(name, avro("Order", ns, ORDER_FIELDS), "AVRO", []) is True
-    assert client.is_registered(name, avro("Order", ns, ORDER_FIELDS + [{"name": "z", "type": "string"}]),
-                                "AVRO", []) is False
+    assert client.registered_version(name, avro("Order", ns, ORDER_FIELDS), "AVRO", []) == 1
+    assert client.registered_version(name, avro("Order", ns, ORDER_FIELDS + [{"name": "z", "type": "string"}]),
+                                     "AVRO", []) is None
 
 
 def test_level_and_schema_change_by_validator_user(ns: str) -> None:
