@@ -44,7 +44,7 @@ class Resolution:
     # Reference name -> schema text, direct and transitive, dependencies first.
     # The first text stored under a name is kept.
     referenced: dict[str, str]
-    errors: list[str]  # D1, D2, D3, REF_TOO_DEEP
+    errors: list[str]  # D1, D2, D3, REF_TOO_DEEP, then D7 conflicts
     # Reference name -> ref_string of the row it was first loaded for (a row maps to itself).
     provided_by: dict[str, str] = field(default_factory=dict)
 
@@ -62,6 +62,10 @@ def resolve(
     errors: list[str] = []
     # Every (subject, version) fetched during this call, None when not registered.
     fetched: dict[tuple[str, int], SchemaVersion | None] = {}
+    # D7: subject -> version -> parent subjects (None for this schema's own row), and
+    # reference name -> subjects, over the whole graph.
+    uses: dict[str, dict[int, set[str | None]]] = {}
+    names: dict[str, set[str]] = {}
 
     def report(error: str) -> None:
         if error not in errors:
@@ -79,11 +83,38 @@ def resolve(
         key = row.ref_string if row.ref_string is not None else row.schema_name
         resolved.append(SrReference(key, row.schema_name, latest.version))
         fetched.setdefault((row.schema_name, latest.version), latest)
-        error = _walk(name, row.schema_name, key, latest, sr, fetched, referenced, provided_by, report)
+        uses.setdefault(row.schema_name, {}).setdefault(latest.version, set()).add(None)
+        names.setdefault(key, set()).add(row.schema_name)
+        error = _walk(
+            name, row.schema_name, key, latest, sr, fetched, referenced, provided_by, report,
+            uses, names)
         if error is not None:
             report(error)
 
+    for subject, versions in sorted(uses.items()):
+        if len(versions) > 1:
+            report(messages.REF_VERSION_CONFLICT.format(
+                s=subject, uses=_describe_uses(versions), latest=max(versions)))
+    for ref_name, subjects in sorted(names.items()):
+        if len(subjects) > 1:
+            report(messages.REF_NAME_CONFLICT.format(
+                x=ref_name, subjects=", ".join(f"'{s}'" for s in sorted(subjects))))
+
     return Resolution(resolved=resolved, referenced=referenced, errors=errors, provided_by=provided_by)
+
+
+def _describe_uses(versions: dict[int, set[str | None]]) -> str:
+    """`v1 through 'a.B', v2 directly`: one entry per version, ascending."""
+    entries = []
+    for version, parents in sorted(versions.items()):
+        through = "' and '".join(sorted(p for p in parents if p is not None))
+        if None not in parents:
+            entries.append(f"v{version} through '{through}'")
+        elif through:
+            entries.append(f"v{version} directly and through '{through}'")
+        else:
+            entries.append(f"v{version} directly")
+    return ", ".join(entries)
 
 
 def _walk(
@@ -96,6 +127,8 @@ def _walk(
     referenced: dict[str, str],
     provided_by: dict[str, str],
     report: Callable[[str], None],
+    uses: dict[str, dict[int, set[str | None]]],
+    names: dict[str, set[str]],
 ) -> str | None:
     """Depth-first walk of one row's references, adding texts to `referenced` post-order.
 
@@ -103,7 +136,8 @@ def _walk(
     nested schema (D1) is passed to `report` and the walk goes on with the others.
     A schema is walked again only when reached at a deeper level than before, so the
     depth limit applies to the longest path and the walk ends even on cycles that do
-    not involve `name` (at most _MAX_DEPTH + 1 walks of each schema).
+    not involve `name` (at most _MAX_DEPTH + 1 walks of each schema). Every edge is
+    recorded in `uses` and `names` (D7), also when the target is not walked again.
     """
     if row_subject == name:
         return messages.REF_CYCLE.format(s=row_subject, name=name)
@@ -125,6 +159,8 @@ def _walk(
         if child_depth > _MAX_DEPTH:
             return messages.REF_TOO_DEEP.format(s=row_subject)
         node = (child.subject, child.version)
+        uses.setdefault(child.subject, {}).setdefault(child.version, set()).add(schema.subject)
+        names.setdefault(child.name, set()).add(child.subject)
         if deepest.get(node, -1) >= child_depth:
             continue
         if node not in fetched:

@@ -3,8 +3,8 @@
 Checked on 2026-11-16 (the secured registry and the Avro namespace follow-up on 2026-11-17) against `confluentinc/cp-schema-registry:7.9.0` on `apache/kafka:3.8.1`, from `integration/docker-compose.yml`, with confluent-kafka-python 2.16.1 and the Confluent 7.9.0 Java serializers.
 
 ```
-.venv/bin/python -m pytest -q                                   # 566 passed
-.venv/bin/python -m pytest integration/tests -m integration -q  # 116 passed, none skipped
+.venv/bin/python -m pytest -q                                   # 573 passed
+.venv/bin/python -m pytest integration/tests -m integration -q  # 118 passed, none skipped
 ```
 
 Every integration test creates its subjects under a fresh namespace (`it` + 10 hex digits, shown below as `<ns>`), so the suite can be rerun against the same registry.
@@ -129,6 +129,13 @@ Added on 2026-11-17. Address references Country; a schema selects only the row f
 **A type nested inside a referenced schema cannot be used from another schema.** With the enum `Country` defined inside the referenced `Address`, a schema that uses `<ns>.Country` registers, but the Python `AvroSerializer` (confluent-kafka-python 2.16.1) cannot load it: `redefined named type: <ns>.Country` when Address is used too, a `TypeError` when it is not (`test_python_client_cannot_use_a_type_nested_in_a_reference`). The Java `KafkaAvroSerializer` fails as well (`Invalid schema ... with refs`), whether the client's schema is built from the two registered texts or has Address inlined (`probe.Nested`). Code change (owner decision, 2026-11-17, replacing OD3): `validate` rejects the use with `Type '<ns>.Country' is defined inside the Schema '<ns>.Address'. ...` (`test_validate_real_sr.py::test_avro_name_nested_in_a_reference`).
 
 **Protobuf and JSON Schema do not have this problem.** Checked on 2026-11-17 with the real Python serializers: a message and an enum nested inside an imported Protobuf schema (`Address.Geo`, `<ns>.Address.Kind`), and a JSON definition inside a referenced schema reached with `address.json#/definitions/Geo` (which itself points at another definition), are accepted by `validate`, registered and produced; the nested JSON definition is applied when the payload is validated. Pinned by `test_protobuf_types_nested_in_an_imported_schema` and `test_json_definitions_of_a_referenced_schema_two_levels_deep`. The Java serializers behave the same for both shapes (`probe.Nested` in `integration/java`, which exits 1 if either stops working).
+
+## One version per subject (audit F1)
+
+Added on 2026-11-17. Money v1 is registered, Line references Money v1, then Money v2 is registered. Order uses Line and Money directly (latest, v2).
+
+- The registry registers Order with both references. The Python `AvroSerializer` writes Money v2 in both places; a reader that resolves Money v1 everywhere (what the Java serializer does) misreads `total` (`integration/tests/test_python_clients.py::test_two_versions_of_one_type_corrupt_data`).
+- Code change: D7 (spec §4, §6). `validate` answers `'<ns>.Money' is used at more than one version: v1 through '<ns>.Line', v2 directly. ...` and the same for a reference name used for two Schemas (`integration/tests/test_validate_real_sr.py::test_version_conflict_real_sr`). Before, it answered `Warning`.
 
 ## Packaging
 

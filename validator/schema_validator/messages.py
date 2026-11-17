@@ -86,6 +86,15 @@ PROTO_MESSAGE_COUNT = (
 # Not given by the spec
 NOT_JSON = "Schema is not valid JSON: {err}"
 SR_INCOMPATIBLE_NO_VERSION = "Not {sr_level}-compatible with the existing versions: {descriptions}"
+REF_VERSION_CONFLICT = (
+    "'{s}' is used at more than one version: {uses}. A schema can use only one version of it. "
+    "Save the Schemas that use an older version again so that they use v{latest}, "
+    "then save this schema."
+)
+REF_NAME_CONFLICT = (
+    "The reference name '{x}' is used for more than one Schema: {subjects}. "
+    "Each Schema needs its own reference name."
+)
 REF_TOO_DEEP = "References of '{s}' are nested more than 20 levels deep."
 PROTO_TIMEOUT = "Invalid Protobuf schema: the Protobuf compiler did not finish in 10 seconds."
 INTERNAL_ERROR = "Internal validator error: {err}"

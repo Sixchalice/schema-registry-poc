@@ -9,6 +9,7 @@ first, because a serializer built from a schema with references fetches them.
 from __future__ import annotations
 
 import importlib
+import io
 import json
 import re
 import subprocess
@@ -17,6 +18,7 @@ from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from types import ModuleType
 
+import fastavro
 import pytest
 from fastavro.schema import SchemaParseException
 from confluent_kafka import KafkaError, Message, Producer
@@ -199,6 +201,41 @@ def test_avro_name_from_a_transitive_reference(
     serializer = AvroSerializer(ck_client, Schema(schema, "AVRO", [SchemaReference(**refs[0])]), conf=CONF)
     value = {"addr": {"country": {"code": "NL"}}, "extra": {"code": "US"}}
     check_client(serializer, value, name, registrar(register, name, schema, "AVRO", refs), producer)
+
+
+def test_two_versions_of_one_type_corrupt_data(
+    ck_client: SchemaRegistryClient, register: Register, ns: str,
+) -> None:
+    # Audit F1: Line pinned Money v1, Order uses Line and Money v2 (latest). The registry
+    # accepts it, but Python and Java resolve the one name Money differently, so one side
+    # decodes the other's bytes wrongly. This is why `validate` rejects the shape
+    # (REF_VERSION_CONFLICT). Here: the Python serializer writes Money v2 in both places,
+    # a reader that resolves Money v1 everywhere (what Java does) misreads `total`.
+    money, line, order_name = f"{ns}.Money", f"{ns}.Line", f"{ns}.Order"
+    money1 = {"type": "record", "name": "Money", "namespace": ns, "fields": [{"name": "amount", "type": "long"}]}
+    money2 = {**money1, "fields": money1["fields"] + [{"name": "currency", "type": "string", "default": "EUR"}]}
+    line_schema = {"type": "record", "name": "Line", "namespace": ns, "fields": [{"name": "price", "type": money}]}
+    order = {"type": "record", "name": "Order", "namespace": ns, "fields": [
+        {"name": "line", "type": line}, {"name": "total", "type": money}]}
+    registrar(register, money, json.dumps(money1), "AVRO")()
+    registrar(register, line, json.dumps(line_schema), "AVRO", [{"name": money, "subject": money, "version": 1}])()
+    registrar(register, money, json.dumps(money2), "AVRO")()
+    refs = [{"name": line, "subject": line, "version": 1}, {"name": money, "subject": money, "version": 2}]
+    registrar(register, order_name, json.dumps(order), "AVRO", refs)()
+
+    serializer = AvroSerializer(
+        ck_client, Schema(json.dumps(order), "AVRO", [SchemaReference(**r) for r in refs]), conf=CONF)
+    value = {"line": {"price": {"amount": 5, "currency": "USD"}}, "total": {"amount": 7, "currency": "USD"}}
+    data = serializer(value, CTX)
+    assert isinstance(data, bytes)
+
+    # Magic byte and 4-byte schema id come first; the rest is the Avro body.
+    java_view = fastavro.parse_schema({**order, "fields": [
+        {"name": "line", "type": {**line_schema, "fields": [{"name": "price", "type": money1}]}},
+        {"name": "total", "type": money}]})
+    decoded = fastavro.schemaless_reader(io.BytesIO(data[5:]), java_view)
+    assert isinstance(decoded, dict)
+    assert decoded["total"]["amount"] != 7
 
 
 @pytest.mark.parametrize("fields", [

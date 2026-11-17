@@ -257,7 +257,10 @@ def test_same_reference_name_for_different_schemas_keeps_the_first(
     sr.add("a.D", "D", references=[SrReference("shared", "a.E", 1)])
     result = resolve(MAIN, "AVRO", [row("a.B", "a.B"), row("a.D", "a.D")], sr)
     assert result.referenced == {"shared": "C", "a.B": "B", "a.D": "D"}
-    assert result.errors == []
+    assert result.errors == [
+        "The reference name 'shared' is used for more than one Schema: 'a.C', 'a.E'. "
+        "Each Schema needs its own reference name."
+    ]
 
 
 def test_sr_failure_propagates(sr: FakeSchemaRegistry) -> None:
@@ -315,3 +318,81 @@ def test_pinned_warning() -> None:
         "References will be pinned to: com.acme.Address v3, com.acme.Money v1. "
         "They stay on these versions until this schema is saved again."
     )
+
+
+# D7: one version per subject, one Schema per reference name
+
+def _money_setup(sr: FakeSchemaRegistry) -> None:
+    sr.add("a.Money", "Money1")
+    sr.add("a.Money", "Money2")
+
+
+def test_version_conflict_direct_and_transitive(sr: FakeSchemaRegistry) -> None:
+    _money_setup(sr)
+    sr.add("a.Line", "Line", references=[SrReference("a.Money", "a.Money", 1)])
+    result = resolve(MAIN, "AVRO", [row("a.Line", "a.Line"), row("a.Money", "a.Money")], sr)
+    assert result.errors == [
+        "'a.Money' is used at more than one version: v1 through 'a.Line', v2 directly. "
+        "A schema can use only one version of it. Save the Schemas that use an older version "
+        "again so that they use v2, then save this schema."
+    ]
+
+
+def test_conflict_between_two_transitive_paths(sr: FakeSchemaRegistry) -> None:
+    _money_setup(sr)
+    sr.add("a.B", "B", references=[SrReference("a.Money", "a.Money", 1)])
+    sr.add("a.C", "C", references=[SrReference("a.Money", "a.Money", 2)])
+    result = resolve(MAIN, "AVRO", [row("a.B", "a.B"), row("a.C", "a.C")], sr)
+    assert result.errors == [
+        "'a.Money' is used at more than one version: v1 through 'a.B', v2 through 'a.C'. "
+        "A schema can use only one version of it. Save the Schemas that use an older version "
+        "again so that they use v2, then save this schema."
+    ]
+
+
+def test_diamond_same_version_is_not_a_conflict(sr: FakeSchemaRegistry) -> None:
+    sr.add("a.Money", "Money1")
+    sr.add("a.B", "B", references=[SrReference("a.Money", "a.Money", 1)])
+    sr.add("a.C", "C", references=[SrReference("a.Money", "a.Money", 1)])
+    result = resolve(MAIN, "AVRO", [row("a.B", "a.B"), row("a.C", "a.C")], sr)
+    assert result.errors == []
+
+
+def test_same_version_directly_and_through_another_parent(sr: FakeSchemaRegistry) -> None:
+    _money_setup(sr)
+    sr.add("a.B", "B", references=[SrReference("a.Money", "a.Money", 1)])
+    sr.add("a.C", "C", references=[SrReference("a.Money", "a.Money", 2)])
+    sr.add("a.D", "D", references=[SrReference("a.Money", "a.Money", 2)])
+    result = resolve(
+        MAIN, "AVRO",
+        [row("a.B", "a.B"), row("a.C", "a.C"), row("a.D", "a.D"), row("a.Money", "a.Money")], sr)
+    assert result.errors == [
+        "'a.Money' is used at more than one version: v1 through 'a.B', "
+        "v2 directly and through 'a.C' and 'a.D'. "
+        "A schema can use only one version of it. Save the Schemas that use an older version "
+        "again so that they use v2, then save this schema."
+    ]
+
+
+def test_name_conflict(sr: FakeSchemaRegistry) -> None:
+    sr.add("a.Other", "Other", schema_type="JSON")
+    sr.add("a.Address", "Address", schema_type="JSON",
+           references=[SrReference("address.json", "a.Other", 1)])
+    result = resolve(MAIN, "JSON", [row("a.Address", "address.json")], sr)
+    assert result.errors == [
+        "The reference name 'address.json' is used for more than one Schema: "
+        "'a.Address', 'a.Other'. Each Schema needs its own reference name."
+    ]
+
+
+def test_conflict_recorded_on_a_skipped_revisit(sr: FakeSchemaRegistry) -> None:
+    # a.Money v1 is walked at level 2 (through a.Mid), then reached again at level 1
+    # (a.Money v2 directly is another version; a.Line -> a.Money v1 is the skipped revisit).
+    _money_setup(sr)
+    sr.add("a.Mid", "Mid", references=[SrReference("a.Money", "a.Money", 1)])
+    sr.add("a.Top", "Top", references=[SrReference("a.Mid", "a.Mid", 1),
+                                       SrReference("a.Money", "a.Money", 1)])
+    sr.add("a.Other", "Other", references=[SrReference("a.Money", "a.Money", 2)])
+    result = resolve(MAIN, "AVRO", [row("a.Top", "a.Top"), row("a.Other", "a.Other")], sr)
+    assert len(result.errors) == 1
+    assert "v1 through 'a.Mid' and 'a.Top', v2 through 'a.Other'" in result.errors[0]

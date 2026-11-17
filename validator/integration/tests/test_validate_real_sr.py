@@ -140,6 +140,28 @@ def test_stage_d_failure(client: HttpSchemaRegistryClient, config: ValidatorConf
         False, "Error", messages.REF_NOT_REGISTERED.format(s=f"{ns}.Address"))
 
 
+def test_version_conflict_real_sr(
+    client: HttpSchemaRegistryClient, config: ValidatorConfig, register: Register, ns: str,
+) -> None:
+    # Audit F1: Line pinned Money v1, Money is now v2, and Order uses both.
+    money, line = f"{ns}.Money", f"{ns}.Line"
+    money1 = {"type": "record", "name": "Money", "namespace": ns, "fields": [{"name": "amount", "type": "long"}]}
+    money2 = {**money1, "fields": money1["fields"] + [{"name": "currency", "type": "string", "default": "EUR"}]}
+    assert register(money, json.dumps(money1))[0] == 200
+    assert register(line, json.dumps({"type": "record", "name": "Line", "namespace": ns,
+                                      "fields": [{"name": "price", "type": money}]}),
+                    "AVRO", [{"name": money, "subject": money, "version": 1}])[0] == 200
+    assert register(money, json.dumps(money2))[0] == 200
+    order = json.dumps({"type": "record", "name": "Order", "namespace": ns, "fields": [
+        {"name": "line", "type": line}, {"name": "total", "type": money}]})
+
+    result = validate(request(f"{ns}.Order", "AVRO", order,
+                              [ReferenceInput(line), ReferenceInput(money)]), client, config)
+
+    assert result == ValidationResult(False, "Error", messages.REF_VERSION_CONFLICT.format(
+        s=money, uses=f"v1 through '{line}', v2 directly", latest=2))
+
+
 def test_stage_e_invalid(client: HttpSchemaRegistryClient, config: ValidatorConfig, ns: str) -> None:
     # fastavro accepts a duplicate field name; the registry does not.
     schema = json.dumps({"type": "record", "name": "Order", "namespace": ns,

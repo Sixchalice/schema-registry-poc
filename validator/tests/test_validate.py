@@ -218,6 +218,25 @@ def test_reference_cycle(sr: FakeSchemaRegistry, run: Callable) -> None:
     assert compat_calls(sr) == []
 
 
+def test_version_conflict_is_an_error(sr: FakeSchemaRegistry, run: Callable) -> None:
+    money = lambda extra: json.dumps({"type": "record", "name": "Money", "namespace": "a", "fields": [
+        {"name": "amount", "type": "long"}] + extra})
+    sr.add("a.Money", money([]))
+    sr.add("a.Money", money([{"name": "currency", "type": "string", "default": "EUR"}]))
+    sr.add("a.Line", json.dumps({"type": "record", "name": "Line", "namespace": "a",
+                                 "fields": [{"name": "price", "type": "a.Money"}]}),
+           "AVRO", [SrReference("a.Money", "a.Money", 1)])
+    schema = json.dumps({"type": "record", "name": "Order", "namespace": "a", "fields": [
+        {"name": "line", "type": "a.Line"}, {"name": "total", "type": "a.Money"}]})
+    result = run(req("AVRO", None, "a.Order", schema=schema,
+                     references=[ReferenceInput("a.Line"), ReferenceInput("a.Money")]), sr)
+    assert not result.valid
+    assert result.validationType == "Error"
+    assert result.message == messages.REF_VERSION_CONFLICT.format(
+        s="a.Money", uses="v1 through 'a.Line', v2 directly", latest=2)
+    assert compat_calls(sr) == []
+
+
 def test_json_row_without_ref_string(sr: FakeSchemaRegistry, run: Callable) -> None:
     sr.add("com.acme.Address", load("JSON", "address"), "JSON")
     request = req("JSON", "customer", "com.acme.Customer", references=[ReferenceInput("com.acme.Address")])

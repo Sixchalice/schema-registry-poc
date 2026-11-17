@@ -147,6 +147,7 @@ On edit, if the user changed the namespace or record name inside the schema, C3 
 | D4 | Every external name used in the schema text has a reference row | `Your schema uses '{x}' but no reference is selected for it.` |
 | D5 | Every reference row is actually used in the schema text | `'{x}' is selected as a reference but is not used in the schema.` PROTOBUF: `'{s}' is selected as a reference but the schema does not import it. Write the import as: import "{path}";` |
 | D6 | JSON: `ref_string` is present and not empty on every row | `Reference to '{s}' needs the text used in the schema (the $ref value).` |
+| D7 | One version per subject and one Schema per reference name, across the whole graph (the rows and everything they reference) | `'{s}' is used at more than one version: {uses}. A schema can use only one version of it. Save the Schemas that use an older version again so that they use v{latest}, then save this schema.` / `The reference name '{x}' is used for more than one Schema: {subjects}. Each Schema needs its own reference name.` |
 
 A nested reference that is not registered gives D1 with the nested subject.
 
@@ -258,8 +259,9 @@ Algorithm:
 2. For each row, `GET /subjects/{schema_name}/versions/latest`. 404 gives D1. Otherwise keep `version`, `schemaType` (absent means AVRO), `schema` text and its `references`.
 3. D2 format check.
 4. D3 cycle check: depth-first walk over the referenced schemas' own `references` (fetch each `subject`/`version` from SR, memoised per request, max depth 20). If `name` is reached, report the cycle.
-5. D4/D5 cross-check: compare `external_refs` from stage B with the set of `ref_string` values. Both directions, exact string match.
-6. Build `resolved = [{name: ref_string, subject: schema_name, version: n}]` for stage E and for the warning text.
+5. D7, during the same walk: record every reference edge (also edges to a schema already walked) and every row. For each subject, the versions used must be one; for each reference name, the subjects must be one. Otherwise report `REF_VERSION_CONFLICT` / `REF_NAME_CONFLICT`, after the per-row errors, sorted by subject / name. Why: the registry accepts a schema that uses Money v2 directly and Money v1 through another reference, but Python and Java then resolve the one name differently and decode each other's data wrongly (audit F1).
+6. D4/D5 cross-check: compare `external_refs` from stage B with the set of `ref_string` values. Both directions, exact string match.
+7. Build `resolved = [{name: ref_string, subject: schema_name, version: n}]` for stage E and for the warning text.
 
 The validator does not return `resolved` as data. America's registration step re-resolves the latest versions itself (accepted trade-off: a referenced schema could gain a version between validation and registration).
 
