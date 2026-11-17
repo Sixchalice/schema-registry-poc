@@ -67,6 +67,16 @@ One change, in `schema_validator/sr_client.py` (`HttpSchemaRegistryClient._call`
 
 `probe.Defaults` (second audit, F5; Java Avro `Schema.Parser` on the 30 cases of `tests/schemas/avro_defaults.json`, the file the unit tests use; it needs neither registry nor Kafka). Each case prints `accept` or `reject`, and the probe exits 1 on any difference from the file's `java` column. Result: exit 0, last line `Defaults: all cases as expected`. Rejected: a union default of the wrong type for its first branch (`"x"` for `["null","string"]`, `null` for `["string","null"]`), a record default with a missing field, a wrong field type, or a union field that would need its first branch, a boolean or an out-of-range number for `int` and `long` (4294967296, 9223372036854775808), an array or map default with a bad element, an enum symbol or fixed size that does not fit, and in a nested `error` type a bad union default of one of its fields or a default of the error type with a wrong field type. Accepted: `null` for a null-first union, `NaN`, `-Infinity` and an integer for `float`/`double`, a long above the int range, a decimal `bytes` default, a record with an extra key, a record-shaped default of an `error` type, and good array, map, enum and fixed defaults.
 
+`probe.Enums` (second audit, F2, 2026-11-18; `KafkaAvroSerializer`, `use.latest.version=true`, `auto.register.schemas=false`, RecordNameStrategy). A top-level enum `p9.enumref.Color` and a top-level fixed `p9.enumref.Md5` are registered as their own subjects, and the record `p9.enumref.Order` references both (version 1). Result: exit 0, last line `Enums: all cases as expected`.
+
+| Case | Result |
+|---|---|
+| (a) an `Order` whose client schema has Color and Md5 inlined | OK, 8 bytes, read back `{"color": "BLUE", "hash": [1, 2]}` |
+| (b) a bare Color value | refused: `SerializationException: In configuration value.subject.name.strategy = io.confluent.kafka.serializers.subject.RecordNameStrategy, the message value must only be a record schema` |
+| (c) a bare Md5 value | refused, same message |
+
+So a top-level enum or fixed Schema works as a reference from a record, and never as a message value under RecordNameStrategy.
+
 The stack has two registries: one without authentication, used by everything below except the "Secured registry" section, and one with HTTP Basic auth and ACLs.
 
 ## Avro rules that are stricter than the registry (spec §5.1 steps 4 and 7)

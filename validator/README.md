@@ -223,6 +223,7 @@ docker run --rm --network validator-it_default -v "$PWD:/work" -v "$PWD/../..:/r
   && java -cp target/classes:$(cat target/cp.txt) probe.Main && java -cp target/classes:$(cat target/cp.txt) probe.ProtoRefs \
   && java -cp target/classes:$(cat target/cp.txt) probe.Nested \
   && java -cp target/classes:$(cat target/cp.txt) probe.Pinned \
+  && java -cp target/classes:$(cat target/cp.txt) probe.Enums \
   && java -cp target/classes:$(cat target/cp.txt) probe.Defaults /repo/tests/schemas/avro_defaults.json'
 ```
 
