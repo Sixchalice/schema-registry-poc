@@ -20,7 +20,7 @@ _NAME_MAPS = frozenset(
     {"properties", "patternProperties", "definitions", "$defs", "dependentSchemas", "dependencies"}
 )
 # Keywords whose value is data, not a schema.
-_DATA_KEYWORDS = frozenset({"enum", "const", "default", "examples"})
+_DATA_KEYWORDS = frozenset({"enum", "const", "default", "examples", "example"})
 _DRAFT_04 = "http://json-schema.org/draft-04/schema"
 # Drafts in which a "$ref" makes its sibling keywords, the id among them, ignored.
 _REF_SIBLINGS_IGNORED = frozenset(
@@ -101,9 +101,13 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
     ref_values, nested_ids, nested_schemas = _walk(schema, id_keyword)
     if "$schema" not in schema:
         errors.append(messages.JSON_SCHEMA_MISSING)
+    root_id = schema.get(id_keyword)
     rule_errors = False
     if draft in _REF_SIBLINGS_IGNORED and "$ref" in schema and id_keyword in schema:
         errors.append(messages.JSON_ROOT_ID_WITH_REF.format(kw=id_keyword))
+        rule_errors = True
+    if draft in _REF_SIBLINGS_IGNORED and isinstance(root_id, str) and _has_root_fragment(id_keyword, root_id):
+        errors.append(messages.JSON_ROOT_ID_FRAGMENT.format(kw=id_keyword, value=root_id))
         rule_errors = True
     if nested_ids:
         errors.append(messages.JSON_NESTED_ID.format(kw=id_keyword, paths=_paths(nested_ids)))
@@ -116,7 +120,6 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
         return FormatAnalysis(expected_name, None, errors)
 
     # Steps 8 and 9 (a top-level javaType needs no check)
-    root_id = schema.get(id_keyword)
     try:
         base = urldefrag(_join(id_keyword, "", root_id)).url if isinstance(root_id, str) else ""
         refs = {target for ref in ref_values if (target := _target(base, ref)) not in ("", base)}
@@ -124,6 +127,15 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
         errors.append(messages.JSON_INVALID.format(err=f"the {e.keyword} '{e.value}' is not a valid URI"))
         return FormatAnalysis(expected_name, None, errors)
     return FormatAnalysis(expected_name, refs, errors)
+
+
+def _has_root_fragment(keyword: str, value: str) -> bool:
+    """True when the id has a non-empty part before the "#" and a non-empty fragment after it."""
+    try:
+        split = urldefrag(_join(keyword, "", value))
+    except _BadUri:
+        return False  # reported as an invalid URI in steps 8 and 9
+    return bool(split.url and split.fragment)
 
 
 def _escape(token: str) -> str:
@@ -136,7 +148,8 @@ def _walk(schema: dict[str, Any], id_keyword: str) -> tuple[list[str], list[str]
     and of those that have `$schema`.
 
     Visits the objects a schema can hold: name maps (`properties` and the like) are names, not
-    keywords; `enum`, `const`, `default` and `examples` are data; lists are walked. It is iterative,
+    keywords; `enum`, `const`, `default`, `examples` and
+    `example` are data; lists are walked. It is iterative,
     so a deep schema costs no recursion.
     """
     refs: list[str] = []

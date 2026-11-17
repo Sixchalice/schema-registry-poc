@@ -490,3 +490,56 @@ def test_ref_under_id_and_absolute_ids() -> None:
     result = run(schema(**{"$id": ROOT + "#", "properties": {"a": {"$ref": ROOT}, "b": {"$ref": "#/x"},
                                                            "c": {"$ref": "b.json#/y"}, "d": {"$ref": ""}}}))
     assert result.external_refs == {"https://acme.example/b.json"}
+
+
+def test_example_data_is_not_walked() -> None:
+    # OpenAPI-style "example" holds data, like "examples".
+    result = run(schema(**{"$schema": DRAFT_04, "properties": {"user": {
+        "type": "object", "properties": {"id": {"type": "integer"}},
+        "example": {"id": 1, "$schema": "x", "$id": "y"}}}}))
+    assert result.errors == []
+
+
+def test_root_id_with_a_fragment_is_an_error() -> None:
+    frag = ROOT + "#frag"
+    expected = messages.JSON_ROOT_ID_FRAGMENT.format(kw="$id", value=frag)
+    result = run(schema(**{"$id": frag, "properties": {"a": {"$ref": "a.json"}}}))
+    assert result.errors == [expected]
+    assert result.external_refs is None
+    draft04 = run(schema(**{"$schema": DRAFT_04, "id": frag}))
+    assert draft04.errors == [expected.replace('"$id"', '"id"')]
+    assert draft04.external_refs is None
+
+
+def test_root_id_fragment_rule_leaves_other_ids_alone() -> None:
+    assert run(schema(**{"$id": "#foo"})).errors == []
+    assert run(schema(**{"$id": ROOT + "#"})).errors == []
+    assert run(schema(**{"$id": "http://[x#f"})).errors == [
+        "Invalid JSON schema: the $id 'http://[x#f' is not a valid URI"]
+
+
+def test_root_id_fragment_in_2020_12_is_the_meta_schema_error() -> None:
+    result = run(schema(**{"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": ROOT + "#frag"}))
+    assert len(result.errors) == 1 and result.errors[0].startswith("Invalid JSON schema: ")
+
+
+def test_root_id_fragment_comes_after_rule_d() -> None:
+    result = run(schema(**{"$id": ROOT + "#frag", "$ref": "#/definitions/x"}))
+    assert result.errors == [
+        messages.JSON_ROOT_ID_WITH_REF.format(kw="$id"),
+        messages.JSON_ROOT_ID_FRAGMENT.format(kw="$id", value=ROOT + "#frag"),
+    ]
+
+
+def test_schema_shaped_at_limit_2020_12_items() -> None:
+    # An "items" chain at depth exactly 100 is not SCHEMA_TOO_DEEP. check_schema needs about 10 frames
+    # per level and follows an "items" chain to depth 124 on a shallow stack, so there is a margin of
+    # about 24 levels: this passes from under pytest too.
+    node: dict[str, Any] = {"type": "string"}
+    for _ in range(99):
+        node = {"items": node}
+    text = json.dumps(schema(**{"$schema": "https://json-schema.org/draft/2020-12/schema", **node}))
+    assert json_depth(json.loads(text), 1000) == 100
+    result = analyse(text, {}, cfg)
+    assert result.errors == []
+    assert result.external_refs == set()

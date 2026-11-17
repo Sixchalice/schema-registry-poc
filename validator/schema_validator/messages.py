@@ -99,6 +99,9 @@ JSON_ROOT_ID_WITH_REF = (
     'In draft-07 and earlier, a "$ref" at the top level makes the "{kw}" next to it ignored. '
     'Move the "$ref" into "allOf".'
 )
+JSON_ROOT_ID_FRAGMENT = (
+    'The top-level "{kw}" cannot have a fragment. Remove the "#..." part from \'{value}\'.'
+)
 JSON_TOO_DEEP = "JSON schema is nested too deeply."
 SCHEMA_TOO_DEEP = "Schema is nested more than {max} levels deep."
 
