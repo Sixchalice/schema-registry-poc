@@ -73,6 +73,7 @@ JSON_TITLE_FORMAT = (
 JSON_TOP_LEVEL = "The top level of a JSON schema must have \"type\": \"object\"."
 JSON_DRAFT = "Unsupported JSON Schema draft '{x}'."
 JSON_INVALID = "Invalid JSON schema: {err}"
+JSON_TOO_DEEP = "JSON schema is nested too deeply."
 
 # Protobuf (5.3)
 PROTO_IMPORT_PATH = "Invalid import path '{x}'."

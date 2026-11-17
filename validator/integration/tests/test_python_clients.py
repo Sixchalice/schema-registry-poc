@@ -38,6 +38,7 @@ from schema_validator import (
     HttpSchemaRegistryClient,
     ReferenceInput,
     ValidationRequest,
+    ValidationResult,
     ValidatorConfig,
     validate,
 )
@@ -314,6 +315,89 @@ def test_json_with_external_ref(
     serializer = JSONSerializer(Schema(schema, "JSON", [SchemaReference(**refs[0])]), ck_client, conf=CONF)
     check_client(serializer, {"addr": {"city": "TLV"}, "zip": "12345"}, name,
                  registrar(register, name, schema, "JSON", refs), producer)
+
+
+def validated(name: str, schema: str, config: ValidatorConfig, references: Sequence[ReferenceInput]) -> ValidationResult:
+    request = ValidationRequest(
+        name=name, schema_type="JSON", schema=schema, compatibility="BACKWARD",
+        references=list(references), previous_name=None, existing_names=[],
+    )
+    return validate(request, HttpSchemaRegistryClient.from_config(config), config)
+
+
+def register_address(register: Register, ns: str) -> str:
+    address = f"{ns}.Address"
+    registrar(register, address, json.dumps({
+        "$schema": DRAFT_07, "title": address, "type": "object",
+        "properties": {"street": {"type": "string"}}, "required": ["street"],
+    }), "JSON")()
+    return address
+
+
+def id_schema(ns: str, title: str) -> str:
+    return json.dumps({"$schema": DRAFT_07, "$id": "https://acme.example/schemas/order.json",
+                       "title": f"{ns}.{title}", "type": "object",
+                       "properties": {"a": {"$ref": "address.json"}}, "required": ["a"]})
+
+
+ABSOLUTE = "https://acme.example/schemas/address.json"
+
+
+def test_json_id_relative_ref_is_rejected(
+    ck_client: SchemaRegistryClient, register: Register, producer: Producer, config: ValidatorConfig, ns: str,
+) -> None:
+    # Under a root $id the Python serializer resolves "address.json" against it, so a reference
+    # named "address.json" cannot be found. The registry itself accepts the schema.
+    address = register_address(register, ns)
+    schema = id_schema(ns, "O2")
+    result = validated(f"{ns}.O2", schema, config, [ReferenceInput(address, "address.json")])
+    assert result.validationType == "Error" and ABSOLUTE in result.message
+
+    refs = [{"name": "address.json", "subject": address, "version": 1}]
+    registrar(register, f"{ns}.O2", schema, "JSON", refs)()
+    serializer = JSONSerializer(Schema(schema, "JSON", [SchemaReference(**refs[0])]), ck_client, conf=CONF)
+    with pytest.raises(Exception, match="Unresolvable"):
+        serializer({"a": {"street": "x"}}, CTX)
+
+
+def test_json_id_absolute_ref_string_works(
+    ck_client: SchemaRegistryClient, register: Register, producer: Producer, config: ValidatorConfig, ns: str,
+) -> None:
+    address = register_address(register, ns)
+    schema = id_schema(ns, "O3")
+    result = validated(f"{ns}.O3", schema, config, [ReferenceInput(address, ABSOLUTE)])
+    assert result.validationType == "Warning", result.message
+
+    refs = [{"name": ABSOLUTE, "subject": address, "version": 1}]
+    serializer = JSONSerializer(Schema(schema, "JSON", [SchemaReference(**refs[0])]), ck_client, conf=CONF)
+    check_client(serializer, {"a": {"street": "x"}}, f"{ns}.O3",
+                 registrar(register, f"{ns}.O3", schema, "JSON", refs), producer)
+    with pytest.raises(Exception, match="(?i)valid|integer|string"):
+        serializer({"a": {"street": 1}}, CTX)
+
+
+def test_json_internal_id_ref_works(
+    ck_client: SchemaRegistryClient, register: Register, producer: Producer, config: ValidatorConfig, ns: str,
+) -> None:
+    schema = json.dumps({"$schema": DRAFT_07, "$id": "https://acme.example/o5.json", "title": f"{ns}.O5",
+                         "type": "object",
+                         "definitions": {"x": {"$id": "https://acme.example/x.json", "type": "string"}},
+                         "properties": {"x": {"$ref": "https://acme.example/x.json"}}})
+    result = validated(f"{ns}.O5", schema, config, [])
+    assert result.validationType == "Ok", result.message
+    check_client(JSONSerializer(schema, ck_client, conf=CONF), {"x": "ok"}, f"{ns}.O5",
+                 registrar(register, f"{ns}.O5", schema, "JSON"), producer)
+
+
+def test_json_https_draft07_works(
+    ck_client: SchemaRegistryClient, register: Register, producer: Producer, config: ValidatorConfig, ns: str,
+) -> None:
+    schema = json.dumps({"$schema": "https://json-schema.org/draft-07/schema#", "title": f"{ns}.H7",
+                         "type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]})
+    result = validated(f"{ns}.H7", schema, config, [])
+    assert result.validationType == "Ok", result.message
+    check_client(JSONSerializer(schema, ck_client, conf=CONF), {"id": "1"}, f"{ns}.H7",
+                 registrar(register, f"{ns}.H7", schema, "JSON"), producer)
 
 
 # PROTOBUF

@@ -92,7 +92,7 @@ def test_draft_with_and_without_hash(draft: str) -> None:
 
 @pytest.mark.parametrize("draft", DEFAULT_JSON_DRAFTS)
 def test_all_allowed_drafts(draft: str) -> None:
-    assert len(DEFAULT_JSON_DRAFTS) == 5
+    assert len(DEFAULT_JSON_DRAFTS) == 6
     assert run(schema(**{"$schema": draft})).errors == []
 
 
@@ -232,3 +232,74 @@ def test_empty_ref_is_internal() -> None:
 def test_property_named_like_data_keyword_is_walked() -> None:
     result = run(schema(properties={"default": {"$ref": "x.json"}, "enum": {"$ref": "y.json"}}))
     assert result.external_refs == {"x.json", "y.json"}
+
+
+def refs_of(d: Any) -> set[str] | None:
+    return run(d).external_refs
+
+
+def test_relative_ref_under_id_resolves_to_absolute() -> None:
+    # J2
+    result = run(schema(**{"$id": "https://acme.example/schemas/order.json",
+                           "properties": {"a": {"$ref": "address.json"}}}))
+    assert result.external_refs == {"https://acme.example/schemas/address.json"}
+
+
+def test_ref_to_internal_id_is_internal() -> None:
+    # J5
+    result = run(schema(**{"$id": "https://acme.example/o5.json",
+                           "definitions": {"x": {"$id": "https://acme.example/x.json", "type": "string"}},
+                           "properties": {"x": {"$ref": "https://acme.example/x.json"}}}))
+    assert result.external_refs == set()
+
+
+def test_ref_to_own_id_with_fragment_is_internal() -> None:
+    # J5b
+    result = run(schema(**{"$id": "https://acme.example/o5b.json",
+                           "definitions": {"x": {"type": "string"}},
+                           "properties": {"x": {"$ref": "https://acme.example/o5b.json#/definitions/x"}}}))
+    assert result.external_refs == set()
+
+
+def test_nested_id_moves_the_base() -> None:
+    result = run(schema(properties={"s": {"$id": "https://x/sub/", "properties": {"a": {"$ref": "a.json"}}}}))
+    assert result.external_refs == {"https://x/sub/a.json"}
+
+
+def test_fragment_id_keeps_the_base() -> None:
+    result = run(schema(**{"$id": "https://x/root.json",
+                           "properties": {"s": {"$id": "#foo", "properties": {"a": {"$ref": "a.json"}}}}}))
+    assert result.external_refs == {"https://x/a.json"}
+
+
+def test_fragment_id_without_root_id_keeps_the_empty_base() -> None:
+    result = run(schema(properties={"s": {"$id": "#foo", "properties": {"a": {"$ref": "a.json"}}}}))
+    assert result.external_refs == {"a.json"}
+
+
+def test_non_string_id_is_ignored() -> None:
+    result = run(schema(**{"$id": 5, "properties": {"a": {"$ref": "a.json"}}}))
+    assert result.external_refs == {"a.json"}
+
+
+def test_draft04_uses_id() -> None:
+    result = run(schema(**{"$schema": "http://json-schema.org/draft-04/schema#",
+                           "id": "https://x/dir/root.json", "$id": "https://ignored/",
+                           "properties": {"a": {"$ref": "a.json"}}}))
+    assert result.external_refs == {"https://x/dir/a.json"}
+
+
+def test_https_draft07_accepted() -> None:
+    ok = run(schema(**{"$schema": "https://json-schema.org/draft-07/schema#"}))
+    assert ok.errors == []
+    # It is checked with Draft7: a bad keyword value is found.
+    bad = run(schema(**{"$schema": "https://json-schema.org/draft-07/schema", "required": "id"}))
+    assert len(bad.errors) == 1 and bad.errors[0].startswith("Invalid JSON schema: ")
+
+
+def test_deep_schema_gives_too_deep() -> None:
+    node: dict[str, Any] = {"type": "string"}
+    for _ in range(200):
+        node = {"type": "object", "properties": {"p": node}}
+    result = run(schema(properties={"p": node}))
+    assert result.errors == ["JSON schema is nested too deeply."]

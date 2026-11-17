@@ -62,7 +62,7 @@ result.message         # "" for Ok; otherwise the messages, one per line
 | `sr_password` | `None` | Basic auth password; not shown in `repr` |
 | `sr_timeout_seconds` | `10` | Timeout of each HTTP call |
 | `max_schema_bytes` | `500_000` | Largest schema text accepted, in UTF-8 bytes |
-| `allowed_json_drafts` | draft-04, draft-06, draft-07, 2019-09, 2020-12 | Accepted `$schema` values, stored without a trailing `#` (`DEFAULT_JSON_DRAFTS` in `models.py`). This is platform policy: Schema Registry accepts any `$schema` value |
+| `allowed_json_drafts` | draft-04, draft-06, draft-07 (http and https), 2019-09, 2020-12 | Accepted `$schema` values, stored without a trailing `#` (`DEFAULT_JSON_DRAFTS` in `models.py`). This is platform policy: Schema Registry accepts any `$schema` value |
 | `builtin_proto_imports` | 29 paths (`DEFAULT_BUILTIN_PROTO_IMPORTS` in `models.py`) | Import paths that need no reference row: `google/protobuf/` `any`, `api`, `descriptor`, `duration`, `empty`, `field_mask`, `source_context`, `struct`, `timestamp`, `type`, `wrappers`; `google/type/` `calendar_period`, `color`, `date`, `datetime`, `dayofweek`, `decimal`, `expr`, `fraction`, `interval`, `latlng`, `money`, `month`, `phone_number`, `postal_address`, `quaternion`, `timeofday` (each `.proto`); `confluent/meta.proto`, `confluent/type/decimal.proto` |
 
 On a registry with ACLs (Confluent Security Plugin), the validator's user needs `SUBJECT_READ`, `SUBJECT_WRITE` and `SUBJECT_COMPATIBILITY_READ` on subject `*`. `SUBJECT_WRITE` is for the compatibility check: it stores nothing, but the registry asks for Write. The same credentials can therefore register schemas, so protect them accordingly.
@@ -121,6 +121,7 @@ All errors are collected; a stage is skipped only when it depends on one that fa
 | B, JSON | `title` matches `^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$` | `The "title" must be a dotted name made of letters, digits and underscores, for example "com.team.domain.Order".` |
 | B, JSON | `$schema`, if present, is in `allowed_json_drafts` | `Unsupported JSON Schema draft '{x}'.` |
 | B, JSON | The schema passes its draft's meta-schema (draft-07 when `$schema` is absent) | `Invalid JSON schema: {err}` |
+| B, JSON | The schema is not nested so deeply that the meta-schema check overflows the stack | `JSON schema is nested too deeply.` |
 | B, Protobuf | Every reference's import path (derived, or read from Schema Registry) is not empty, is relative, has no `..` path segment, contains no backslash or NUL character, and can be written (it does not collide with `__main__.proto` or another reference's directory) | `Invalid import path '{x}'.` |
 | B, Protobuf | protoc compiles the schema with its references | `Invalid Protobuf schema: {err}` / `Invalid Protobuf schema: the Protobuf compiler did not finish in 10 seconds.` |
 | B, Protobuf | `package` is set | `Protobuf schema needs a package, for example "package com.team.domain;".` |
