@@ -201,6 +201,14 @@ Observed: `GET /mode/<new subject>?defaultToGlobal=true` gives `200 {"mode":"REA
 
 Code changed: `get_mode` on the client; stage E checks it after a compatible verdict and gives E5 for any mode other than `READWRITE`. README and spec 4 and 7 updated.
 
+## Level change and schema change in one save (audit F4)
+
+Tested: `test_level_and_schema_change_together_is_an_error`, `test_level_change_with_unchanged_schema_warns`, `test_level_change_without_versions_is_not_blocked`, `test_same_level_unchanged_behaviour`, `test_lookup_uses_latest_versions_own_references`, `test_level_change_lookup_failure_is_an_error`, the `is_registered` tests in `test_sr_client.py` and `test_fake_sr.py` (unit); `test_level_and_schema_change_together_is_an_error` (the case C3 of `t12_compat_auth.py`: NONE to FULL with an incompatible edit), `test_level_change_with_unchanged_schema_warns`, and on the secured registry `test_schema_lookup_by_validator_user` and `test_level_and_schema_change_by_validator_user` (integration).
+
+Observed: `POST /subjects/{s}` with a registered text gives 200 with the version; with a text that is not registered, 404 `{"error_code":40403,"message":"Schema not found"}`; for a subject that does not exist, 404 error_code 40401. On the secured registry the `validator` user gets 200 and 404 from it with its existing ACLs (it needs `SUBJECT_READ`; a user without it gets `403 User is denied operation Read on Subject: x`). No ACL was added.
+
+Code changed: `is_registered` on the client (40403 is a not-found code for this call only); stage E checks the level before the compatibility call and returns E6 when the level differs and the schema is not registered. Known gap: if the references' latest versions changed in the meantime, the re-save repins them under the old level. README and spec 4 and 7 updated.
+
 ## Packaging
 
 `tests/test_packaging.py` builds the wheel from a copy of the tree with `setuptools.build_meta.build_wheel` on every unit-test run and checks that it holds every `.py` file and the 18 `.proto` files under `schema_validator/_proto/`, and no tests.

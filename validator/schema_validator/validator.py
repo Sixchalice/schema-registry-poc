@@ -78,6 +78,21 @@ def _validate(request: ValidationRequest, sr: SchemaRegistryClient, config: Vali
             err=f"the {schema_type} analyser gave no name or references and no error")], [])
 
     # Stage E
+    # E6: the registry checks under the level in force, so a level change cannot come with a schema change.
+    level_warning = None
+    if request.previous_name is not None:
+        try:
+            level = sr.get_compatibility_level(name)
+            if level != request.compatibility:
+                level_warning = messages.LEVEL_WARNING.format(
+                    sr_level=level, compatibility=request.compatibility)
+                latest = sr.get_latest(name)
+                if latest is not None and not sr.is_registered(
+                        name, request.schema, schema_type, latest.references):
+                    return build_result([messages.LEVEL_AND_SCHEMA_CHANGED.format(
+                        sr_level=level, compatibility=request.compatibility)], [])
+        except _SR_FAILURES as err:
+            return build_result([_sr_failure(err)], [])
     try:
         verdict = sr.check_compatibility(name, request.schema, schema_type, tuple(resolution.resolved))
     except _SR_FAILURES as err:
@@ -98,14 +113,8 @@ def _validate(request: ValidationRequest, sr: SchemaRegistryClient, config: Vali
     warnings: list[str] = []
     if resolution.resolved:
         warnings.append(pinned_warning(resolution.resolved))
-    if request.previous_name is not None:
-        try:
-            level = sr.get_compatibility_level(name)
-        except _SR_FAILURES as err:
-            return build_result([_sr_failure(err)], [])
-        if level != request.compatibility:
-            warnings.append(messages.LEVEL_WARNING.format(
-                sr_level=level, compatibility=request.compatibility))
+    if level_warning is not None:
+        warnings.append(level_warning)
     return build_result([], warnings)
 
 

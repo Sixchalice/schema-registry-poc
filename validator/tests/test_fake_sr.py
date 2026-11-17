@@ -68,6 +68,7 @@ def test_fail_with_raises_from_every_method():
         lambda: sr.get_compatibility_level("s"),
         lambda: sr.get_mode("s"),
         lambda: sr.check_compatibility("s", "t", "AVRO", []),
+        lambda: sr.is_registered("s", "t", "AVRO", []),
     ):
         with pytest.raises(SchemaRegistryUnavailable):
             call()
@@ -76,3 +77,15 @@ def test_fail_with_raises_from_every_method():
 def test_default_constants_sizes():
     assert len(DEFAULT_BUILTIN_PROTO_IMPORTS) == 29
     assert len(DEFAULT_JSON_DRAFTS) == 5
+
+
+def test_is_registered_matches_text_type_and_references():
+    sr = FakeSchemaRegistry()
+    ref = SrReference("n", "s2", 3)
+    sr.add("s", "t", "AVRO", [ref])
+    assert sr.is_registered("s", "t", "AVRO", [ref])
+    assert not sr.is_registered("s", "t", "AVRO", [])
+    assert not sr.is_registered("s", "t", "JSON", [ref])
+    assert not sr.is_registered("s", "u", "AVRO", [ref])
+    assert not sr.is_registered("other", "t", "AVRO", [ref])
+    assert sr.calls[-1] == ("is_registered", "other", "t", "AVRO", (ref,))

@@ -292,6 +292,43 @@ def test_level_warning_on_edit(
         True, "Warning", messages.LEVEL_WARNING.format(sr_level="FULL", compatibility="BACKWARD"))
 
 
+def test_level_and_schema_change_together_is_an_error(
+    client: HttpSchemaRegistryClient,
+    config: ValidatorConfig,
+    register: Register,
+    set_subject_level: Callable[[str, str], Response],
+    ns: str,
+) -> None:
+    # The audit's C3: under NONE any edit passes, but under FULL this one is incompatible.
+    name = f"{ns}.Order"
+    assert set_subject_level(name, "NONE")[0] == 200
+    assert register(name, order("AVRO", ns))[0] == 200
+
+    result = validate(request(name, "AVRO", incompatible_order("AVRO", ns), previous_name=name,
+                              compatibility="FULL"), client, config)
+
+    assert result == ValidationResult(False, "Error", messages.LEVEL_AND_SCHEMA_CHANGED.format(
+        sr_level="NONE", compatibility="FULL"))
+
+
+def test_level_change_with_unchanged_schema_warns(
+    client: HttpSchemaRegistryClient,
+    config: ValidatorConfig,
+    register: Register,
+    set_subject_level: Callable[[str, str], Response],
+    ns: str,
+) -> None:
+    name = f"{ns}.Order"
+    assert set_subject_level(name, "NONE")[0] == 200
+    assert register(name, order("AVRO", ns))[0] == 200
+
+    result = validate(request(name, "AVRO", order("AVRO", ns), previous_name=name, compatibility="FULL"),
+                      client, config)
+
+    assert result == ValidationResult(
+        True, "Warning", messages.LEVEL_WARNING.format(sr_level="NONE", compatibility="FULL"))
+
+
 def test_readonly_subject_rejected(
     client: HttpSchemaRegistryClient,
     config: ValidatorConfig,

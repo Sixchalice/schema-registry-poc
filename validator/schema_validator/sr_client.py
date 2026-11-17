@@ -83,6 +83,16 @@ class SchemaRegistryClient(Protocol):
         references: Sequence[SrReference],
     ) -> CompatibilityVerdict: ...
 
+    def is_registered(
+        self,
+        subject: str,
+        schema: str,
+        schema_type: str,
+        references: Sequence[SrReference],
+    ) -> bool:
+        """Whether this schema, with these references, is already a version of the subject."""
+        ...
+
 
 _CONTENT_TYPE = "application/vnd.schemaregistry.v1+json"
 
@@ -90,6 +100,8 @@ _CONTENT_TYPE = "application/vnd.schemaregistry.v1+json"
 _NOT_FOUND = object()
 # Schema Registry's 404 error codes: subject not found, version not found.
 _NOT_FOUND_CODES = (40401, 40402)
+# For the schema lookup (POST /subjects/{s}): subject not found, schema not found.
+_LOOKUP_NOT_FOUND_CODES = (40401, 40403)
 
 # Exception texts below are diagnostics, not user-facing messages: stage E maps
 # each exception class to its constant in messages.py. They name the method and
@@ -143,11 +155,7 @@ class HttpSchemaRegistryClient:
         schema_type: str,
         references: Sequence[SrReference],
     ) -> CompatibilityVerdict:
-        request: dict[str, object] = {"schema": schema, "schemaType": schema_type}
-        if references:
-            request["references"] = [
-                {"name": r.name, "subject": r.subject, "version": r.version} for r in references
-            ]
+        request = _schema_request(schema, schema_type, references)
         path = "/compatibility/subjects/{s}/versions?verbose=true"
         body = self._call("POST", path, subject, request)
         if not isinstance(body, dict):
@@ -161,6 +169,23 @@ class HttpSchemaRegistryClient:
             raise _bad_body("POST", path)
         return CompatibilityVerdict(is_compatible, tuple(messages))
 
+    def is_registered(
+        self,
+        subject: str,
+        schema: str,
+        schema_type: str,
+        references: Sequence[SrReference],
+    ) -> bool:
+        request = _schema_request(schema, schema_type, references)
+        path = "/subjects/{s}"
+        body = self._call("POST", path, subject, request, not_found_ok=True,
+                          not_found_codes=_LOOKUP_NOT_FOUND_CODES)
+        if body is _NOT_FOUND:
+            return False
+        if not isinstance(body, dict):
+            raise _bad_body("POST", path)
+        return True
+
     def _get_version(self, path: str, subject: str) -> SchemaVersion | None:
         body = self._call("GET", path, subject, not_found_ok=True)
         if body is _NOT_FOUND:
@@ -171,7 +196,8 @@ class HttpSchemaRegistryClient:
         return version
 
     def _call(self, method: str, path: str, subject: str, request: object = None,
-              not_found_ok: bool = False) -> object:
+              not_found_ok: bool = False,
+              not_found_codes: tuple[int, ...] = _NOT_FOUND_CODES) -> object:
         """Send the request and return the parsed 2xx body, or _NOT_FOUND for a
         Schema Registry "subject/version not found" 404 when `not_found_ok`.
 
@@ -220,7 +246,7 @@ class HttpSchemaRegistryClient:
             if 400 <= status < 500:
                 body = _parse(raw)
                 code = _error_code(body)
-                if status == 404 and code not in _NOT_FOUND_CODES:
+                if status == 404 and code not in not_found_codes:
                     # Not Schema Registry's own "not found": a wrong URL or a proxy, on every call.
                     raise SchemaRegistryUnavailable(f"{where}: HTTP 404 without a not-found error_code")
                 if status == 404 and not_found_ok:
@@ -238,6 +264,15 @@ class HttpSchemaRegistryClient:
         finally:
             if response is not None:
                 response.close()
+
+
+def _schema_request(schema: str, schema_type: str, references: Sequence[SrReference]) -> dict[str, object]:
+    request: dict[str, object] = {"schema": schema, "schemaType": schema_type}
+    if references:
+        request["references"] = [
+            {"name": r.name, "subject": r.subject, "version": r.version} for r in references
+        ]
+    return request
 
 
 def _is_int(value: object) -> bool:

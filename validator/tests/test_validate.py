@@ -714,11 +714,68 @@ def test_pinned_and_level_warnings_together(sr: FakeSchemaRegistry, run: Callabl
         "Compatibility was checked using the current level 'BACKWARD', not the new level 'FULL'."))
 
 
-def test_no_level_call_when_there_are_errors(sr: FakeSchemaRegistry, run: Callable) -> None:
+def test_same_level_unchanged_behaviour(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.add("com.acme.Order", load("AVRO", "order"))
+    sr.levels["com.acme.Order"] = "FULL"
     sr.verdict = CompatibilityVerdict(False, tuple(AVRO))
     request = req("AVRO", "order", "com.acme.Order", previous_name="com.acme.Order", compatibility="FULL")
     assert run(request, sr).validationType == "Error"
-    assert "get_compatibility_level" not in call_names(sr)
+    names = call_names(sr)
+    assert "get_latest" not in names and "is_registered" not in names
+    assert names.index("get_compatibility_level") < names.index("check_compatibility")
+
+
+def test_level_and_schema_change_together_is_an_error(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.add("com.acme.Order", '{"type":"record","name":"Order","namespace":"com.acme","fields":[]}')
+    sr.levels["com.acme.Order"] = "NONE"
+    request = req("AVRO", "order", "com.acme.Order", previous_name="com.acme.Order", compatibility="FULL")
+    assert run(request, sr) == ValidationResult(False, "Error", messages.LEVEL_AND_SCHEMA_CHANGED.format(
+        sr_level="NONE", compatibility="FULL"))
+    assert "check_compatibility" not in call_names(sr)
+
+
+def test_level_change_with_unchanged_schema_warns(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.add("com.acme.Order", load("AVRO", "order"))
+    sr.levels["com.acme.Order"] = "NONE"
+    request = req("AVRO", "order", "com.acme.Order", previous_name="com.acme.Order", compatibility="FULL")
+    assert run(request, sr) == ValidationResult(True, "Warning", messages.LEVEL_WARNING.format(
+        sr_level="NONE", compatibility="FULL"))
+    assert "check_compatibility" in call_names(sr)
+
+
+def test_level_change_without_versions_is_not_blocked(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.levels["com.acme.Order"] = "NONE"
+    request = req("AVRO", "order", "com.acme.Order", previous_name="com.acme.Order", compatibility="FULL")
+    assert run(request, sr).validationType == "Warning"
+    assert "is_registered" not in call_names(sr)
+    assert "check_compatibility" in call_names(sr)
+
+
+def test_lookup_uses_latest_versions_own_references(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.add("com.acme.Address", load("AVRO", "address"))
+    sr.add("com.acme.Address", load("AVRO", "address"))
+    old_ref = SrReference("com.acme.Address", "com.acme.Address", 1)
+    sr.add("com.acme.Customer", load("AVRO", "customer"), references=[old_ref])
+    sr.levels["com.acme.Customer"] = "NONE"
+    request = req("AVRO", "customer", "com.acme.Customer", references=[address_row("AVRO")],
+                  previous_name="com.acme.Customer", compatibility="FULL")
+    result = run(request, sr)
+    assert result.validationType == "Warning"
+    lookup = next(c for c in sr.calls if c[0] == "is_registered")
+    assert lookup[4] == (old_ref,)
+    check = next(c for c in sr.calls if c[0] == "check_compatibility")
+    assert check[4] != (old_ref,)
+
+
+@pytest.mark.parametrize("method", ["get_latest", "is_registered"])
+def test_level_change_lookup_failure_is_an_error(
+    method: str, sr: FakeSchemaRegistry, run: Callable, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sr.add("com.acme.Order", load("AVRO", "order"))
+    sr.levels["com.acme.Order"] = "NONE"
+    monkeypatch.setattr(sr, method, raiser(SchemaRegistryUnavailable("x")))
+    request = req("AVRO", "order", "com.acme.Order", previous_name="com.acme.Order", compatibility="FULL")
+    assert run(request, sr) == ValidationResult(False, "Error", E3)
 
 
 @pytest.mark.parametrize("error, expected", [

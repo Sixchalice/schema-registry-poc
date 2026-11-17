@@ -49,7 +49,7 @@ result.message         # "" for Ok; otherwise the messages, one per line
 
 `validate` never raises. An unexpected exception becomes a single `Error` with the message `Internal validator error: {err}`.
 
-`sr` can be any object with the methods of the `SchemaRegistryClient` protocol in `schema_validator/sr_client.py` (`get_latest`, `get_version`, `get_compatibility_level`, `check_compatibility`). The unit tests use an in-memory fake (`tests/fake_sr.py`).
+`sr` can be any object with the methods of the `SchemaRegistryClient` protocol in `schema_validator/sr_client.py` (`get_latest`, `get_version`, `get_compatibility_level`, `get_mode`, `check_compatibility`, `is_registered`). The unit tests use an in-memory fake (`tests/fake_sr.py`).
 
 ## Configuration
 
@@ -65,7 +65,7 @@ result.message         # "" for Ok; otherwise the messages, one per line
 | `allowed_json_drafts` | draft-04, draft-06, draft-07, 2019-09, 2020-12 | Accepted `$schema` values, stored without a trailing `#` (`DEFAULT_JSON_DRAFTS` in `models.py`). This is platform policy: Schema Registry accepts any `$schema` value |
 | `builtin_proto_imports` | 29 paths (`DEFAULT_BUILTIN_PROTO_IMPORTS` in `models.py`) | Import paths that need no reference row: `google/protobuf/` `any`, `api`, `descriptor`, `duration`, `empty`, `field_mask`, `source_context`, `struct`, `timestamp`, `type`, `wrappers`; `google/type/` `calendar_period`, `color`, `date`, `datetime`, `dayofweek`, `decimal`, `expr`, `fraction`, `interval`, `latlng`, `money`, `month`, `phone_number`, `postal_address`, `quaternion`, `timeofday` (each `.proto`); `confluent/meta.proto`, `confluent/type/decimal.proto` |
 
-On a registry with ACLs (Confluent Security Plugin), the validator's user needs `SUBJECT_READ`, `SUBJECT_WRITE` and `SUBJECT_COMPATIBILITY_READ` on subject `*`. `SUBJECT_WRITE` is for the compatibility check: it stores nothing, but the registry asks for Write. `SUBJECT_COMPATIBILITY_READ` is also what the mode lookup (`GET /mode/{subject}`) needs, so there is no fourth operation. The same credentials can therefore register schemas, so protect them accordingly.
+On a registry with ACLs (Confluent Security Plugin), the validator's user needs `SUBJECT_READ`, `SUBJECT_WRITE` and `SUBJECT_COMPATIBILITY_READ` on subject `*`. `SUBJECT_READ` also covers the lookup `POST /subjects/{subject}` that tells whether the schema is already registered (level change on edit). `SUBJECT_WRITE` is for the compatibility check: it stores nothing, but the registry asks for Write. `SUBJECT_COMPATIBILITY_READ` is also what the mode lookup (`GET /mode/{subject}`) needs, so there is no fourth operation. The same credentials can therefore register schemas, so protect them accordingly.
 
 ```bash
 sr-acl-cli --config <sr.properties> --add -s '*' -p schema-validator -o SUBJECT_READ -o SUBJECT_WRITE -o SUBJECT_COMPATIBILITY_READ
@@ -142,6 +142,7 @@ All errors are collected; a stage is skipped only when it depends on one that fa
 | E3 | Schema Registry is reachable (timeouts, connection errors, 5xx, unreadable responses, a response that is not finished within `sr_timeout_seconds`, a redirect, a 404 that is not Schema Registry's "subject or version not found", a 4xx without an error_code) | `Could not reach Schema Registry to validate. Try again.` |
 | E4 | Schema Registry accepts the validator's credentials (no 401 or 403) | `The validator is not allowed to query Schema Registry. Contact the platform team.` |
 | E5 | The subject accepts new versions (its mode, or the global mode when it has none, is `READWRITE`) | `Schema Registry does not accept new versions of '{name}' right now (mode {mode}). Contact the platform team.` |
+| E6 | On an edit whose `compatibility` differs from the subject's current level, the schema is unchanged (already registered under the subject, looked up with the latest version's own references). A subject without versions is not checked | `The compatibility level and the schema cannot change in the same save. Schema Registry checks a new version under the level in force when it is registered (now '{sr_level}'). Save the new level '{compatibility}' with the schema unchanged first, then change the schema.` |
 
 E1 shows only the reason Schema Registry gives (the text after `details: `), and E2 only the extracted descriptions, because the registry's raw messages contain the whole schema text. When an `Invalid schema` message has no reason, E1 shows the fixed text above, never the raw message. A rejection with no message, or with a message that contains `{` (a structure that may echo the schema or a header) and no `details:` reason, shows `Schema Registry rejected the schema (error code {code}).` and nothing else of the body. E3 and E4 also apply to the reference lookups of stage D.
 
@@ -150,7 +151,7 @@ Warnings, returned as `Warning` when there is no error:
 | When | Message |
 |---|---|
 | The schema has references | `References will be pinned to: {list}. They stay on these versions until this schema is saved again.` (`{list}` is for example `com.acme.Address v3, com.acme.Money v1`) |
-| On edit, `compatibility` differs from the subject's current level in Schema Registry | `Compatibility was checked using the current level '{sr_level}', not the new level '{compatibility}'.` |
+| On edit, `compatibility` differs from the subject's current level in Schema Registry, and the schema is unchanged | `Compatibility was checked using the current level '{sr_level}', not the new level '{compatibility}'.` |
 
 ## Protobuf import paths
 

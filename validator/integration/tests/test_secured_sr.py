@@ -171,6 +171,32 @@ def test_validator_user_with_a_transitive_reference(ns: str) -> None:
 
 
 
+def test_schema_lookup_by_validator_user(ns: str) -> None:
+    name = f"{ns}.Order"
+    register_as_admin(name, avro("Order", ns, ORDER_FIELDS))
+    client = HttpSchemaRegistryClient(SECURED_SR_URL, "validator", "validator-secret")
+
+    assert client.is_registered(name, avro("Order", ns, ORDER_FIELDS), "AVRO", []) is True
+    assert client.is_registered(name, avro("Order", ns, ORDER_FIELDS + [{"name": "z", "type": "string"}]),
+                                "AVRO", []) is False
+
+
+def test_level_and_schema_change_by_validator_user(ns: str) -> None:
+    name = f"{ns}.Order"
+    register_as_admin(name, avro("Order", ns, ORDER_FIELDS))
+    put = requests.put(f"{SECURED_SR_URL}/config/{name}", headers=_HEADERS, auth=("admin", "admin-secret"),
+                       data=json.dumps({"compatibility": "NONE"}), timeout=20)
+    assert put.status_code == 200, put.text
+    changed = avro("Order", ns, ORDER_FIELDS + [{"name": "zip", "type": "string"}])
+    request = ValidationRequest(name=name, schema_type="AVRO", schema=changed, compatibility="FULL",
+                                references=[], previous_name=name, existing_names=[])
+
+    result = run(request, "validator", "validator-secret")
+
+    assert result == ValidationResult(False, "Error", messages.LEVEL_AND_SCHEMA_CHANGED.format(
+        sr_level="NONE", compatibility="FULL"))
+
+
 def test_mode_lookup_by_validator_user(ns: str) -> None:
     client = HttpSchemaRegistryClient(SECURED_SR_URL, "validator", "validator-secret")
 

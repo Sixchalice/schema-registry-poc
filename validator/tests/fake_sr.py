@@ -60,3 +60,11 @@ class FakeSchemaRegistry:
         self.calls.append(("check_compatibility", subject, schema, schema_type, tuple(references)))
         self._check_fail()
         return self.verdict
+
+    def is_registered(self, subject: str, schema: str, schema_type: str,
+                      references: Sequence[SrReference]) -> bool:
+        self.calls.append(("is_registered", subject, schema, schema_type, tuple(references)))
+        self._check_fail()
+        return any(v.schema == schema and v.schema_type == schema_type
+                   and tuple(v.references) == tuple(references)
+                   for v in self._subjects.get(subject, []))

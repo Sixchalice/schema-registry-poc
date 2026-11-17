@@ -47,6 +47,12 @@ SR_INCOMPATIBLE = "Not {sr_level}-compatible with version {n}: {descriptions}"
 SR_MODE = ("Schema Registry does not accept new versions of '{name}' right now (mode {mode}). "
            "Contact the platform team.")
 SR_UNREACHABLE = "Could not reach Schema Registry to validate. Try again."
+LEVEL_AND_SCHEMA_CHANGED = (
+    "The compatibility level and the schema cannot change in the same save. "
+    "Schema Registry checks a new version under the level in force when it is registered "
+    "(now '{sr_level}'). Save the new level '{compatibility}' with the schema unchanged first, "
+    "then change the schema."
+)
 SR_UNAUTHORIZED = "The validator is not allowed to query Schema Registry. Contact the platform team."
 LEVEL_WARNING = (
     "Compatibility was checked using the current level '{sr_level}', "

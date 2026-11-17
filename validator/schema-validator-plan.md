@@ -170,10 +170,11 @@ Run only if stages A to D produced no errors.
 | E3 | SR reachable | `Could not reach Schema Registry to validate. Try again.` (Error; fail closed) |
 | E4 | SR accepts the validator's credentials (no 401/403) | `The validator is not allowed to query Schema Registry. Contact the platform team.` (Error; fail closed) |
 | E5 | The subject accepts new versions: its mode (or the global mode, when the subject has none) is `READWRITE`. Checked after a compatible verdict, on creates and edits alike | `Schema Registry does not accept new versions of '{name}' right now (mode {mode}). Contact the platform team.` (Error). A registry failure on the mode lookup is E3 or E4 |
+| E6 | On an edit whose `compatibility` differs from the subject's current level, the schema is unchanged (see "Level change on edit" below). Checked before the compatibility call | `The compatibility level and the schema cannot change in the same save. Schema Registry checks a new version under the level in force when it is registered (now '{sr_level}'). Save the new level '{compatibility}' with the schema unchanged first, then change the schema.` (Error). A registry failure on the lookups is E3 or E4 |
 
 E1 and E2 arrive in the same response shape and are told apart by the message text (section 7). SR's raw messages are not shown as they are: they embed the whole schema text. An `Invalid schema` message without a `details:` part, or with an empty one, is shown as `Schema Registry rejected the schema without giving a reason.`
 
-Extra warning on edit: if the deployment's `compatibility` differs from the level SR currently has for the subject, add `Compatibility was checked using the current level '{sr_level}', not the new level '{compatibility}'.`
+Level change on edit (E6): SR checks a new version under the level in force when it is registered and has no call that checks under another level. So when the deployment's `compatibility` differs from the level SR has for the subject, the schema must be unchanged, whatever order the platform uses for `PUT /config` and the registration. "Unchanged" means that the schema, looked up with the **latest version's own references**, is already registered under the subject (`POST /subjects/{s}`). If it is not, the result is the Error `The compatibility level and the schema cannot change in the same save. Schema Registry checks a new version under the level in force when it is registered (now '{sr_level}'). Save the new level '{compatibility}' with the schema unchanged first, then change the schema.` and no compatibility call is made. If it is unchanged, the check runs and the warning `Compatibility was checked using the current level '{sr_level}', not the new level '{compatibility}'.` is added. A subject without versions is not checked (the warning is added as before). The stage E order is: level (this rule), compatibility, mode, warnings. Known gap: if the latest versions of the references changed in the meantime, the re-save of the unchanged schema repins them under the old level.
 
 A subject that was soft-deleted has no history: SR checks nothing and the validator treats it as a create.
 
@@ -280,6 +281,7 @@ Every request is sent with `allow_redirects=False` and `stream=True`. `sr_timeou
 | Specific version | `GET /subjects/{subject}/versions/{version}` |
 | Subject compatibility level | `GET /config/{subject}?defaultToGlobal=true` |
 | Subject mode | `GET /mode/{subject}?defaultToGlobal=true` |
+| Schema already registered under the subject (level change on edit) | `POST /subjects/{subject}`, same body as the compatibility request. 200 means yes; 404 with error_code 40401 (subject) or 40403 (schema) means no |
 | Validity + compatibility | `POST /compatibility/subjects/{subject}/versions?verbose=true` |
 
 Compatibility request body:
@@ -318,7 +320,7 @@ Verified against a 7.9.0 registry with HTTP Basic auth and the Confluent Securit
 
 | Operation | Needed by |
 |---|---|
-| `SUBJECT_READ` | `GET /subjects/{s}/versions/latest` and `/versions/{v}` (the reference lookups) |
+| `SUBJECT_READ` | `GET /subjects/{s}/versions/latest` and `/versions/{v}` (the reference lookups, and the latest version on a level change), and `POST /subjects/{s}` (is the schema registered). No fourth operation is needed |
 | `SUBJECT_WRITE` | `POST /compatibility/subjects/{s}/versions`. The call stores nothing, but the registry asks for Write on the subject |
 | `SUBJECT_COMPATIBILITY_READ` | `GET /config/{s}?defaultToGlobal=true` (on edit) and `GET /mode/{s}?defaultToGlobal=true` (every request that reaches stage E; the registry answers a user without it with 403 `denied operation ReadCompatibility`). No fourth operation is needed |
 
