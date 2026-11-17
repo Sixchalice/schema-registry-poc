@@ -507,7 +507,7 @@ def test_python_client_ignores_root_id_beside_root_ref_in_draft07(
 def test_json_deeper_than_the_python_client_can_check_is_rejected(
     ck_client: SchemaRegistryClient, register: Register, config: ValidatorConfig, ns: str,
 ) -> None:
-    # Depth 601: 300 nested "properties" levels. The registry accepts it; jsonschema's check_schema,
+    # Depth 603: 300 nested "properties" levels. The registry accepts it; jsonschema's check_schema,
     # which the Python serializer runs, overflows the stack.
     node: dict[str, object] = {"type": "string"}
     for _ in range(300):
