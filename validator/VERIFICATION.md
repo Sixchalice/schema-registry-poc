@@ -3,8 +3,8 @@
 Checked on 2026-11-16 (the secured registry and the Avro namespace follow-up on 2026-11-17) against `confluentinc/cp-schema-registry:7.9.0` on `apache/kafka:3.8.1`, from `integration/docker-compose.yml`, with confluent-kafka-python 2.16.1 and the Confluent 7.9.0 Java serializers.
 
 ```
-.venv/bin/python -m pytest -q                                   # 721 passed
-.venv/bin/python -m pytest integration/tests -m integration -q  # 142 passed, none skipped
+.venv/bin/python -m pytest -q                                   # 790 passed
+.venv/bin/python -m pytest integration/tests -m integration -q  # 148 passed, none skipped
 ```
 
 Every integration test creates its subjects under a fresh namespace (`it` + 10 hex digits, shown below as `<ns>`), so the suite can be rerun against the same registry.
@@ -65,6 +65,8 @@ One change, in `schema_validator/sr_client.py` (`HttpSchemaRegistryClient._call`
 
 `QualifiedReferenceSubjectNameStrategy` maps `p6/shop/PAddress.proto` to `p6.shop.PAddress`, as spec §6 says.
 
+`probe.Defaults` (second audit, F5; Java Avro `Schema.Parser` on the 27 cases of `tests/schemas/avro_defaults.json`, the file the unit tests use; it needs neither registry nor Kafka). Each case prints `accept` or `reject`, and the probe exits 1 on any difference from the file's `java` column. Result: exit 0, last line `Defaults: all cases as expected`. Rejected: a union default of the wrong type for its first branch (`"x"` for `["null","string"]`, `null` for `["string","null"]`), a record default with a missing field, a wrong field type, or a union field that would need its first branch, a boolean or an out-of-range number for `int` and `long` (4294967296, 9223372036854775808), an array or map default with a bad element, and an enum symbol or fixed size that does not fit. Accepted: `null` for a null-first union, `NaN`, `-Infinity` and an integer for `float`/`double`, a long above the int range, a decimal `bytes` default, a record with an extra key, and good array, map, enum and fixed defaults.
+
 The stack has two registries: one without authentication, used by everything below except the "Secured registry" section, and one with HTTP Basic auth and ACLs.
 
 ## Avro rules that are stricter than the registry (spec §5.1 steps 4 and 7)
@@ -115,6 +117,8 @@ After the JSON top-level rules and the nesting limit (2026-11-17, seed 6, 700 ca
 After the reference versions were chosen per row (2026-11-17, seed 9, 400 cases per format, 1,200 schemas): 0 false passes, 0 internal errors; both passed / both rejected 349 / 639; rejected by an own rule 71; rejected by a local parser 141 (Avro 16, JSON 15, Protobuf 110); stage E only 0.
 
 With reference versions alternating between 1 and 2 (final review fix, 2026-11-17, seed 10, 300 cases per format, 900 schemas, a second compatible Address version registered, registration with the row's version): 0 false passes, 0 internal errors, exit 0; both passed / both rejected 253 / 483; rejected by an own rule 57; rejected by a local parser 107 (Avro 4, JSON 20, Protobuf 83); stage E only 0.
+
+After the second audit's fixes (2026-11-18, seed 11, 700 cases per format, 2,100 schemas): 0 false passes, 0 internal errors, exit 0; both passed / both rejected 596 / 1,114; rejected by an own rule 122; rejected by a local parser 268 (Avro 19, JSON 25, Protobuf 224); stage E only 0.
 
 Code change: an Avro record whose `name` is a list or object gave `Internal validator error`; it now gives `Invalid Avro schema: the record "name" must be a string`.
 
@@ -236,7 +240,7 @@ Tested: `test_level_and_schema_change_together_is_an_error`, `test_level_change_
 
 Observed: `POST /subjects/{s}` with a registered text gives 200 with the version; with a text that is not registered, 404 `{"error_code":40403,"message":"Schema not found"}`; for a subject that does not exist, 404 error_code 40401. On the secured registry the `validator` user gets 200 and 404 from it with its existing ACLs (it needs `SUBJECT_READ`; a user without it gets `403 User is denied operation Read on Subject: x`). No ACL was added.
 
-Code changed: `is_registered` on the client (40403 is a not-found code for this call only); stage E checks the level before the compatibility call and returns E6 when the level differs and the schema is not registered. After the whole-branch review (F-I2), "unchanged" also needs the latest version's references and the rows to have the same `(name, subject)` pairs: a JSON row that keeps its `ref_string` but points at another Schema was counted as unchanged, because the lookup sends the latest version's own references. The version gap is closed: "unchanged" now compares `(name, subject, version)` triples, and the lookup uses the rows' references, so a newer selected reference version is E6 (`test_level_change_with_a_newer_reference_version_is_an_error`, `test_level_change_with_the_same_reference_version_warns`, `test_lookup_uses_the_selected_versions`; (int) `test_level_change_gap_is_closed`). README and spec 4 and 7 updated.
+Code changed: `is_registered` on the client (40403 is a not-found code for this call only; since the second audit it is `registered_version`, which returns the version, see "Second independent audit"); stage E checks the level before the compatibility call and returns E6 when the level differs and the schema is not registered. After the whole-branch review (F-I2), "unchanged" also needs the latest version's references and the rows to have the same `(name, subject)` pairs: a JSON row that keeps its `ref_string` but points at another Schema was counted as unchanged, because the lookup sends the latest version's own references. The version gap is closed: "unchanged" now compares `(name, subject, version)` triples, and the lookup uses the rows' references, so a newer selected reference version is E6 (`test_level_change_with_a_newer_reference_version_is_an_error`, `test_level_change_with_the_same_reference_version_warns`, `test_lookup_uses_the_selected_versions`; (int) `test_level_change_gap_is_closed`). README and spec 4 and 7 updated.
 
 ## Independent audit, 2026-11-17
 
@@ -307,13 +311,26 @@ The limit is `max_nesting_depth`, 64, checked before every other step of Avro an
 
 Rule D (a root `$id` beside a root `$ref` in draft-04, -06 and -07) is pinned against the client by (int) `test_python_client_ignores_root_id_beside_root_ref_in_draft07`: with root `$id` `https://acme.example/o.json` and a relative `$ref` `a.json` below it, the serializer finds a reference named `a.json` and fails with `Unresolvable` for one named `https://acme.example/a.json`, so the `$id` is not the base.
 
+## Second independent audit, 2026-11-18
+
+A second outside review (report: `validator-audit-2/REPORT.md`) found four problems that needed a code change (F1, F3, F4, F5). The fixes are three commits: F4 `7287048`, F5 `885c2c4`, F1 and F3 `a87574e`. Tests are unit (`tests/`) unless marked (int) for `integration/tests/`.
+
+| Finding | Tested | Observed | Change | Tests |
+|---|---|---|---|---|
+| F1 an older version's text on an edit passed and bypassed the level-change rule | A subject with two versions; the edit submits the first version's text, with the level unchanged and changed; a text equal to the latest | The audit saw `Ok` and, with a level change, only the "checked at the current level" warning, while the registry reuses the old id and creates no version (`test_registering_an_older_versions_text_reuses_its_id`). Now: an `Error` `SCHEMA_IS_OLDER_VERSION`; the latest version's text at the same level gives the warning `SCHEMA_UNCHANGED` | Stage E reads the latest version on every edit and looks the text up with the rows' references; `registered_version` (replacing `is_registered`) returns the version number. The older-version check runs before the level rule, so an older text with a level change gives the older-version error. A failed lookup is E3 | `test_edit_identical_to_an_older_version_is_an_error`, `test_older_version_with_a_level_change_is_the_older_version_error`, `test_edit_identical_to_the_latest_warns_unchanged`, `test_unchanged_warning_follows_the_pinned_warning`, `test_edit_reads_latest_and_looks_up_once`, `test_older_version_lookup_failure_is_unreachable`; (int) `test_edit_identical_to_an_older_version_is_an_error`, `test_edit_identical_to_the_latest_warns_unchanged`, `test_registering_an_older_versions_text_reuses_its_id`, `test_lookup_with_another_reference_version_is_not_found` |
+| F3 a format change on an edit passed under level NONE | An edit whose format differs from the latest version's | The audit saw a pass that breaks the subject's existing producers. Now: an `Error` `FORMAT_CHANGED` | The same stage E read of the latest version: its format must equal the submitted one. A subject with no versions skips the check | `test_format_change_on_edit_is_an_error`; (int) `test_format_change_on_edit_is_an_error` |
+| F4 Protobuf: quadratic regex on rejected text, and a message of several MB | 480 KB of `/* ` after a valid message (the audit's input); the import scan on 240 KB; six protoc errors | Per the audit, before: 154 s for the call, 37 s for the scan at 240 KB. Now `analyse` on the 480 KB input takes 2.5 s on this machine (the test allows 10 s) and gives one error of 378 characters. A closed comment before an import still lets the import be found | A linear comment pattern, where an unclosed comment runs to the end; the protoc message shows the first 5 lines, then `and {n} more`, capped at 1,000 characters (`_text.shorten`) | `test_unclosed_comments_are_fast_and_short`, `test_imports_scan_is_linear`, `test_import_after_a_closed_comment_is_found`, `test_six_errors_show_five_and_one_more`, `test_shorten` |
+| F5 invalid Avro defaults passed (a union default that does not match its first branch; record, array, map, enum, fixed and int/long range, which fastavro does not check) | The 27 cases of `tests/schemas/avro_defaults.json` against the validator and against Java `Schema.Parser` | Java rejects every case marked `reject` and accepts every `accept` case (`probe.Defaults`, exit 0, see "Java checks"). The validator gives an `Error` for those cases: `AVRO_UNION_DEFAULT` for a union field, `AVRO_DEFAULT_INVALID` otherwise, one message per field in document order, nested records included | A check of each inline record's defaults against their types (`formats/_avro_defaults.py`, stage B step 8); it does not walk the texts of referenced schemas, and does not run when fastavro stopped early | `test_default_cases` (all 27 cases), `test_union_default_message`, `test_invalid_default_message_names_the_type`, `test_default_in_a_nested_record_is_checked`, `test_default_of_a_referenced_type`, `test_two_bad_defaults_give_two_messages_in_order`, `test_default_check_on_shapes_fastavro_does_not_produce`; Java `probe.Defaults` |
+
+Runs on 2026-11-18 after the three commits: unit `790 passed` with 100% line and branch coverage (1,274 statements, 486 branches); integration `148 passed`, none skipped; `probe.Main`, `probe.ProtoRefs`, `probe.Nested`, `probe.Pinned` and `probe.Defaults` all exit 0; the differential run (seed 11, above) has 0 false passes and 0 internal errors.
+
 ## Packaging
 
 `tests/test_packaging.py` builds the wheel from a copy of the tree with `setuptools.build_meta.build_wheel` on every unit-test run and checks that it holds every `.py` file and the 18 `.proto` files under `schema_validator/_proto/`, and no tests.
 
 ## Coverage
 
-`coverage run --branch --source=schema_validator -m pytest -q` on 2026-11-17: 1,129 statements and 402 branches, all covered by the unit tests alone.
+`coverage run --branch --source=schema_validator -m pytest -q` on 2026-11-17: 1,274 statements and 486 branches, all covered by the unit tests alone (re-run on 2026-11-18, after the second audit's fixes).
 
 ## Not verified
 
