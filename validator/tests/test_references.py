@@ -386,8 +386,8 @@ def test_name_conflict(sr: FakeSchemaRegistry) -> None:
 
 
 def test_conflict_recorded_on_a_skipped_revisit(sr: FakeSchemaRegistry) -> None:
-    # a.Money v1 is walked at level 2 (through a.Mid), then reached again at level 1
-    # (a.Money v2 directly is another version; a.Line -> a.Money v1 is the skipped revisit).
+    # Top -> Mid -> Money v1 is walked first, so Top -> Money v1 is the skipped revisit
+    # that must still be recorded.
     _money_setup(sr)
     sr.add("a.Mid", "Mid", references=[SrReference("a.Money", "a.Money", 1)])
     sr.add("a.Top", "Top", references=[SrReference("a.Mid", "a.Mid", 1),

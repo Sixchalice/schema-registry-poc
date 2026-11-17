@@ -3,8 +3,8 @@
 Checked on 2026-11-16 (the secured registry and the Avro namespace follow-up on 2026-11-17) against `confluentinc/cp-schema-registry:7.9.0` on `apache/kafka:3.8.1`, from `integration/docker-compose.yml`, with confluent-kafka-python 2.16.1 and the Confluent 7.9.0 Java serializers.
 
 ```
-.venv/bin/python -m pytest -q                                   # 573 passed
-.venv/bin/python -m pytest integration/tests -m integration -q  # 118 passed, none skipped
+.venv/bin/python -m pytest -q                                   # 647 passed
+.venv/bin/python -m pytest integration/tests -m integration -q  # 133 passed, none skipped
 ```
 
 Every integration test creates its subjects under a fresh namespace (`it` + 10 hex digits, shown below as `<ns>`), so the suite can be rerun against the same registry.
@@ -18,7 +18,7 @@ Every integration test creates its subjects under a fresh namespace (`it` + 10 h
 | 3 | References end to end. Python: register the referenced schema, `validate` the referencing one (a `Warning` naming `<ns>.Address v1`), check the serializer fails naming the referencing subject, register it with `{name: ref_string, subject, version: 1}`, serialize and produce. Avro passes `Schema(text, "AVRO", [SchemaReference(...)])`; JSON uses `$ref` both with and without `#/definitions/Zip` and a row `address.json`; Protobuf imports `<ns>/Address.proto` (the derived path) | All three register with 200 and serialize. The JSON payload is validated through the reference by the client. Java `probe.ProtoRefs`: see below | `test_python_clients.py`: `test_avro_with_reference`, `test_json_with_external_ref`, `test_protobuf_import_of_another_schema`; `test_validate_real_sr.py::test_references_end_to_end`; Java `probe.ProtoRefs` | None |
 | 4 | The registry does not enforce the validator's own rules | `200` for: an unused reference row (all three formats); a Protobuf reference named `acme/other.proto` for `import "acme/address.proto"`; a Protobuf cycle (`Address` v2 importing `Customer`, which imports `Address`); a JSON schema with `title` `<ns>.My Order` under the subject `<ns>.My Order` | `test_sr_behaviour.py`: `test_sr_accepts_unused_reference_row`, `test_sr_accepts_protobuf_reference_name_mismatch`, `test_sr_accepts_protobuf_cycle`, `test_sr_accepts_json_title_with_space` | None |
 | 5 | Built-in Protobuf imports: each of the 29 paths in `DEFAULT_BUILTIN_PROTO_IMPORTS`, imported with one of its types used and no reference row | All 29 register with `200`, and each also compiles with the validator's own Protobuf analyser (bundled `_proto`) with no error and no external reference. `google/type/localized_text.proto` with `google.type.LocalizedText` and `google/rpc/status.proto` with `google.rpc.Status`: `422`, `error_code` 42201, `details: Could not resolve type: google.type.LocalizedText` / `google.rpc.Status` | `test_sr_behaviour.py`: `test_builtin_imports` (29 cases), `test_non_builtin_imports_rejected` | None |
-| 6 | The full `validate` pipeline with `HttpSchemaRegistryClient.from_config` against the registry | Create, all formats: `Ok`, then the same schema registers under `request.name` with 200. Stage A, empty schema: `Schema is empty.` Stage B, broken text: `Schema is not valid JSON: ...` (Avro, JSON) and `Invalid Protobuf schema: ...`, with no registry call made. Stage C: `The name must match the schema. It should be '<ns>.Order'.` Stage D, reference to an unregistered subject: exactly `Referenced schema '<ns>.Address' is not registered in Schema Registry yet.` Stage E1, Avro with field `a` twice (fastavro accepts it): `Schema Registry rejected the schema: Duplicate field a in record <ns>.Order: a type:INT pos:1 and a type:INT pos:0.` Stage E2, all formats: one line starting `Not BACKWARD-compatible with version 1: `, without the old schema text. References, all formats: `Warning` `References will be pinned to: <ns>.Address v1. ...`, then registering with that row gives 200. Avro, an enum `<ns>.Country` defined inside the registered `<ns>.Address`, with one row for `<ns>.Address`: a Customer using `<ns>.Address` and `<ns>.Country`, and one using only `<ns>.Country`, each give that `Warning`, then register with the reference `{name: <ns>.Address, subject: <ns>.Address, version: 1}` with 200. Edit with the subject level set to `FULL` by `PUT /config/{subject}` and `compatibility="BACKWARD"`: `Warning` `Compatibility was checked using the current level 'FULL', not the new level 'BACKWARD'.` Registry at `http://localhost:1`, 1 s timeout: `Could not reach Schema Registry to validate. Try again.` | `test_validate_real_sr.py` (26 tests) | None |
+| 6 | The full `validate` pipeline with `HttpSchemaRegistryClient.from_config` against the registry | Create, all formats: `Ok`, then the same schema registers under `request.name` with 200. Stage A, empty schema: `Schema is empty.` Stage B, broken text: `Schema is not valid JSON: ...` (Avro, JSON) and `Invalid Protobuf schema: ...`, with no registry call made. Stage C: `The name must match the schema. It should be '<ns>.Order'.` Stage D, reference to an unregistered subject: exactly `Referenced schema '<ns>.Address' is not registered in Schema Registry yet.` Stage E1, Avro with field `a` twice (fastavro accepts it): `Schema Registry rejected the schema: Duplicate field a in record <ns>.Order: a type:INT pos:1 and a type:INT pos:0.` Stage E2, all formats: one line starting `Not BACKWARD-compatible with version 1: `, without the old schema text. References, all formats: `Warning` `References will be pinned to: <ns>.Address v1. ...`, then registering with that row gives 200. Avro, an enum `<ns>.Country` defined inside the registered `<ns>.Address`, with one row for `<ns>.Address`: a Customer using `<ns>.Address` and `<ns>.Country`, and one using only `<ns>.Country`, each give that `Warning`, then register with the reference `{name: <ns>.Address, subject: <ns>.Address, version: 1}` with 200. Edit with the subject level set to `FULL` by `PUT /config/{subject}` and `compatibility="BACKWARD"`: `Warning` `Compatibility was checked using the current level 'FULL', not the new level 'BACKWARD'.` Registry at `http://localhost:1`, 1 s timeout: `Could not reach Schema Registry to validate. Try again.` | `test_validate_real_sr.py` (29 tests) | None |
 | 7 | The incompatibility and invalid-schema messages still parse with `sr_messages`: register v1, check an incompatible v2 | Each format gives one description, `old_version == 1`, `level == "BACKWARD"`, no `oldSchema` text. Raw first messages: Avro `{errorType:'READER_FIELD_MISSING_DEFAULT_VALUE', description:'The field 'zip' at path '/fields/1' in the new schema has no default value and is missing in the old schema', additionalInfo:'zip'}`; JSON `{errorType:"TYPE_CHANGED", description:"A type at path '#/properties/id' is different between the new schema and the old schema'}` (opens with `"`, closes with `'`; the parser strips either); Protobuf `{errorType:"FIELD_SCALAR_KIND_CHANGED", description:"The kind of a SCALAR field at path '#/Order/1' in the new schema does not match its kind in the old schema"}` | `test_sr_behaviour.py::test_incompatible_messages_parse`, `test_new_subject_invalid` | None |
 
 ## Code changed because of an observation
@@ -82,7 +82,7 @@ The first three are accepted by the registry and by Java clients, but fastavro (
 
 ## Secured registry (spec §7, E4)
 
-Checked against `schema-registry-secured` in `integration/docker-compose.yml`: the same 7.9.0 image with HTTP Basic auth (a users file) and the Confluent Security Plugin in ACL mode. Pinned by `integration/tests/test_secured_sr.py` (16 tests). No code change was needed.
+Checked against `schema-registry-secured` in `integration/docker-compose.yml`: the same 7.9.0 image with HTTP Basic auth (a users file) and the Confluent Security Plugin in ACL mode. Pinned by `integration/tests/test_secured_sr.py` (18 tests). No code change was needed.
 
 | What was tested | Observed |
 |---|---|
@@ -105,6 +105,8 @@ Checked against `schema-registry-secured` in `integration/docker-compose.yml`: t
 | Rejected by a local parser (fastavro, jsonschema, protoc), registered by the registry | 463 |
 
 The last group was read by message. Every case is a defect the registry does not check: Avro defaults of the wrong type and `{"type": "<name>"}` around a type name (fastavro cannot resolve it); JSON keywords the meta-schema rejects (duplicate `required` entries, negative `minLength`); Protobuf that `protoc` does not compile (types used without their import, duplicate or out-of-range field numbers, first enum value not zero, duplicate imports or packages).
+
+A further run after the audit fixes (2026-11-17, seed 4, 700 cases per format, 2,100 schemas): 0 false passes, 0 internal errors; both passed / both rejected 632 / 1,118; rejected by an own rule 103; rejected by a local parser 247 (Avro 19, JSON 28, Protobuf 200); stage E only 0.
 
 Code change: an Avro record whose `name` is a list or object gave `Internal validator error`; it now gives `Invalid Avro schema: the record "name" must be a string`.
 
@@ -187,7 +189,7 @@ Code changed: every request has `allow_redirects=False`; a 3xx is E3 ("not 2xx")
 
 ## No raw registry bodies (audit L3)
 
-Tested: `test_raw_body_never_in_rejected`, `test_structured_message_not_echoed`, `test_plain_message_still_shown` (unit); the `e400raw`, `e409` and `e422other` cases of `t13_failures.py`. The 123 integration tests are unchanged.
+Tested: `test_raw_body_never_in_rejected`, `test_structured_message_not_echoed`, `test_plain_message_still_shown` (unit); the `e400raw`, `e409` and `e422other` cases of `t13_failures.py`. The integration tests are unchanged.
 
 Observed: a 4xx with an `error_code` but no `message` field showed the whole body, including an echoed `Authorization` header, and a message with the request or the other team's schema embedded was shown as it was.
 
@@ -209,13 +211,45 @@ Observed: `POST /subjects/{s}` with a registered text gives 200 with the version
 
 Code changed: `is_registered` on the client (40403 is a not-found code for this call only); stage E checks the level before the compatibility call and returns E6 when the level differs and the schema is not registered. Known gap: if the references' latest versions changed in the meantime, the re-save repins them under the old level. README and spec 4 and 7 updated.
 
+## Independent audit, 2026-11-17
+
+An outside reviewer re-checked the library against the registry and the Python and Java clients (report: `validator-audit/REPORT.md`). One row per finding. The details of each change are in the sections above and below; tests are unit (`tests/`) unless marked (int) for `integration/tests/`.
+
+| Finding | Our take | Change | Tests |
+|---|---|---|---|
+| F1 one type at two versions corrupts data | Agree | D7: one version per subject and one Schema per reference name across the graph (`REF_VERSION_CONFLICT`, `REF_NAME_CONFLICT`). See "One version per subject" | `test_version_conflict_direct_and_transitive`, `test_conflict_between_two_transitive_paths`, `test_diamond_same_version_is_not_a_conflict`, `test_name_conflict`, `test_conflict_recorded_on_a_skipped_revisit`, `test_version_conflict_is_an_error`; (int) `test_version_conflict_real_sr`, `test_two_versions_of_one_type_corrupt_data` |
+| F2 JSON `$ref` not resolved against `$id` | Agree | `$ref` is resolved against the `$id` chain; a target that is an `$id` inside the document is internal; a relative `$ref` under an `$id` needs the absolute URI as `ref_string`; malformed `$id` or `$ref` is `JSON_INVALID` | `test_relative_ref_under_id_resolves_to_absolute`, `test_ref_to_internal_id_is_internal`, `test_ref_to_own_id_with_fragment_is_internal`, `test_nested_id_moves_the_base`, `test_fragment_id_keeps_the_base`, `test_non_string_id_is_ignored`, `test_draft04_uses_id`, `test_malformed_id_is_an_error`, `test_malformed_ref_is_an_error`, `test_id_in_data_or_as_a_property_name_does_not_move_the_base`; (int) `test_json_id_relative_ref_is_rejected`, `test_json_id_absolute_ref_string_works`, `test_json_internal_id_ref_works` |
+| F3 Java Protobuf references need the qualified strategy | Agree, but not detectable per schema | None, because the registry accepts the schema and the failure depends on a client setting; `QualifiedReferenceSubjectNameStrategy` is a documented required Java setting (README, plan section 12) | Java `probe.ProtoRefs`; (int) `test_protobuf_import_of_another_schema`, `test_sr_accepts_protobuf_reference_name_mismatch` |
+| F4 compatibility checked at the current level | Agree; the owner chose option 2 | A level change and a schema change need separate saves (`LEVEL_AND_SCHEMA_CHANGED`, E6); `is_registered` on the client. See "Level change and schema change in one save" | `test_level_and_schema_change_together_is_an_error`, `test_level_change_with_unchanged_schema_warns`, `test_level_change_without_versions_is_not_blocked`, `test_same_level_unchanged_behaviour`, `test_level_change_lookup_failure_is_an_error`; (int) the `is_registered` and level-change tests named in that section |
+| F5 top-level Avro enum/fixed rejected | Agree | Stage B accepts `record`, `enum` and `fixed` at the top | `test_top_level_enum`, `test_top_level_fixed`, `test_top_level_enum_needs_namespace`; (int) `test_avro_shared_enum`; Java `probe.Nested` |
+| F6 subject mode not checked | Agree | `get_mode`; any mode other than `READWRITE` is E5 (`SR_MODE`) | `test_get_mode`, `test_readonly_subject_is_an_error`, `test_mode_inherited_from_global_blocks`, `test_import_mode_is_an_error`; (int) `test_mode_readonly_subject`, `test_readonly_subject_rejected`, `test_mode_lookup_by_validator_user` |
+| F7 transitive-only names need no row | Disagree | None, because a name provided by a referenced Schema's own reference is a valid use (registry and both clients work) and F1/D7 now covers the corruption the reviewer linked to it | `test_avro_name_from_a_transitive_reference_is_provided_by_the_row`, `test_avro_row_used_only_through_another_rows_transitive_name_is_unused`; (int) `test_avro_name_from_a_transitive_reference` |
+| L1 total deadline | Agree | Body read with `raw.read1` against start + `sr_timeout_seconds`; overrun is E3 | `test_slow_body_hits_deadline`, `test_error_while_reading_the_body_is_unavailable`; (int) `test_stalled_body_is_unreachable` |
+| L2 raw registry bodies shown | Agree | `SchemaRegistryRejected` keeps only a structured message and the code; `SR_REJECTED_CODE` | `test_raw_body_never_in_rejected`, `test_structured_message_not_echoed`, `test_plain_message_still_shown` |
+| L3 redirects followed | Agree | `allow_redirects=False`; a 3xx is E3 | `test_redirects_not_followed` |
+| L4 JSON top level must be `"type": "object"` | Disagree | None, because it is a deliberate platform rule (`JSON_TOP_LEVEL`) | `tests/test_json_schema.py` top-level tests (unchanged) |
+| L5 JSON reference cycle rejected | Disagree | None, because the cycle rule is deliberately the same for all formats (the registry rejects it for Avro) | `test_direct_cycle`, `test_transitive_cycle`, `test_reference_cycle` (unchanged) |
+| L6 Avro `ref_string` | Agree | A5 gives `AVRO_REF_STRING` for a row whose `ref_string` is not empty or `schema_name` | `tests/test_rules.py` and `tests/test_validate.py` A5 Avro tests |
+| L7 https draft-07 and `-` in titles | Reversed | None, because `https://json-schema.org/draft-07/schema` is read by jsonschema as 2020-12 with a DeprecationWarning, so it stays rejected (the change was made, then reverted). `-` in titles stays rejected: a platform choice | `test_https_draft07_rejected`; (int) `test_python_client_reads_https_draft07_as_2020_12` |
+| L8 internal errors on deep JSON and non-text input | Agree | Deep JSON gives `JSON_TOO_DEEP`; a lone surrogate gives `SCHEMA_NOT_TEXT` (L8b) | `test_deep_schema_gives_too_deep`, `test_lone_surrogate_schema` |
+| L9 own name in `existing_names` on an edit | Agree | C2 leaves `previous_name` out on an edit | `test_edit_ignores_own_name_in_existing_names`, `test_edit_still_catches_other_case_variant` |
+
+Re-run of the reviewer's scripts against this code (the Java parts of the scripts need a container that does not exist here and were not run; the Python results and the printed `validate` results are what counts):
+
+- `t05`: the diamond (C v1 through B, v2 through D2) gives `Error`, "used at more than one version".
+- `t17`: Order using Line (Money v1) and Money (latest v2) gives `Error`, "used at more than one version: v1 through ..., v2 directly".
+- `t06`: stopped at its first Java call; no `validate` result was produced after that point.
+- `t07`: J2 gives `Error`; J3 (absolute `ref_string`) and J5 (internal `$id` ref) pass (`Warning` pinned, `Ok`); J4 gives `Warning`; J6/J6b are the deliberate L4 rule.
+- `t12`: C3 (edit incompatible under NONE with the level changed to FULL in the same save) gives `Error`; C4 (subject READONLY) gives `Error`, and the registry's own register call gives 422 42205.
+- Java probes `probe.Main`, `probe.ProtoRefs`, `probe.Nested` exit 0 (`Nested: all cases as expected`).
+
 ## Packaging
 
 `tests/test_packaging.py` builds the wheel from a copy of the tree with `setuptools.build_meta.build_wheel` on every unit-test run and checks that it holds every `.py` file and the 18 `.proto` files under `schema_validator/_proto/`, and no tests.
 
 ## Coverage
 
-`coverage run --branch --source=schema_validator -m pytest -q` on 2026-11-17: 890 statements and 320 branches, all covered by the unit tests alone.
+`coverage run --branch --source=schema_validator -m pytest -q` on 2026-11-17: 1,029 statements and 368 branches, all covered by the unit tests alone.
 
 ## Not verified
 
