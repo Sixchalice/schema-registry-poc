@@ -348,3 +348,64 @@ def test_protobuf_import_of_another_schema(
 
     check_client(ProtobufSerializer(customer, ck_client, PROTO_CONF), value, name,
                  registrar(register, name, schema, "PROTOBUF", refs), producer)
+
+
+def test_protobuf_types_nested_in_an_imported_schema(
+    ck_client: SchemaRegistryClient,
+    register: Register,
+    producer: Producer,
+    config: ValidatorConfig,
+    ns: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Unlike Avro, a message and an enum nested inside the imported Address can be used
+    # from another schema: `validate` accepts it, the registry registers it and the
+    # Python serializer produces with it.
+    address = f"{ns}.Address"
+    address_path = proto_import_path(address)
+    address_text = (f'syntax = "proto3";\npackage {ns};\n'
+                    f'message Address {{\n  string city = 1;\n  Geo geo = 2;\n  Kind kind = 3;\n'
+                    f'  message Geo {{ double lat = 1; }}\n  enum Kind {{ HOME = 0; WORK = 1; }}\n}}\n')
+    registrar(register, address, address_text, "PROTOBUF")()
+    schema = (f'syntax = "proto3";\npackage {ns};\nimport "{address_path}";\n'
+              f'message Customer {{\n  Address.Geo geo = 1;\n  {ns}.Address.Kind kind = 2;\n'
+              f'  repeated Address.Geo more = 3;\n}}\n')
+    name = accepted_name(f"{ns}.Customer", "PROTOBUF", schema, config, [ReferenceInput(address)])
+    modules = compile_proto(tmp_path, monkeypatch, {address_path: address_text, f"{ns}/Customer.proto": schema})
+    customer = modules[f"{ns}/Customer.proto"].Customer
+    addr = modules[address_path].Address
+    value = customer(geo=addr.Geo(lat=1.5), kind=addr.WORK, more=[addr.Geo(lat=2.0)])
+    refs = [{"name": address_path, "subject": address, "version": 1}]
+
+    check_client(ProtobufSerializer(customer, ck_client, PROTO_CONF), value, name,
+                 registrar(register, name, schema, "PROTOBUF", refs), producer)
+
+
+def test_json_definitions_of_a_referenced_schema_two_levels_deep(
+    ck_client: SchemaRegistryClient,
+    register: Register,
+    producer: Producer,
+    config: ValidatorConfig,
+    ns: str,
+) -> None:
+    # Unlike Avro, a definition nested inside the referenced schema can be used through a
+    # $ref with a fragment, also when that definition itself points at another definition.
+    address = f"{ns}.Address"
+    registrar(register, address, json.dumps({
+        "$schema": DRAFT_07, "title": address, "type": "object", "properties": {"city": {"type": "string"}},
+        "definitions": {"Geo": {"type": "object", "properties": {"zip": {"$ref": "#/definitions/Zip"}},
+                                "required": ["zip"]},
+                        "Zip": {"type": "string", "minLength": 5}},
+    }), "JSON")()
+    schema = json.dumps({"$schema": DRAFT_07, "title": f"{ns}.Customer", "type": "object",
+                         "properties": {"geo": {"$ref": "address.json#/definitions/Geo"}}, "required": ["geo"]})
+    name = accepted_name(f"{ns}.Customer", "JSON", schema, config, [ReferenceInput(address, "address.json")])
+    refs = [{"name": "address.json", "subject": address, "version": 1}]
+
+    serializer = JSONSerializer(Schema(schema, "JSON", [SchemaReference(**refs[0])]), ck_client, conf=CONF)
+    check_client(serializer, {"geo": {"zip": "12345"}}, name, registrar(register, name, schema, "JSON", refs), producer)
+    # The nested definition is really applied: a value that breaks Zip's minLength is refused.
+    with pytest.raises(Exception, match="(?i)valid|short"):
+        serializer({"geo": {"zip": "1"}}, CTX)
+

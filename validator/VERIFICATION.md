@@ -4,7 +4,7 @@ Checked on 2026-11-16 (the secured registry and the Avro namespace follow-up on 
 
 ```
 .venv/bin/python -m pytest -q                                   # 566 passed
-.venv/bin/python -m pytest integration/tests -m integration -q  # 114 passed, none skipped
+.venv/bin/python -m pytest integration/tests -m integration -q  # 116 passed, none skipped
 ```
 
 Every integration test creates its subjects under a fresh namespace (`it` + 10 hex digits, shown below as `<ns>`), so the suite can be rerun against the same registry.
@@ -127,6 +127,8 @@ Added on 2026-11-17. Address references Country; a schema selects only the row f
 - Code change: such a use counts as a use of the row it was loaded for. Before, `validate` answered `Your schema uses '<ns>.Country' but no reference is selected for it.`
 
 **A type nested inside a referenced schema cannot be used from another schema.** With the enum `Country` defined inside the referenced `Address`, a schema that uses `<ns>.Country` registers (the registry and Java resolve it), but the Python `AvroSerializer` (confluent-kafka-python 2.16.1) cannot load it: `redefined named type: <ns>.Country` when Address is used too, a `TypeError` when it is not (`test_python_client_cannot_use_a_type_nested_in_a_reference`). Code change (owner decision, 2026-11-17, replacing OD3): `validate` rejects the use with `Type '<ns>.Country' is defined inside the Schema '<ns>.Address'. ...` (`test_validate_real_sr.py::test_avro_name_nested_in_a_reference`).
+
+**Protobuf and JSON Schema do not have this problem.** Checked on 2026-11-17 with the real Python serializers: a message and an enum nested inside an imported Protobuf schema (`Address.Geo`, `<ns>.Address.Kind`), and a JSON definition inside a referenced schema reached with `address.json#/definitions/Geo` (which itself points at another definition), are accepted by `validate`, registered and produced; the nested JSON definition is applied when the payload is validated. Pinned by `test_protobuf_types_nested_in_an_imported_schema` and `test_json_definitions_of_a_referenced_schema_two_levels_deep`. The Java checks do not cover these two shapes.
 
 ## Packaging
 
