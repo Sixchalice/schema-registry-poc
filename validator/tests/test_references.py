@@ -106,7 +106,7 @@ def test_wrong_format(sr: FakeSchemaRegistry) -> None:
     sr.add("a.B", "{}", "JSON")
     result = resolve(MAIN, "AVRO", [row("a.B", "a.B")], sr)
     assert result.errors == [
-        "'a.B' is a JSON schema; a AVRO schema can only reference AVRO schemas."
+        "'a.B' is a schema in JSON format. A schema in AVRO format can only reference schemas in AVRO format."
     ]
     assert result.resolved == []
 
@@ -499,7 +499,7 @@ def test_wrong_format_checks_the_pinned_version(sr: FakeSchemaRegistry) -> None:
     ok = resolve(MAIN, "AVRO", [row("a.B", "a.B", 1)], sr)
     assert ok.errors == [] and ok.resolved == [SrReference("a.B", "a.B", 1)]
     bad = resolve(MAIN, "AVRO", [row("a.B", "a.B", 2)], sr)
-    assert bad.errors == ["'a.B' is a JSON schema; a AVRO schema can only reference AVRO schemas."]
+    assert bad.errors == ["'a.B' is a schema in JSON format. A schema in AVRO format can only reference schemas in AVRO format."]
     assert bad.resolved == []
 
 
@@ -507,7 +507,7 @@ def test_wrong_format_of_an_older_pinned_version(sr: FakeSchemaRegistry) -> None
     sr.add("a.B", "{}", "JSON")
     sr.add("a.B", B1)
     bad = resolve(MAIN, "AVRO", [row("a.B", "a.B", 1)], sr)
-    assert bad.errors == ["'a.B' is a JSON schema; a AVRO schema can only reference AVRO schemas."]
+    assert bad.errors == ["'a.B' is a schema in JSON format. A schema in AVRO format can only reference schemas in AVRO format."]
 
 
 def test_resolve_row_without_a_version_fails_closed(sr: FakeSchemaRegistry) -> None:

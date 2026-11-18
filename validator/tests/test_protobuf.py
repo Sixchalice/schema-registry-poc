@@ -429,3 +429,15 @@ def test_six_errors_show_five_and_one_more() -> None:
 def test_shorten() -> None:
     assert shorten("abc", 3) == "abc"
     assert shorten("abcd ef", 6) == "abcd…"
+
+
+def test_main_file_name_is_your_schema() -> None:
+    result = run(
+        P.replace("com.acme", "aud.o") + 'import "aud/q/Wrap.proto";\nmessage O { aud.p.Geo g = 1; }',
+        {"aud/q/Wrap.proto": 'syntax = "proto3";\npackage aud.q;\nimport "aud/p/Geo.proto";\nmessage Wrap { aud.p.Geo g = 1; }',
+         "aud/p/Geo.proto": 'syntax = "proto3";\npackage aud.p;\nmessage Geo { string a = 1; }'},
+    )
+    assert result.errors == [
+        'Invalid Protobuf schema: 4:13: "aud.p.Geo" seems to be defined in "aud/p/Geo.proto", '
+        "which is not imported by your schema.  To use it here, please add the necessary import."
+    ]

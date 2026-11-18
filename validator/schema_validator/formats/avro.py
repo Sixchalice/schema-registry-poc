@@ -5,14 +5,17 @@ import json
 from typing import Any
 
 import fastavro
-from fastavro.schema import UnknownType
+from fastavro.schema import SchemaParseException, UnknownType
 
 from schema_validator import messages
 from schema_validator.formats._avro_defaults import default_errors
 from schema_validator.formats._depth import json_depth
+from schema_validator._text import shorten
 from schema_validator.models import FormatAnalysis, ValidatorConfig
 
 # Type strings that are not names: primitives and complex-type keywords.
+# The most characters of a parser's own text that go into one message.
+_ERR_LIMIT = 1000
 _BUILTIN_TYPES = frozenset(
     {"null", "boolean", "int", "long", "float", "double", "bytes", "string",
      "record", "enum", "fixed", "array", "map"}
@@ -58,7 +61,7 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
     # differently, so fastavro not finding a defined name is already explained.
     error, parsed, named = _parse_error(schema, referenced, defined, unresolved, explained=bool(nested_errors))
     if error is not None:
-        errors.append(messages.AVRO_INVALID.format(err=error))
+        errors.append(messages.AVRO_INVALID.format(err=shorten(error, _ERR_LIMIT)))
     elif not isinstance(name, str):
         # fastavro lets a list or dict through as a name, or stopped before looking at it.
         errors.append(messages.AVRO_INVALID.format(err=f'the {schema["type"]} "name" must be a string'))
@@ -231,9 +234,11 @@ def _parse_error(
         # A type without a required entry: {"type": "array"} has no "items".
         error = f"a type is missing its {e.args[0]!r} entry" if e.args else "a type is missing an entry"
         return error, None, named
-    except Exception as e:
-        # SchemaParseException, and also TypeError, ValueError etc. on malformed schemas.
+    except SchemaParseException as e:
         return str(e), None, named
+    except Exception:
+        # TypeError, ValueError etc. on malformed schemas: their text is Python internals.
+        return messages.AVRO_WRONG_KIND, None, named
     return None, parsed, named
 
 

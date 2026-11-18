@@ -555,3 +555,18 @@ def test_items_chain_at_the_old_limit_is_too_deep() -> None:
     # Depth 100, the earlier default, is where 2019-09 "items" overflows check_schema: now refused first.
     result = analyse(_items_chain("https://json-schema.org/draft/2019-09/schema", 100), {}, cfg)
     assert result.errors == TOO_DEEP
+
+
+def test_long_schema_error_is_shortened() -> None:
+    schema = {"$schema": D7, "title": "a.B", "type": "x" * 400000}
+    result = analyse(json.dumps(schema), {}, cfg)
+    invalid = [e for e in result.errors if e.startswith("Invalid JSON schema: ")]
+    assert len(invalid) == 1
+    assert len(invalid[0]) <= len("Invalid JSON schema: ") + 1000
+    assert invalid[0].endswith("…")
+
+
+def test_long_uri_error_is_shortened() -> None:
+    schema = {"$schema": D7, "title": "a.B", "type": "object", "$id": "http://[" + "x" * 5000}
+    result = analyse(json.dumps(schema), {}, cfg)
+    assert all(len(e) <= len("Invalid JSON schema: ") + 1000 for e in result.errors)

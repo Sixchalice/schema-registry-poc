@@ -173,6 +173,7 @@ def _clean_stderr(lines: list[str], tmp: str) -> str:
         for temp_path in temp_paths:
             line = line.replace(temp_path + os.sep, "").replace(temp_path, "")
         line = line.removeprefix(_MAIN + ":").strip()
+        line = line.replace(f'"{_MAIN}"', "your schema").replace(_MAIN, "your schema")
         if line:
             kept.append(line)
     shown = kept[:_PROTOC_ERRORS_SHOWN]

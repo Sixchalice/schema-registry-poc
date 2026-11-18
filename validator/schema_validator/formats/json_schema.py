@@ -11,8 +11,11 @@ from jsonschema.validators import Draft7Validator, validator_for
 
 from schema_validator import messages
 from schema_validator.formats._depth import json_depth
+from schema_validator._text import shorten
 from schema_validator.models import FormatAnalysis, ValidatorConfig
 
+# The most characters of a parser's own text that go into one message.
+_ERR_LIMIT = 1000
 _TITLE_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+")
 
 # Keywords whose value maps names (not keywords) to subschemas.
@@ -93,7 +96,7 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
         try:
             validator_for(schema, default=Draft7Validator).check_schema(schema)
         except SchemaError as e:
-            errors.append(messages.JSON_INVALID.format(err=e.message.partition("\n")[0]))
+            errors.append(messages.JSON_INVALID.format(err=shorten(e.message.partition("\n")[0], _ERR_LIMIT)))
         except RecursionError:
             errors.append(messages.JSON_TOO_DEEP)
 
@@ -124,7 +127,7 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
         base = urldefrag(_join(id_keyword, "", root_id)).url if isinstance(root_id, str) else ""
         refs = {target for ref in ref_values if (target := _target(base, ref)) not in ("", base)}
     except _BadUri as e:
-        errors.append(messages.JSON_INVALID.format(err=f"the {e.keyword} '{e.value}' is not a valid URI"))
+        errors.append(messages.JSON_INVALID.format(err=shorten(f"the {e.keyword} '{e.value}' is not a valid URI", _ERR_LIMIT)))
         return FormatAnalysis(expected_name, None, errors)
     return FormatAnalysis(expected_name, refs, errors)
 

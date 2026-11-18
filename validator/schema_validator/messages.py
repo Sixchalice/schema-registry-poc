@@ -25,7 +25,10 @@ FULLNAME_CHANGED = (
 
 # Stage D
 REF_NOT_REGISTERED = "Referenced schema '{s}' is not registered in Schema Registry yet."
-REF_WRONG_FORMAT = "'{s}' is a {their_type} schema; a {my_type} schema can only reference {my_type} schemas."
+REF_WRONG_FORMAT = (
+    "'{s}' is a schema in {their_type} format. "
+    "A schema in {my_type} format can only reference schemas in {my_type} format."
+)
 REF_CYCLE = "Reference cycle: '{s}' already depends on '{name}'."
 REF_MISSING_ROW = "Your schema uses '{x}' but no reference is selected for it."
 REF_UNUSED = "'{x}' is selected as a reference but is not used in the schema."
@@ -94,6 +97,7 @@ AVRO_NESTED_IN_REFERENCE = (
     "cannot be used here. Move it to its own Schema and reference that."
 )
 AVRO_INVALID = "Invalid Avro schema: {err}"
+AVRO_WRONG_KIND = "an entry has the wrong kind of value, for example an object where a type name is expected"
 AVRO_UNION_DEFAULT = (
     "The default of field '{field}' in '{record}' must be a value of the first type in its union ({first}). "
     "Put the type of the default first in the union."

@@ -773,7 +773,7 @@ def test_fastavro_recursion_error_is_invalid(monkeypatch: pytest.MonkeyPatch) ->
 
     monkeypatch.setattr(avro.fastavro, "parse_schema", overflow)
     result = run(rec("Order", [field("id", "string")], namespace="com.acme"))
-    assert result.errors == ["Invalid Avro schema: maximum recursion depth exceeded"]
+    assert result.errors == [messages.AVRO_INVALID.format(err=messages.AVRO_WRONG_KIND)]
 
 
 BAD_DEFAULT = field("bad", "string", default=5)
@@ -858,3 +858,27 @@ def test_no_kind_warning_with_errors() -> None:
     result = run({"type": "enum", "name": "Color", "symbols": ["RED"]})
     assert result.errors == NAMESPACE
     assert result.warnings == []
+
+
+def test_type_object_as_type_is_wrong_kind() -> None:
+    result = run(rec("t.R", [field("a", {"type": {"type": "Nope"}})]))
+    assert result.errors == [messages.AVRO_INVALID.format(err=messages.AVRO_WRONG_KIND)]
+
+
+def test_long_default_is_shortened() -> None:
+    # fastavro rejects the default first, and its text carries the whole default.
+    (error,) = run(rec("t.R", [field("a", "int", default="x" * 400000)])).errors
+    assert error.startswith("Invalid Avro schema: ")
+    assert len(error) <= len("Invalid Avro schema: ") + 1000
+    assert error.endswith("…")
+
+
+def test_long_parse_error_is_shortened(monkeypatch: pytest.MonkeyPatch) -> None:
+    def parse(*args: Any, **kwargs: Any) -> Any:
+        raise avro.SchemaParseException("x" * 400000)
+
+    monkeypatch.setattr(avro.fastavro, "parse_schema", parse)
+    (error,) = run(rec("t.R", [field("a", "int")])).errors
+    assert error.startswith("Invalid Avro schema: ")
+    assert len(error) <= len("Invalid Avro schema: ") + 1000
+    assert error.endswith("…")
