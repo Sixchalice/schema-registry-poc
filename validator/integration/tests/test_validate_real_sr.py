@@ -535,6 +535,21 @@ def test_top_level_enum_warns(
     assert result == ValidationResult(True, "Warning", messages.AVRO_NOT_A_MESSAGE.format(kind="enum"))
 
 
+def test_nested_error_type_is_ok(
+    client: HttpSchemaRegistryClient,
+    config: ValidatorConfig,
+    ns: str,
+) -> None:
+    text = json.dumps({
+        "type": "record", "name": "Reply", "namespace": ns,
+        "fields": [{"name": "e", "type": {"type": "error", "name": "Oops",
+                                          "fields": [{"name": "why", "type": "string"}]}}]})
+
+    result = validate(request(f"{ns}.Reply", "AVRO", text), client, config)
+
+    assert result == ValidationResult(True, "Ok", "")
+
+
 def _ref_schema(ns: str, ref: str) -> str:
     return json.dumps({
         "$schema": "http://json-schema.org/draft-07/schema#", "$id": "https://acme.example/r8.json",

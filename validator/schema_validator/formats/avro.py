@@ -21,6 +21,9 @@ _BUILTIN_TYPES = frozenset(
      "record", "enum", "fixed", "array", "map"}
 )
 _NAMED_TYPES = frozenset({"record", "enum", "fixed"})
+# What the walk treats as defining a name: a nested "error" is a record to Java and fastavro.
+# It is not allowed at the top level (_NAMED_TYPES above).
+_WALK_NAMED_TYPES = _NAMED_TYPES | {"error"}
 
 
 def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfig) -> FormatAnalysis:
@@ -165,7 +168,7 @@ def _names(schema: Any, submitted: bool = False) -> tuple[set[str], set[str], li
         elif isinstance(node, dict):
             kind = node.get("type")
             # `kind` may be a list or dict (pushed back below), so test str before hashing.
-            if isinstance(kind, str) and kind in _NAMED_TYPES:
+            if isinstance(kind, str) and kind in _WALK_NAMED_TYPES:
                 name = node.get("name")
                 inner = namespace
                 if isinstance(name, str):
@@ -190,7 +193,7 @@ def _names(schema: Any, submitted: bool = False) -> tuple[set[str], set[str], li
                             # A referenced text defines exactly what it says.
                             if submitted:
                                 defined.add(f"{namespace}.{name}")
-                fields = node.get("fields") if kind == "record" else None
+                fields = node.get("fields") if kind in ("record", "error") else None
                 if isinstance(fields, list):
                     pending.extend(
                         (f["type"], inner) for f in reversed(fields) if isinstance(f, dict) and "type" in f

@@ -882,3 +882,42 @@ def test_long_parse_error_is_shortened(monkeypatch: pytest.MonkeyPatch) -> None:
     assert error.startswith("Invalid Avro schema: ")
     assert len(error) <= len("Invalid Avro schema: ") + 1000
     assert error.endswith("…")
+
+
+def _error_type(**kw: Any) -> dict[str, Any]:
+    return {"type": "error", "name": "Oops", "fields": [field("why", "string")], **kw}
+
+
+def test_nested_error_type_passes() -> None:
+    result = run(rec("Reply", [field("e", _error_type())], namespace="t"))
+    assert result.errors == []
+    assert result.expected_name == "t.Reply"
+    assert result.external_refs == set()
+
+
+def test_nested_error_name_can_be_used_again() -> None:
+    result = run(rec("Reply", [field("e", _error_type()), field("again", "Oops")], namespace="t"))
+    assert result.errors == []
+    assert result.external_refs == set()
+
+
+def test_nested_error_fields_are_walked() -> None:
+    def twin(kind: str) -> FormatAnalysis:
+        nested = {"type": kind, "name": "Oops", "fields": [field("why", "t.Missing")]}
+        return run(rec("Reply", [field("e", nested)], namespace="t"))
+
+    result = twin("error")
+    assert result.external_refs == {"t.Missing"}
+    assert result == twin("record")
+
+
+def test_nested_error_namespace_rules_apply() -> None:
+    result = run(rec("Reply", [field("e", _error_type(name="a..b"))], namespace="t"))
+    assert messages.AVRO_NESTED_NAME.format(name="a..b") in result.errors
+    twin = run(rec("Reply", [field("e", rec("a..b", [field("why", "string")]))], namespace="t"))
+    assert result.errors[0] == twin.errors[0]
+
+
+def test_top_level_error_unchanged() -> None:
+    result = run({"type": "error", "name": "Oops", "namespace": "t", "fields": []})
+    assert result == FormatAnalysis(None, None, [messages.AVRO_TOP_LEVEL])
