@@ -1233,3 +1233,28 @@ def test_header_drip_is_bounded() -> None:
         listener.close()
     assert result == ValidationResult(False, "Error", messages.SR_UNREACHABLE)
     assert elapsed < 1.5
+
+
+def test_thread_start_failure_is_internal_error(sr: FakeSchemaRegistry, monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse(self: threading.Thread) -> None:
+        raise RuntimeError("can't start new thread")
+    monkeypatch.setattr(threading.Thread, "start", refuse)
+    result = validate(_edit_request(), sr, cfg)
+    assert result == ValidationResult(
+        False, "Error", messages.INTERNAL_ERROR.format(err="can't start new thread"))
+
+
+@pytest.mark.parametrize("bad", [float("nan"), "30"])
+def test_unusable_total_timeout_is_internal_error(bad: Any, sr: FakeSchemaRegistry) -> None:
+    result = validate(_edit_request(), sr, ValidatorConfig(total_timeout_seconds=bad))
+    assert result.validationType == "Error"
+    assert result.message.startswith("Internal validator error: ")
+
+
+def test_abandoned_worker_stops_calling_the_registry(sr: FakeSchemaRegistry) -> None:
+    sr.add(ORDER, ORDER_V2)
+    sr.delay_seconds = 0.2
+    validate(_edit_request(), sr, ValidatorConfig(total_timeout_seconds=0.3))
+    at_return = len(sr.calls)
+    time.sleep(0.6)
+    assert len(sr.calls) <= at_return + 1

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
+from typing import Any
 
 from schema_validator import messages
 from schema_validator.formats import ANALYSERS
@@ -24,29 +26,58 @@ from schema_validator.sr_messages import invalid_schema_reason, parse_incompatib
 _SR_FAILURES = (SchemaRegistryUnavailable, SchemaRegistryUnauthorized, SchemaRegistryRejected)
 
 
+class _Stoppable:
+    """The registry client for one validation's worker thread.
+
+    Once `stop` is set (the deadline passed), every further call raises
+    SchemaRegistryUnavailable, so an abandoned worker finishes only the call in flight.
+    """
+
+    def __init__(self, sr: SchemaRegistryClient, stop: threading.Event) -> None:
+        self._sr = sr
+        self._stop = stop
+
+    def __getattr__(self, name: str) -> Callable[..., Any]:
+        method = getattr(self._sr, name)
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            if self._stop.is_set():
+                raise SchemaRegistryUnavailable("validation deadline passed")
+            return method(*args, **kwargs)
+        return call
+
+
 def validate(request: ValidationRequest, sr: SchemaRegistryClient, config: ValidatorConfig) -> ValidationResult:
     """Never raises: an unexpected exception becomes a single INTERNAL_ERROR.
 
     The whole validation has one deadline, `total_timeout_seconds`. A worker that is still
-    running at the deadline is left to end on its own and its result is discarded.
+    running at the deadline is abandoned: its result is discarded and it makes no further
+    registry calls after the one in flight.
     """
     outcome: list[ValidationResult | BaseException] = []
+    stop = threading.Event()
+    guarded = _Stoppable(sr, stop)  # type: ignore[arg-type]
 
     def work() -> None:
         try:
-            outcome.append(_validate(request, sr, config))
+            outcome.append(_validate(request, guarded, config))  # type: ignore[arg-type]
         except BaseException as e:  # a thread must hand back whatever ended it
             outcome.append(e)
 
-    worker = threading.Thread(target=work, name="schema-validator", daemon=True)
-    worker.start()
-    worker.join(config.total_timeout_seconds)
-    if worker.is_alive():
-        return build_result([messages.SR_UNREACHABLE], [])
-    result = outcome[0]
-    if isinstance(result, BaseException):
-        return build_result([messages.INTERNAL_ERROR.format(err=_describe(result))], [])
-    return result
+    try:
+        worker = threading.Thread(target=work, name="schema-validator", daemon=True)
+        worker.start()
+        worker.join(config.total_timeout_seconds)
+        if worker.is_alive():
+            stop.set()
+            return build_result([messages.SR_UNREACHABLE], [])
+        result = outcome[0]
+        if isinstance(result, BaseException):
+            return build_result([messages.INTERNAL_ERROR.format(err=_describe(result))], [])
+        return result
+    except Exception as e:
+        stop.set()
+        return build_result([messages.INTERNAL_ERROR.format(err=_describe(e))], [])
 
 
 def _validate(request: ValidationRequest, sr: SchemaRegistryClient, config: ValidatorConfig) -> ValidationResult:
