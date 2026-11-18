@@ -1279,7 +1279,6 @@ threading.stack_size(128 * 1024)
 from schema_validator import ValidationRequest, ValidatorConfig, validate
 from schema_validator.formats._depth import json_depth
 from tests.fake_sr import FakeSchemaRegistry
-from tests.local_server import LocalServer, drip
 node = {"type": "string", "enum": ["x"]}
 for _ in range(30):
     node = {"type": "object", "properties": {"p": node}}
@@ -1340,3 +1339,21 @@ def test_worker_sees_the_callers_context(sr: FakeSchemaRegistry) -> None:
     finally:
         _CALLER.reset(token)
     assert seen == ["request-42"]
+
+
+@pytest.mark.parametrize("schema_type, schema, shown", [
+    # jsonschema's message quotes the value, a lone surrogate from a "\ud800" escape
+    ("JSON", r'{"$schema": "http://json-schema.org/draft-07/schema#", "title": "com.acme.Order",'
+             r' "type": "object", "minLength": "\ud800"}',
+     'Invalid JSON schema: "\\ud800" is not of type \'integer\' (at /minLength)'),
+    # fastavro's message holds str() of the default value
+    ("AVRO", r'{"type": "record", "name": "Order", "namespace": "com.acme",'
+             r' "fields": [{"name": "a", "type": "int", "default": "\ud800"}]}',
+     "Invalid Avro schema: Default value <\\ud800> must match schema type: int"),
+])
+def test_message_with_a_lone_surrogate_is_utf8(schema_type: str, schema: str, shown: str) -> None:
+    # Final review of audit 3: a message must always encode as UTF-8; a lone surrogate is
+    # written as its backslash escape.
+    result = validate(req(schema_type, None, "com.acme.Order", schema=schema), FakeSchemaRegistry(), cfg)
+    assert result.message.encode("utf-8")
+    assert result.message == shown

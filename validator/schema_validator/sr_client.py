@@ -137,9 +137,11 @@ class HttpSchemaRegistryClient:
         """
         try:
             parts = urllib.parse.urlsplit(url)
+            parts.port  # raises ValueError for a port that is not a number from 0 to 65535
         except ValueError:
             parts = None
-        if parts is None or parts.scheme not in ("http", "https") or not parts.hostname:
+        if (parts is None or parts.scheme not in ("http", "https") or not parts.hostname
+                or any(c.isspace() for c in parts.hostname)):
             raise SchemaRegistryConfigError("Schema Registry URL must be http:// or https:// with a host")
         if not (_is_number(timeout_seconds) and math.isfinite(timeout_seconds) and timeout_seconds > 0):
             raise SchemaRegistryConfigError("Schema Registry timeout must be a number of seconds above 0")
@@ -362,14 +364,18 @@ class _CallWatch:
     """The watchdog of one call: once the call has run `timeout` seconds, it shuts down the
     socket of the connection the call is using, so a blocked read ends (audit 3 M1).
 
-    The connection is recorded as a request starts on it and forgotten when it goes back
-    to the pool or the call ends, all under one lock, so the watchdog never reaches a
-    connection that another call may be using.
+    The connection is recorded as it starts connecting and as each request starts on it,
+    and forgotten when it goes back to the pool or the call ends, all under one lock, so
+    the watchdog never reaches a connection that another call may be using. The timer
+    fires once, possibly before the call has a socket (a slow DNS lookup, TCP connect or
+    TLS handshake), so it also marks the watch expired: from then on, recording a
+    connection or finishing a connect raises, and the call ends.
     """
 
     def __init__(self, timeout: float) -> None:
         self._lock = threading.Lock()
         self._connection: urllib3.connection.HTTPConnection | None = None
+        self._expired = False
         self._timer = threading.Timer(timeout, self._abort)
         self._timer.daemon = True
 
@@ -378,7 +384,15 @@ class _CallWatch:
 
     def record(self, connection: urllib3.connection.HTTPConnection) -> None:
         with self._lock:
+            if self._expired:
+                raise _CallExpired()
             self._connection = connection
+
+    def connected(self) -> None:
+        """Called after a connect returns: the connect ran past the timer, so the call ends."""
+        with self._lock:
+            if self._expired:
+                raise _CallExpired()
 
     def release(self, connection: object) -> None:
         with self._lock:
@@ -392,6 +406,7 @@ class _CallWatch:
 
     def _abort(self) -> None:
         with self._lock:
+            self._expired = True
             sock = self._connection.sock if self._connection is not None else None
             if sock is not None:
                 try:
@@ -400,15 +415,30 @@ class _CallWatch:
                     pass  # already closed
 
 
+class _CallExpired(OSError):
+    """The call's timer fired; urllib3 and requests turn this into a connection error."""
+
+    def __init__(self) -> None:
+        super().__init__("the call took longer than the timeout")
+
+
 def _watched_session(calls: threading.local) -> requests.Session:
     """A Session whose connections report to `calls.watch`, the calling thread's _CallWatch.
 
-    A connection records itself as each request starts on it, and its pool releases it
-    from the watch when it is put back. Every request and release happens inside a call,
-    in the calling thread, after that call has set `calls.watch`.
+    A connection records itself as it starts connecting and as each request starts on
+    it, and its pool releases it from the watch when it is put back. Every connect,
+    request and release happens inside a call, in the calling thread, after that call has
+    set `calls.watch`. Connect is recorded too because HTTPSConnectionPool connects
+    (TCP and the TLS handshake) before the request starts; for plain HTTP, http.client
+    connects from inside the request.
     """
 
     class Recording:
+        def connect(self) -> None:
+            calls.watch.record(self)
+            super().connect()  # type: ignore[misc]
+            calls.watch.connected()
+
         def request(self, *args: Any, **kwargs: Any) -> None:
             calls.watch.record(self)
             super().request(*args, **kwargs)  # type: ignore[misc]
@@ -420,6 +450,7 @@ def _watched_session(calls: threading.local) -> requests.Session:
         pass
 
     class Releasing:
+        # _put_conn is a private urllib3 API; verified on the pinned urllib3 2.8.0.
         def _put_conn(self, conn: urllib3.connection.HTTPConnection | None) -> None:
             calls.watch.release(conn)
             super()._put_conn(conn)  # type: ignore[misc]

@@ -52,7 +52,7 @@ def _angle_segments(text: str) -> str:
 
 
 def json_values(text: str) -> str:
-    """A parser message with the Python literals in it written as JSON.
+    """A parser message with the Python literals in three places written as JSON.
 
     fastavro and jsonschema print Python values: `None`, `True`, `{'type': 'int'}`. This
     converts `<literal>` segments, a trailing `: {...}` or `: [...]`, and a leading

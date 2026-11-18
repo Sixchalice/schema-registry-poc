@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from schema_validator import ValidationRequest, ValidationResult, messages, validate
+from schema_validator._text import shorten
 from schema_validator.formats._depth import json_depth
 from schema_validator.formats.json_schema import _metaschema_text, analyse
 from schema_validator.models import DEFAULT_JSON_DRAFTS, FormatAnalysis, ValidatorConfig
@@ -564,7 +565,7 @@ def test_long_schema_error_is_shortened() -> None:
     invalid = [e for e in result.errors if e.startswith("Invalid JSON schema: ")]
     assert len(invalid) == 1
     assert len(invalid[0]) <= len("Invalid JSON schema: ") + 1000
-    assert invalid[0].endswith("…")
+    assert invalid[0].endswith("… (at /type)")  # the value is cut, not the location
 
 
 def test_long_uri_error_is_shortened() -> None:
@@ -861,6 +862,25 @@ def test_reference_fragments_are_read_once_per_reference() -> None:
     assert run_with(d, {"address.json": ADDRESS}).errors == [messages.JSON_REF_CLIENTS_DIFFER.format(paths=paths)]
 
 
+def test_empty_token_target_in_a_reference_differs() -> None:
+    # Final review of audit 3: as for "#/definitions/" in the schema itself, the registry reads
+    # the whole "definitions" object of the referenced schema, and Python reads definitions[""].
+    text = json.dumps({"$schema": D7, "type": "object", "definitions": {"": {"type": "string"}}})
+    assert run_with(x_ref("address.json#/definitions/"), {"address.json": text}).errors == X_DIFFERS
+
+
+def test_pointer_both_clients_follow_to_one_place_in_a_reference_passes() -> None:
+    text = json.dumps({"$schema": D7, "type": "object", "definitions": {"a b": {}, "a+b": {}}})
+    assert run_with(x_ref("address.json#/definitions/a%20b"), {"address.json": text}).errors == []
+    # "+" is a space to the registry only: both keys exist, so the clients reach different ones.
+    assert run_with(x_ref("address.json#/definitions/a+b"), {"address.json": text}).errors == X_DIFFERS
+
+
+def test_anchor_in_a_reference_passes() -> None:
+    text = json.dumps({"$schema": D2020, "type": "object", "$defs": {"s": {"$anchor": "nope", "type": "string"}}})
+    assert run_with(x_ref("address.json#nope", D2020), {"address.json": text}).errors == []
+
+
 @pytest.mark.parametrize("text", ["{not json", "[" * 100_000])
 def test_reference_text_that_is_not_json_is_skipped(text: str) -> None:
     assert run_with(x_ref("address.json#nope"), {"address.json": text}).errors == []
@@ -975,3 +995,18 @@ def test_metaschema_error_names_the_top_level_keyword() -> None:
 def test_metaschema_text_at_the_root_has_no_location() -> None:
     assert _metaschema_text("True is not of type 'object'", []) == "true is not of type 'object'"
     assert _metaschema_text("x\nsecond line", ["a/b", 0]) == "x (at /a~1b/0)"
+
+
+def test_metaschema_location_survives_shortening() -> None:
+    # Final review of audit 3: a long value is cut, the " (at /pointer)" after it is kept.
+    result = run(schema(minLength="x" * 5000))
+    err = result.errors[0].removeprefix(messages.JSON_INVALID.split("{err}")[0])
+    assert len(err) == 1000
+    assert err.startswith('"xxx')
+    assert err.endswith("x… (at /minLength)")
+
+
+def test_metaschema_location_longer_than_the_limit_is_cut_with_the_rest() -> None:
+    key = "k" * 2000
+    err = _metaschema_text("5 is not of type 'string'", ["properties", key, "type"])
+    assert err == shorten(f"5 is not of type 'string' (at /properties/{key}/type)", 1000)

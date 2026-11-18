@@ -8,6 +8,7 @@ from schema_validator import messages
 from schema_validator.models import ReferenceInput, ValidatorConfig, proto_import_path
 from schema_validator.sr_client import SchemaRegistryClient, SchemaVersion, SrReference
 
+
 def normalise_rows(
     schema_type: str, references: Sequence[ReferenceInput]
 ) -> tuple[list[ReferenceInput], list[str]]:

@@ -104,7 +104,7 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
         try:
             validator_for(schema, default=Draft7Validator).check_schema(schema)
         except SchemaError as e:
-            errors.append(messages.JSON_INVALID.format(err=shorten(_metaschema_text(e.message, e.path), _ERR_LIMIT)))
+            errors.append(messages.JSON_INVALID.format(err=_metaschema_text(e.message, e.path)))
         except RecursionError:
             errors.append(messages.JSON_TOO_DEEP)
 
@@ -146,16 +146,23 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
     not_found = []
     differ = []
     root = _python_resolver(base or _ROOT_URI, schema)
-    documents: dict[str, _PythonReading | None] = {}
+    documents: dict[str, tuple[_PythonReading, Any] | None] = {}
     for pointer, ref, target in targets:
         fragment = urldefrag(ref).fragment
         if target not in ("", base):
-            # Step 11, external: the Python client must find the fragment in the referenced schema.
+            # Step 11, external: the Python client must find the fragment in the referenced schema,
+            # and where the registry's reading is pinned, both must reach the same place there. A
+            # fragment the registry cannot follow is left to the registry (stage D4 or a rejection).
             if fragment and target not in documents:
                 documents[target] = _reference_resolver(target, referenced)
             document = documents.get(target)
-            if document is not None and _python_target(document, "#" + fragment) is _MISSING:
-                differ.append(pointer)
+            if document is not None:
+                reading, contents = document
+                in_python = _python_target(reading, "#" + fragment)
+                in_registry = _registry_target(contents, fragment)
+                if in_python is _MISSING or (in_registry is not _MISSING and in_registry is not _UNCHECKED
+                                             and in_registry is not in_python):
+                    differ.append(pointer)
         elif self_url_rejected and "#" in ref and not ref.startswith("#"):
             self_urls.append(pointer)
         else:
@@ -197,7 +204,7 @@ def _token(raw: str) -> str | None:
     return text.replace("~1", "/").replace("~0", "~")
 
 
-def _registry_target(schema: dict[str, Any], fragment: str) -> object:
+def _registry_target(schema: Any, fragment: str) -> object:
     """The node the registry reaches for a "#" fragment of this schema, `_MISSING` when it would
     not resolve it, and `_UNCHECKED` for an anchor, an odd encoding or non-UTF-8.
 
@@ -245,9 +252,9 @@ def _python_resolver(uri: str, contents: Any) -> _PythonReading:
     return registry.resolver(base_uri=uri), True
 
 
-def _reference_resolver(target: str, referenced: dict[str, str]) -> _PythonReading | None:
-    """The resolver for the referenced text named `target`; None when it is not there or is not
-    JSON (stage D4 reports a missing reference)."""
+def _reference_resolver(target: str, referenced: dict[str, str]) -> tuple[_PythonReading, Any] | None:
+    """The resolver for the referenced text named `target`, with its parsed contents; None when it
+    is not there or is not JSON (stage D4 reports a missing reference)."""
     text = referenced.get(target)
     if text is None:
         return None
@@ -255,7 +262,7 @@ def _reference_resolver(target: str, referenced: dict[str, str]) -> _PythonReadi
         contents = json.loads(text)
     except (ValueError, RecursionError):
         return None
-    return _python_resolver(target, contents)
+    return _python_resolver(target, contents), contents
 
 
 def _python_target(reading: _PythonReading, ref: str) -> object:
@@ -285,9 +292,15 @@ def _has_root_fragment(keyword: str, value: str) -> bool:
 
 
 def _metaschema_text(message: str, path: Iterable[Any]) -> str:
-    """The first line of a meta-schema error in JSON terms, with ` (at /pointer)` unless at the root."""
+    """The first line of a meta-schema error in JSON terms, with ` (at /pointer)` unless at the root,
+    at most _ERR_LIMIT characters. The text is cut before the location, so a long value cannot cut
+    the location off; a location that alone is too long is cut with the rest."""
     where = "".join(f"/{_escape(str(part))}" for part in path)
-    return json_values(message.partition("\n")[0]) + (f" (at {where})" if where else "")
+    text = json_values(message.partition("\n")[0])
+    suffix = f" (at {where})" if where else ""
+    if len(suffix) >= _ERR_LIMIT:
+        return shorten(text + suffix, _ERR_LIMIT)
+    return shorten(text, _ERR_LIMIT - len(suffix)) + suffix
 
 
 def _escape(token: str) -> str:

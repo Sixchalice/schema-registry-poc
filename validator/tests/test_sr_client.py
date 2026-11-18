@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 import requests
+import urllib3.connection
 import urllib3.exceptions
 
 from schema_validator import sr_client
@@ -886,7 +887,7 @@ def test_watchdog_closes_only_its_own_call():
         if b"slow" in request:
             send_drip(conn, server, b"HTTP/1.1 200 OK\r\nX-A: ")
             return
-        server.stopping.wait(0.7)
+        server.stopping.wait(2.0)
         body = json.dumps(AVRO_BODY).encode()
         conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s" % (len(body), body))
 
@@ -899,14 +900,16 @@ def test_watchdog_closes_only_its_own_call():
             outcomes[name] = e
 
     with LocalServer(by_subject) as server:
-        client = HttpSchemaRegistryClient(server.url, timeout_seconds=1)
+        client = HttpSchemaRegistryClient(server.url, timeout_seconds=3)
         a = threading.Thread(target=run, args=("A", "slow.S", client))
         b = threading.Thread(target=run, args=("B", "a.B", client))
         a.start()
-        time.sleep(0.5)  # B starts at 0.5 s and is answered at 1.2 s, after A's watchdog (1.0 s)
+        # B starts at 1.5 s and is answered at 3.5 s: A's watchdog fires at 3.0 s, during B's
+        # call, and B's own fires at 4.5 s, 1 s after B is answered.
+        time.sleep(1.5)
         b.start()
-        a.join(3)
-        b.join(3)
+        a.join(6)
+        b.join(6)
         assert not a.is_alive() and not b.is_alive()
     assert isinstance(outcomes["A"], SchemaRegistryUnavailable)
     assert outcomes["B"] == SchemaVersion("a.B", 1, "AVRO", '"string"', ())
@@ -938,7 +941,8 @@ def test_watchdog_never_reaches_a_connection_back_in_the_pool(monkeypatch):
 URL_ERROR_TEXT = "Schema Registry URL must be http:// or https:// with a host"
 
 
-@pytest.mark.parametrize("url", ["", "localhost:18081", "ftp://x", "http://", "http://[::1"])
+@pytest.mark.parametrize("url", ["", "localhost:18081", "ftp://x", "http://", "http://[::1",
+                                 "http://host:abc", "http://host:99999", "http://ho st:8081"])
 def test_bad_url_is_a_config_error(url):
     with pytest.raises(SchemaRegistryConfigError) as info:
         HttpSchemaRegistryClient(url)
@@ -977,3 +981,64 @@ def test_watchdog_ignores_a_socket_closed_meanwhile():
     watch = sr_client._CallWatch(1)
     watch.record(SimpleNamespace(sock=sock))  # type: ignore[arg-type]
     watch._abort()
+
+
+def _call_in_thread(client: HttpSchemaRegistryClient) -> tuple[threading.Thread, dict[str, object]]:
+    outcome: dict[str, object] = {}
+
+    def go() -> None:
+        started = time.monotonic()
+        try:
+            client.get_latest("a.B")
+        except SchemaRegistryError as e:
+            outcome["error"] = e
+        outcome["elapsed"] = time.monotonic() - started
+
+    thread = threading.Thread(target=go, daemon=True)
+    thread.start()
+    return thread, outcome
+
+
+def test_watchdog_covers_a_slow_connect_then_a_header_drip(monkeypatch):
+    # Final review, Important: the timer fires while the socket is still being made (slow
+    # DNS or TCP connect); the header drip that follows must not outlive the call's timeout.
+    plain_new_conn = urllib3.connection.HTTPConnection._new_conn
+
+    def slow_new_conn(self: urllib3.connection.HTTPConnection) -> socket.socket:
+        time.sleep(1.2)
+        return plain_new_conn(self)
+
+    monkeypatch.setattr(urllib3.connection.HTTPConnection, "_new_conn", slow_new_conn)
+    with LocalServer(drip(b"HTTP/1.1 200 OK\r\nX-A: ")) as server:
+        thread, outcome = _call_in_thread(HttpSchemaRegistryClient(server.url, timeout_seconds=1))
+        thread.join(3)
+        assert not thread.is_alive()
+    assert isinstance(outcome["error"], SchemaRegistryUnavailable)
+    assert outcome["elapsed"] < 1.6
+
+
+def test_watchdog_covers_https_connecting_before_the_request(monkeypatch):
+    # HTTPSConnectionPool._validate_conn runs connect() (TCP and the TLS handshake) before
+    # request(). The handshake is stood in for by a slow connect that ends in a plain socket,
+    # so the drip that follows is read over it; no real TLS is needed for the ordering.
+    def slow_tls_connect(self: urllib3.connection.HTTPSConnection) -> None:
+        time.sleep(1.2)
+        self.sock = socket.create_connection((self.host, self.port))
+        self.is_verified = True
+
+    monkeypatch.setattr(urllib3.connection.HTTPSConnection, "connect", slow_tls_connect)
+    with LocalServer(drip(b"HTTP/1.1 200 OK\r\nX-A: ")) as server:
+        url = server.url.replace("http://", "https://")
+        thread, outcome = _call_in_thread(HttpSchemaRegistryClient(url, timeout_seconds=1))
+        thread.join(3)
+        assert not thread.is_alive()
+    assert isinstance(outcome["error"], SchemaRegistryUnavailable)
+    assert outcome["elapsed"] < 1.6
+
+
+def test_an_expired_watch_refuses_a_connection():
+    # Once the timer has fired, no connection may start (or go on with) a request in the call.
+    watch = sr_client._CallWatch(1)
+    watch._abort()
+    with pytest.raises(OSError):
+        watch.record(SimpleNamespace(sock=None))  # type: ignore[arg-type]
