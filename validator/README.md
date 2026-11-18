@@ -236,7 +236,7 @@ The results of the last run are in [VERIFICATION.md](VERIFICATION.md).
 
 ## Known behaviours
 
-These were found by the second audit (F10, F11). They are documented, not changed.
+These were found by the second audit (F10, F11). They are documented, not changed. The evidence is in `/Users/noamram/validator-audit-2/REPORT.md` (F10, F11), outside this repository.
 
 - **A `$ref` inside an unknown keyword is a use (F10).** `"x-doc": {"$ref": "elsewhere.json"}` counts like any other `$ref`: an external one needs a reference row, and an internal one must resolve (stage B, JSON rules 10 and 11). The registry and the clients ignore unknown keywords, so this is a false rejection by design. Move the annotation out of the schema.
 - **Looser than the owner rules (F11).** The clients work in each case.
