@@ -29,6 +29,7 @@ def test_json_values_leaves_unparseable_text() -> None:
         ("Plain text", "Plain text"),
         ("<> empty", "<> empty"),
         ("a < b > c", "a < b > c"),
+        ("x > <1> y", "x > 1 y"),
     ],
 )
 def test_json_values_converts_python_literals(text: str, expected: str) -> None:
@@ -37,7 +38,8 @@ def test_json_values_converts_python_literals(text: str, expected: str) -> None:
 
 def test_json_values_survives_hostile_text() -> None:
     deep = "[" * 100_000 + "]" * 100_000
-    for text in (f"Bad: {deep}", f"<{deep}>", f"{deep} is not x", "<" * 50_000, "<a" * 50_000, "x: " * 50_000):
+    for text in (f"Bad: {deep}", f"<{deep}>", f"{deep} is not x", "<" * 50_000, "<a" * 50_000, "x: " * 50_000,
+                 "<" * 250_000 + ">", "a<" * 250_000 + ">", "<a" * 2_500 + ">" + "<a" * 2_500 + ">"):
         start = time.monotonic()
         json_values(text)
         assert time.monotonic() - start < 2

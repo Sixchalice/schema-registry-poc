@@ -12,7 +12,6 @@ def shorten(text: str, limit: int) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
-_MAX_SEGMENT = 5_000  # longest `<...>` inside tried as a literal; keeps the scan linear
 _MAX_TAILS = 3  # `: {` or `: [` starts tried for the trailing literal
 _LEADING_MARKERS = (" is not ", " is too ")
 
@@ -26,25 +25,28 @@ def _literal_as_json(text: str) -> str | None:
 
 
 def _angle_segments(text: str) -> str:
-    """Each `<literal>` in `text` written as JSON; every other character is kept."""
+    """Each `<literal>` in `text` written as JSON; every other character is kept.
+
+    One left-to-right pass: each `>` pairs with the nearest `<` before it, so every
+    character is scanned a bounded number of times and a literal containing `<` is not tried.
+    """
     out: list[str] = []
     pos = 0  # start of the text not yet copied
-    scan = 0
     while True:
-        start = text.find("<", scan)
-        if start < 0:
-            break
-        end = text.find(">", start + 1)
+        end = text.find(">", pos)
         if end < 0:
             break
-        scan = start + 1
-        if end - start > _MAX_SEGMENT:
-            continue
-        converted = _literal_as_json(text[start + 1 : end])
-        if converted is not None:
-            out.append(text[pos:start])
-            out.append(converted)
-            pos = scan = end + 1
+        start = text.rfind("<", pos, end)
+        if start >= 0:
+            converted = _literal_as_json(text[start + 1 : end])
+            if converted is not None:
+                out.append(text[pos:start])
+                out.append(converted)
+                pos = end + 1
+                continue
+        # Not a literal (or no `<` before this `>`): keep the text up to the `>` and go on.
+        out.append(text[pos : end + 1])
+        pos = end + 1
     out.append(text[pos:])
     return "".join(out)
 
