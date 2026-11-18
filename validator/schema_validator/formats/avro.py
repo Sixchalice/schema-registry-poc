@@ -11,7 +11,7 @@ from fastavro.schema import SchemaParseException, UnknownType
 from schema_validator import messages
 from schema_validator.formats._avro_defaults import default_errors
 from schema_validator.formats._depth import json_depth
-from schema_validator._text import shorten
+from schema_validator._text import json_values, shorten
 from schema_validator.models import FormatAnalysis, ValidatorConfig
 
 # Type strings that are not names: primitives and complex-type keywords.
@@ -69,7 +69,7 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
     # differently, so fastavro not finding a defined name is already explained.
     error, parsed, named = _parse_error(schema, referenced, defined, unresolved, explained=bool(nested_errors))
     if error is not None:
-        errors.append(messages.AVRO_INVALID.format(err=shorten(error, _ERR_LIMIT)))
+        errors.append(messages.AVRO_INVALID.format(err=shorten(json_values(error), _ERR_LIMIT)))
     elif not isinstance(name, str):
         # fastavro lets a list or dict through as a name, or stopped before looking at it.
         errors.append(messages.AVRO_INVALID.format(err=f'the {schema["type"]} "name" must be a string'))

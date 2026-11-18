@@ -48,7 +48,7 @@ def nested(depth: int) -> str:
     return "[" * depth + "]" * depth
 
 
-TOO_DEEP = ["Schema is nested more than 64 levels deep."]
+TOO_DEEP = ["Schema is nested more than 64 levels deep, counting every JSON object and array."]
 
 
 def test_depth_at_limit_passes_the_depth_check() -> None:
@@ -71,7 +71,7 @@ def test_parser_recursion_is_too_deep() -> None:
 
 def test_configured_limit_is_used() -> None:
     result = analyse(nested(6), {}, ValidatorConfig(max_nesting_depth=5))
-    assert result.errors == ["Schema is nested more than 5 levels deep."]
+    assert result.errors == ["Schema is nested more than 5 levels deep, counting every JSON object and array."]
 
 
 def test_top_level_union() -> None:
@@ -980,3 +980,15 @@ def test_nested_dotted_bad_name_is_an_error() -> None:
     nested_type = rec("x.9y.Inner", [])
     result = run(rec("R", [field("n", nested_type)], namespace="t"))
     assert result.errors == [_chars("x.9y.Inner")]
+
+
+def test_default_message_shows_json() -> None:
+    result = run(rec("Order", [field("id", "string", default=None)], namespace="com.acme"))
+    assert result.errors == [messages.AVRO_INVALID.format(err="Default value null must match schema type: string")]
+
+
+def test_missing_field_name_shows_json() -> None:
+    result = run(rec("Order", [{"type": "int"}], namespace="com.acme"))
+    assert len(result.errors) == 1
+    assert result.errors[0].endswith('{"type": "int"}')
+    assert "{'type'" not in result.errors[0]

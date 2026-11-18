@@ -13,7 +13,7 @@ from referencing.jsonschema import DRAFT7, specification_with
 
 from schema_validator import messages
 from schema_validator.formats._depth import json_depth
-from schema_validator._text import shorten
+from schema_validator._text import json_values, shorten
 from schema_validator.models import FormatAnalysis, ValidatorConfig
 
 if TYPE_CHECKING:
@@ -102,7 +102,9 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
         try:
             validator_for(schema, default=Draft7Validator).check_schema(schema)
         except SchemaError as e:
-            errors.append(messages.JSON_INVALID.format(err=shorten(e.message.partition("\n")[0], _ERR_LIMIT)))
+            where = "".join(f"/{_escape(str(part))}" for part in e.path)
+            text = json_values(e.message.partition("\n")[0]) + (f" (at {where})" if where else "")
+            errors.append(messages.JSON_INVALID.format(err=shorten(text, _ERR_LIMIT)))
         except RecursionError:
             errors.append(messages.JSON_TOO_DEEP)
 

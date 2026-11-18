@@ -209,7 +209,7 @@ def test_non_string_schema_keyword() -> None:
 def test_non_string_title() -> None:
     # The meta-schema check also rejects the title, so there are two messages.
     result = run({"$schema": D7, "title": 5, "type": "object"})
-    assert result.errors == [TITLE_MISSING, "Invalid JSON schema: 5 is not of type 'string'"]
+    assert result.errors == [TITLE_MISSING, "Invalid JSON schema: 5 is not of type 'string' (at /title)"]
     assert result.expected_name is None
 
 
@@ -228,7 +228,7 @@ def nested(depth: int) -> str:
     return "[" * depth + "]" * depth
 
 
-TOO_DEEP = ["Schema is nested more than 64 levels deep."]
+TOO_DEEP = ["Schema is nested more than 64 levels deep, counting every JSON object and array."]
 
 
 def test_depth_at_limit_passes_the_depth_check() -> None:
@@ -251,7 +251,7 @@ def test_parser_recursion_is_too_deep() -> None:
 
 def test_configured_limit_is_used() -> None:
     result = analyse(nested(6), {}, ValidatorConfig(max_nesting_depth=5))
-    assert result.errors == ["Schema is nested more than 5 levels deep."]
+    assert result.errors == ["Schema is nested more than 5 levels deep, counting every JSON object and array."]
 
 
 def test_javatype_allowed() -> None:
@@ -955,3 +955,18 @@ def test_format_that_is_not_a_string_has_no_warning() -> None:
 def test_no_format_warning_with_errors() -> None:
     result = run(schema(properties={"e": {"format": "email", "$id": "x"}}))
     assert result.errors and result.warnings == []
+
+
+def test_metaschema_error_shows_json_and_location() -> None:
+    result = run(schema(properties={"x": {"type": "string", "required": True}}))
+    assert len(result.errors) == 1
+    assert "true is not of type 'array'" in result.errors[0]
+    assert "(at /properties/x/required)" in result.errors[0]
+    assert result.errors[0].startswith(messages.JSON_INVALID.split("{err}")[0])
+
+
+def test_metaschema_error_names_the_top_level_keyword() -> None:
+    result = run(schema(required=True))
+    assert any("(at /required)" in e for e in result.errors)
+    result = run(schema(type=5))
+    assert any("(at /type)" in e for e in result.errors)

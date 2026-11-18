@@ -150,7 +150,7 @@ JSON_FORMAT_NOT_CHECKED = (
     'while Python producers do not check it, so the two can accept different data.'
 )
 JSON_TOO_DEEP = "JSON schema is nested too deeply."
-SCHEMA_TOO_DEEP = "Schema is nested more than {max} levels deep."
+SCHEMA_TOO_DEEP = "Schema is nested more than {max} levels deep, counting every JSON object and array."
 
 # Protobuf (5.3)
 PROTO_IMPORT_PATH = "Invalid import path '{x}'."
