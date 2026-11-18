@@ -662,3 +662,50 @@ def test_external_ref_is_not_checked_for_a_pointer() -> None:
     result = run(ref_schema("other.json#/nope"))
     assert result.errors == []
     assert result.external_refs == {"https://acme.example/other.json"}
+
+
+# --- Pointer tokens resolve the way the registry does (audit 2 F9, review) ---------------
+
+def test_bare_own_url_is_not_a_self_url() -> None:
+    # The registry accepts the document's own URL with no "#"; with a "#" it rejects it.
+    assert run(ref_schema(R8)).errors == []
+    assert run(ref_schema("r8.json")).errors == []
+    assert run(ref_schema(R8 + "#")).errors == [messages.JSON_REF_SELF_URL.format(kw="$id", paths=A_PATH)]
+
+
+@pytest.mark.parametrize("ref", [
+    "#/definitions/s/", "#/definitions/s//", "#/definitions/", "#/", "#/definitions//x",
+])
+def test_empty_pointer_tokens_follow_the_registry(ref: str) -> None:
+    d = ref_schema(ref)
+    d["definitions"][""] = {"x": {}}
+    assert run(d).errors == []
+
+
+@pytest.mark.parametrize("ref", ["#/definitions/zz/", "#//definitions/s", "#/definitions//x"])
+def test_empty_token_in_the_middle_needs_an_empty_key(ref: str) -> None:
+    assert run(ref_schema(ref)).errors == [messages.JSON_REF_NOT_FOUND.format(paths=A_PATH)]
+
+
+@pytest.mark.parametrize("ref, defs, found", [
+    ("#/definitions/a%2Fb", {"a/b": {}}, True),
+    ("#/definitions/a%2Fb", {"a": {"b": {}}}, False),
+    ("#/definitions/a+b", {"a b": {}}, True),
+    ("#/definitions/a+b", {"a+b": {}}, False),
+    ("#/definitions/a%2Bb", {"a+b": {}}, True),
+    ("#/definitions/a%2Bb", {"a b": {}}, False),
+    ("#/definitions/a%20b", {"a b": {}}, True),
+    ("#/definitions/%C3%A9", {"é": {}}, True),
+    ("#/definitions/é", {"é": {}}, True),
+    ("#/definitions/a%7E1b", {"a/b": {}}, True),
+])
+def test_tokens_are_split_then_decoded(ref: str, defs: dict[str, Any], found: bool) -> None:
+    d = ref_schema(ref)
+    d["definitions"] = defs
+    expected = [] if found else [messages.JSON_REF_NOT_FOUND.format(paths=A_PATH)]
+    assert run(d).errors == expected
+
+
+@pytest.mark.parametrize("ref", ["#/definitions/%zz", "#/definitions/%", "#/definitions/%2f", "#/definitions/%e9", "#/definitions/%E9"])
+def test_unpinned_encodings_are_skipped(ref: str) -> None:
+    assert run(ref_schema(ref)).errors == []

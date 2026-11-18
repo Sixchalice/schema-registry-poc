@@ -496,20 +496,37 @@ def test_mode_readonly_subject(
 
 # --- Audit 2 F9: "$ref" values that point inside the schema ------------------------------
 
-@pytest.mark.parametrize("ref, with_id, accepted", [
-    ("#/definitions/s", True, True),
-    ("#/defin%69tions/s", True, True),
-    ("https://acme.example/r8.json#/definitions/s", True, False),
-    ("r8.json#/definitions/s", True, False),
-    ("#/definitions/missing", True, False),
-    ("#/definitions/missing", False, False),
-    ("#/definitions/s/0", True, False),
+@pytest.mark.parametrize("ref, with_id, definitions, accepted", [
+    ("#/definitions/s", True, {"s": {"type": "string"}}, True),
+    ("#/defin%69tions/s", True, {"s": {"type": "string"}}, True),
+    ("https://acme.example/r8.json#/definitions/s", True, {"s": {"type": "string"}}, False),
+    ("r8.json#/definitions/s", True, {"s": {"type": "string"}}, False),
+    ("#/definitions/missing", True, {"s": {"type": "string"}}, False),
+    ("#/definitions/missing", False, {"s": {"type": "string"}}, False),
+    ("#/definitions/s/0", True, {"s": {"type": "string"}}, False),
+    ("#/definitions/a~1b", True, {"a/b": {}}, True),
+    ("#/definitions/t~0", True, {"t~": {}}, True),
+    ("#/definitions/a%2Fb", True, {"a/b": {}}, True),
+    ("#/definitions/a%2Fb", True, {"a": {"b": {}}}, False),
+    ("#/definitions/a+b", True, {"a b": {}}, True),
+    ("#/definitions/a+b", True, {"a+b": {}}, False),
+    ("#/definitions/a%2Bb", True, {"a+b": {}}, True),
+    ("#/definitions/a%2Bb", True, {"a b": {}}, False),
+    ("#/definitions/s/", True, {"s": {"type": "string"}}, True),
+    ("#/definitions/s//", True, {"s": {"type": "string"}}, True),
+    ("#/definitions/", True, {"s": {"type": "string"}}, True),
+    ("#/definitions/zz/", True, {"s": {"type": "string"}}, False),
+    ("#/definitions//x", True, {"": {"x": {}}}, True),
+    ("#/definitions//x", True, {"s": {"type": "string"}}, False),
+    ("https://acme.example/r8.json", True, {"s": {"type": "string"}}, True),
+    ("https://acme.example/r8.json#", True, {"s": {"type": "string"}}, False),
+    ("r8.json", True, {"s": {"type": "string"}}, True),
 ])
 def test_json_internal_refs(
-    sr: HttpSchemaRegistryClient, ns: str, ref: str, with_id: bool, accepted: bool,
+    sr: HttpSchemaRegistryClient, ns: str, ref: str, with_id: bool, definitions: dict[str, object], accepted: bool,
 ) -> None:
     d = {"$schema": "http://json-schema.org/draft-07/schema#", "title": f"{ns}.Order", "type": "object",
-         "definitions": {"s": {"type": "string"}}, "properties": {"a": {"$ref": ref}}}
+         "definitions": definitions, "properties": {"a": {"$ref": ref}}}
     if with_id:
         d["$id"] = "https://acme.example/r8.json"
     verdict = sr.check_compatibility(f"{ns}.Order", json.dumps(d), "JSON", ())

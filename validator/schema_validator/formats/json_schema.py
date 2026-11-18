@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
-from urllib.parse import unquote, urldefrag, urljoin, urlsplit
+from urllib.parse import unquote_to_bytes, urldefrag, urljoin, urlsplit
 
 from jsonschema.exceptions import SchemaError
 from jsonschema.validators import Draft7Validator, validator_for
@@ -135,7 +135,7 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
     for pointer, ref, target in targets:
         if target not in ("", base):
             continue
-        if ref and not ref.startswith("#"):
+        if "#" in ref and not ref.startswith("#"):
             self_urls.append(pointer)
         elif not _pointer_exists(schema, urldefrag(ref).fragment):
             not_found.append(pointer)
@@ -146,13 +146,37 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
     return FormatAnalysis(expected_name, refs, errors)
 
 
+# A "%" that is not followed by two upper-case hex digits: the registry's reading of it is not pinned.
+_ODD_PERCENT = re.compile(r"%(?![0-9A-F]{2})")
+
+
+def _token(raw: str) -> str | None:
+    """One pointer token as the registry reads it: "+" is a space, then percent-decoding, then
+    `~1` and `~0`. None when the bytes are not UTF-8."""
+    try:
+        text = unquote_to_bytes(raw.replace("+", " ")).decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return text.replace("~1", "/").replace("~0", "~")
+
+
 def _pointer_exists(schema: dict[str, Any], fragment: str) -> bool:
-    """True when the fragment is an anchor (not checked) or a JSON Pointer that resolves in the schema."""
-    if not fragment.startswith("/"):
+    """False only when the fragment is a JSON Pointer that the registry would not resolve.
+
+    An anchor, an odd encoding and anything else not pinned against the registry counts as
+    existing: a wrong pass still fails at stage E, a wrong rejection would block a good schema.
+    The registry splits on "/" first, decodes each token, and ignores empty tokens at the end.
+    """
+    if not fragment.startswith("/") or _ODD_PERCENT.search(fragment):
         return True
+    raw_tokens = fragment[1:].split("/")
+    while raw_tokens and not raw_tokens[-1]:
+        raw_tokens.pop()
     node: Any = schema
-    for token in unquote(fragment)[1:].split("/"):
-        token = token.replace("~1", "/").replace("~0", "~")
+    for raw in raw_tokens:
+        token = _token(raw)
+        if token is None:
+            return True
         if isinstance(node, dict) and token in node:
             node = node[token]
         elif isinstance(node, list) and token.isascii() and token.isdecimal() and (token == "0" or token[0] != "0") and int(token) < len(node):

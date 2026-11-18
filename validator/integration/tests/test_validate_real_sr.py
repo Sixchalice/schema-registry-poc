@@ -544,6 +544,8 @@ def _ref_schema(ns: str, ref: str) -> str:
 
 @pytest.mark.parametrize("ref, expected", [
     ("#/definitions/s", ValidationResult(True, "Ok", "")),
+    ("#/definitions/s/", ValidationResult(True, "Ok", "")),
+    ("https://acme.example/r8.json", ValidationResult(True, "Ok", "")),
     ("#/definitions/missing", ValidationResult(
         False, "Error", messages.JSON_REF_NOT_FOUND.format(paths="'/properties/a/$ref'"))),
     ("https://acme.example/r8.json#/definitions/s", ValidationResult(
