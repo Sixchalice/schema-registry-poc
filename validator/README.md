@@ -72,7 +72,7 @@ On a registry with ACLs (Confluent Security Plugin), the validator's user needs 
 sr-acl-cli --config <sr.properties> --add -s '*' -p schema-validator -o SUBJECT_READ -o SUBJECT_WRITE -o SUBJECT_COMPATIBILITY_READ
 ```
 
-The `HttpSchemaRegistryClient` takes its URL, credentials and timeout from the config through `from_config`, or directly: `HttpSchemaRegistryClient(url, username=None, password=None, timeout_seconds=10)`.
+The `HttpSchemaRegistryClient` takes its URL, credentials and timeout from the config through `from_config`, or directly: `HttpSchemaRegistryClient(url, username=None, password=None, timeout_seconds=10)`. The username and password must be Latin-1 text (the encoding of HTTP Basic auth in `requests`); otherwise the constructor (and so `from_config`) raises `SchemaRegistryConfigError`, a `ValueError` with the text `Schema Registry username and password must be Latin-1 text`. This is a startup error for the platform, not a validation message, so the validator never sees a call fail for it.
 
 ## The request
 

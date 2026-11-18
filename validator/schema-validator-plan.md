@@ -71,7 +71,7 @@ class ValidationRequest:
 
 Configuration (constructor arguments or environment, not per request):
 
-- `sr_url`, `sr_username`, `sr_password`, `sr_timeout_seconds` (default 10)
+- `sr_url`, `sr_username`, `sr_password`, `sr_timeout_seconds` (default 10). The username and password must be Latin-1 text (HTTP Basic in `requests`): `HttpSchemaRegistryClient` raises `SchemaRegistryConfigError` (a `ValueError`) at construction otherwise, so a credential that could never be sent is a startup error, not an E3 on every call (audit 2 F8).
 - `max_schema_bytes` (default 500_000)
 - `max_nesting_depth` (default 64): the deepest nesting of JSON objects and arrays an Avro or JSON schema may have, the root counting as 1. Measured 2026-11-17: the registry takes JSON of depth 601, but `jsonschema`'s `check_schema` (the Python client runs it) overflows the stack at a depth that depends on the draft and on the keyword that nests (measured in 5.2 step 6: from 100 for 2019-09 `items` to 331 for draft-04/07 `properties`); the registry and Python's `json.loads` give up from about 1000 (`422 Invalid schema`); fastavro copes up to 990.
 - `allowed_json_drafts` (default: draft-04, draft-06, draft-07, 2019-09, 2020-12). This is platform policy only: SR 7.9 accepts any `$schema` value, including unknown URLs.

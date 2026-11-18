@@ -60,6 +60,10 @@ class SchemaRegistryRejected(SchemaRegistryError):
         self.code = code
 
 
+class SchemaRegistryConfigError(ValueError):
+    """The client's configuration cannot work (raised at construction, not by validate)."""
+
+
 class SchemaRegistryClient(Protocol):
     def get_latest(self, subject: str) -> SchemaVersion | None:
         """Latest version of the subject, or None on 404."""
@@ -117,6 +121,13 @@ class HttpSchemaRegistryClient:
 
     def __init__(self, url: str, username: str | None = None, password: str | None = None,
                  timeout_seconds: float = 10, session: requests.Session | None = None) -> None:
+        for credential in (username, password):
+            try:
+                (credential or "").encode("latin-1")
+            except UnicodeEncodeError:
+                # requests sends Basic credentials as Latin-1; no call could succeed.
+                raise SchemaRegistryConfigError(
+                    "Schema Registry username and password must be Latin-1 text") from None
         self._url = url.rstrip("/")
         self._auth = (username, password or "") if username else None
         self._timeout = timeout_seconds
@@ -236,9 +247,8 @@ class HttpSchemaRegistryClient:
                 raw = b"".join(chunks)
             except (requests.RequestException, urllib3.exceptions.HTTPError, OSError, ValueError) as e:
                 # urllib3 errors and OSError come from reading the body (stream=True, so
-                # requests does not wrap them). ValueError covers UnicodeEncodeError from
-                # requests' Latin-1 Basic header (its repr holds the password) and urllib3's
-                # timeout <= 0 check.
+                # requests does not wrap them). ValueError covers urllib3's timeout <= 0
+                # check (non-Latin-1 credentials are rejected at construction).
                 raise SchemaRegistryUnavailable(f"{where}: {type(e).__name__}") from None
             status = response.status_code
             if status in (401, 403):

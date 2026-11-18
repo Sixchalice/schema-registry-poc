@@ -5,13 +5,14 @@ from .models import (
     ValidationResult,
     ValidatorConfig,
 )
-from .sr_client import HttpSchemaRegistryClient
+from .sr_client import HttpSchemaRegistryClient, SchemaRegistryConfigError
 from .validator import validate
 
 __all__ = [
     "FormatAnalysis",
     "HttpSchemaRegistryClient",
     "ReferenceInput",
+    "SchemaRegistryConfigError",
     "ValidationRequest",
     "ValidationResult",
     "ValidatorConfig",

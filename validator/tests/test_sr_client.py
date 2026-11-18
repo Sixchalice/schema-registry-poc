@@ -10,6 +10,7 @@ from schema_validator.models import ValidatorConfig
 from schema_validator.sr_client import (
     CompatibilityVerdict,
     HttpSchemaRegistryClient,
+    SchemaRegistryConfigError,
     SchemaRegistryError,
     SchemaRegistryRejected,
     SchemaRegistryUnauthorized,
@@ -602,17 +603,33 @@ def no_sockets(monkeypatch):
     monkeypatch.setattr(socket, "create_connection", refuse)
 
 
+CONFIG_ERROR_TEXT = "Schema Registry username and password must be Latin-1 text"
+
+
 @pytest.mark.parametrize("user,password", [
+    ("u", "pässwörd€"),
+    ("ü€", PASSWORD),
     ("u", "пароль-密码"),
-    ("пользователь", PASSWORD),
     ("u", "pass\udc80word"),
-], ids=["cyrillic-cjk-password", "cyrillic-username", "surrogate-password"])
-def test_non_latin1_credentials_are_unavailable_without_leaking(no_sockets, user, password):
-    # requests encodes the Basic header as Latin-1 inside session.request and raises
-    # UnicodeEncodeError, which is not a RequestException and whose repr holds the password.
-    client = HttpSchemaRegistryClient("http://127.0.0.1:9", username=user, password=password)
-    for call in call_all(client):
-        _assert_unavailable_or_other_clean_error(call, user, password, SchemaRegistryUnavailable)
+], ids=["euro-password", "euro-username", "cyrillic-cjk-password", "surrogate-password"])
+def test_non_latin1_credentials_are_a_config_error(user, password):
+    # requests encodes the Basic header as Latin-1 and would fail on every call; fail at construction.
+    with pytest.raises(SchemaRegistryConfigError) as info:
+        HttpSchemaRegistryClient("http://x", user, password)
+    assert str(info.value) == CONFIG_ERROR_TEXT
+    assert isinstance(info.value, ValueError)
+    assert info.value.__cause__ is None
+    assert password not in repr(info.value)
+
+
+def test_non_latin1_password_from_config_is_a_config_error():
+    config = ValidatorConfig(sr_url="http://x", sr_username="u", sr_password="pässwörd€")
+    with pytest.raises(SchemaRegistryConfigError):
+        HttpSchemaRegistryClient.from_config(config)
+
+
+def test_latin1_password_is_accepted():
+    HttpSchemaRegistryClient("http://x", "u", "pässwörd")
 
 
 def test_negative_timeout_is_unavailable(no_sockets):
