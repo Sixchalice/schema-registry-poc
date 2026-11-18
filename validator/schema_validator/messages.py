@@ -154,7 +154,7 @@ JSON_FORMAT_NOT_CHECKED = (
     'while Python producers do not check it, so the two can accept different data.'
 )
 JSON_ARRAY_TOO_LONG = (
-    'A "required", "type" or "enum" list at {paths} has more than 1,000 items that are not all strings or all numbers. '
+    'A "required", "type", "enum" or "dependencies" list at {paths} has more than 1,000 items that are not all strings or all numbers. '
     "Checking it would take too long: shorten it to 1,000 items or fewer."
 )
 JSON_TOO_DEEP = "JSON schema is nested too deeply."

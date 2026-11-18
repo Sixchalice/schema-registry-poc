@@ -331,7 +331,7 @@ def _walk(
 ) -> tuple[list[tuple[str, str]], list[str], list[str], list[str], list[str]]:
     """The string `$ref` values with the JSON Pointer of each `$ref` keyword, and the JSON Pointers of the nested objects that have the id keyword
     and of those that have `$schema`, and the JSON Pointers of the `format` keywords with a string value,
-    and the JSON Pointers of the `required`, `type` (and, if `long_enum`, `enum`) lists that jsonschema
+    and the JSON Pointers of the `required`, `type`, `dependencies` (each list value) (and, if `long_enum`, `enum`) lists that jsonschema
     checks for duplicates in quadratic time.
 
     Visits the objects a schema can hold: name maps (`properties` and the like) are names, not
@@ -364,6 +364,12 @@ def _walk(
                 and _quadratic(child)
             ):
                 long_lists.append(f"{pointer}/{key}")
+            if key == "dependencies" and isinstance(child, dict):
+                long_lists.extend(
+                    f"{pointer}/dependencies/{_escape(name)}"
+                    for name, each in child.items()
+                    if isinstance(each, list) and _quadratic(each)
+                )
             if key == "$ref" and isinstance(child, str):
                 refs.append((f"{pointer}/$ref", child))
             elif key == "format" and isinstance(child, str):

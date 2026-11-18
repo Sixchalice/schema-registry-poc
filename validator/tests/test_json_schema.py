@@ -1038,7 +1038,7 @@ def test_long_type_with_booleans_among_numbers_is_refused() -> None:
 
 def test_long_sortable_arrays_still_pass() -> None:
     assert run(_d4_enum([f"v{i}" for i in range(5000)])).errors == []
-    assert run(_d4_enum(list(range(5000))) ).errors == []
+    assert run(_d4_enum(list(range(5000)))).errors == []
     assert run(_d4_enum([{"a": i} for i in range(1000)])).errors == []
 
 
@@ -1050,3 +1050,15 @@ def test_long_enum_outside_draft_04_is_not_checked() -> None:
 def test_property_named_required_is_not_a_keyword() -> None:
     result = run(schema(properties={"required": {"type": "string"}, "type": {"enum": [1, "a"] * 600}}))
     assert not any("too long" in e or "1,000 items" in e for e in result.errors)
+
+
+def test_long_dependencies_list_is_refused() -> None:
+    started = time.monotonic()
+    result = run(schema(dependencies={"a": [{"a": i} for i in range(40_000)]}))
+    assert time.monotonic() - started < 2
+    assert result.errors == [messages.JSON_ARRAY_TOO_LONG.format(paths="'/dependencies/a'")]
+
+
+def test_dependencies_schema_object_is_not_affected() -> None:
+    result = run(schema(dependencies={"a": {"required": ["b"]}, "c": ["d"] * 2}))
+    assert not any("1,000 items" in e for e in result.errors)
