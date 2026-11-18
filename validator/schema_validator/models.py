@@ -79,7 +79,7 @@ class ValidatorConfig(BaseSettings):
     sr_password: str | None = Field(None, repr=False)
     sr_timeout_seconds: float = Field(10, gt=0, allow_inf_nan=False)
     total_timeout_seconds: float = Field(30, gt=0, allow_inf_nan=False)
-    max_schema_bytes: int = Field(500_000, ge=1)
+    max_schema_bytes: int = Field(100_000, ge=1)
     max_nesting_depth: int = Field(64, ge=1)
     # Levels below a referenced row's own schema (which is level 0).
     max_reference_depth: int = Field(20, ge=1)

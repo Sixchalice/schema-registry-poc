@@ -24,7 +24,7 @@ def test_defaults_unchanged() -> None:
     assert config.sr_password is None
     assert config.sr_timeout_seconds == 10
     assert config.total_timeout_seconds == 30
-    assert config.max_schema_bytes == 500_000
+    assert config.max_schema_bytes == 100_000
     assert config.max_nesting_depth == 64
     assert config.max_reference_depth == 20
     assert config.max_response_bytes == 5_000_000

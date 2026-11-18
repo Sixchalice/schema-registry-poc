@@ -555,3 +555,45 @@ def test_json_internal_refs(
         d["$id"] = "https://acme.example/r8.json"
     verdict = sr.check_compatibility(f"{ns}.Order", json.dumps(d), "JSON", ())
     assert verdict.is_compatible is accepted, verdict
+
+
+# The default max_schema_bytes (100,000) is the largest the registry can store in the worst case: it keeps a
+# re-printed copy of the schema in one Kafka record of about 1 MB (audit 5 C3)
+
+def _largest_protobuf(ns: str, levels: int = 30) -> str:
+    """Compact, `levels` nested messages (protoc compiles at most 31), int32 fields up to 99,000-100,000 bytes."""
+    def build(fields: int) -> str:
+        body = "".join(f"int32 f{i}={i};" for i in range(1, fields + 1))
+        inner = body
+        for level in range(levels, 1, -1):
+            inner = f"message M{level}{{{inner}}}"
+        return f'syntax="proto3";package {ns};message T{{{inner}}}'
+
+    fields = 1
+    while len(build(fields + 1).encode()) < 100_000:
+        fields += 1
+    text = build(fields)
+    assert 99_000 <= len(text.encode()) < 100_000
+    return text
+
+
+def _largest_avro(ns: str) -> str:
+    """A record with a custom property holding 1e6 numbers (the registry prints each as 1000000.0)."""
+    def build(count: int) -> str:
+        return (f'{{"type":"record","name":"A","namespace":"{ns}","fields":[{{"name":"id","type":"string"}}],'
+                f'"x":[{",".join(["1e6"] * count)}]}}')
+
+    count = 1
+    while len(build(count + 1).encode()) < 100_000:
+        count += 1
+    text = build(count)
+    assert 99_000 <= len(text.encode()) < 100_000
+    return text
+
+
+def test_largest_default_schemas_register(register: Register, ns: str) -> None:
+    status, body = register(f"{ns}.T", _largest_protobuf(ns), "PROTOBUF")
+    assert status == 200, body
+
+    status, body = register(f"{ns}.A", _largest_avro(ns), "AVRO")
+    assert status == 200, body
