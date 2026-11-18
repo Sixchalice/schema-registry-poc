@@ -234,6 +234,16 @@ docker run --rm --network validator-it_default -v "$PWD:/work" -v "$PWD/../..:/r
 
 The results of the last run are in [VERIFICATION.md](VERIFICATION.md).
 
+## Known behaviours
+
+These were found by the second audit (F10, F11). They are documented, not changed.
+
+- **A `$ref` inside an unknown keyword is a use (F10).** `"x-doc": {"$ref": "elsewhere.json"}` counts like any other `$ref`: an external one needs a reference row, and an internal one must resolve (stage B, JSON rules 10 and 11). The registry and the clients ignore unknown keywords, so this is a false rejection by design. Move the annotation out of the schema.
+- **Looser than the owner rules (F11).** The clients work in each case.
+  - A root `$id` of `#foo` passes (the fragment rule needs a non-empty part before `#`).
+  - An Avro type that comes only through another reference, and a Protobuf type from an `import public`, needs no reference row of its own.
+  - A Protobuf import that is never used still counts as a use of its row.
+
 ## Not done by the validator
 
 - The platform's own steps (the deployment form, showing the result, registration with the resolved reference versions, blocking deletes, permissions, the topic side) are listed in [section 11 of the plan](schema-validator-plan.md#11-out-of-scope-americas-side).
