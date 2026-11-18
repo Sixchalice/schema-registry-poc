@@ -1,6 +1,7 @@
 """In-memory Schema Registry used by unit tests."""
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 
 from schema_validator.sr_client import (
@@ -23,6 +24,8 @@ class FakeSchemaRegistry:
         # When set, fail_with applies only to the named methods; None means every method.
         self.fail_methods: set[str] | None = None
         self.calls: list[tuple] = []
+        # Slept at the start of every call, to test the total deadline.
+        self.delay_seconds: float = 0
 
     def add(self, subject: str, schema: str, schema_type: str = "AVRO",
             references: Sequence[SrReference] = ()) -> int:
@@ -37,6 +40,7 @@ class FakeSchemaRegistry:
         self.fail_methods = {method}
 
     def _check_fail(self) -> None:
+        time.sleep(self.delay_seconds)
         method = self.calls[-1][0]
         if self.fail_with is not None and (self.fail_methods is None or method in self.fail_methods):
             raise self.fail_with

@@ -1,6 +1,8 @@
 """The validation pipeline (spec section 4): stages A to E, then the warnings."""
 from __future__ import annotations
 
+import threading
+
 from schema_validator import messages
 from schema_validator.formats import ANALYSERS
 from schema_validator.models import ReferenceInput, ValidationRequest, ValidationResult, ValidatorConfig
@@ -23,11 +25,28 @@ _SR_FAILURES = (SchemaRegistryUnavailable, SchemaRegistryUnauthorized, SchemaReg
 
 
 def validate(request: ValidationRequest, sr: SchemaRegistryClient, config: ValidatorConfig) -> ValidationResult:
-    """Never raises: an unexpected exception becomes a single INTERNAL_ERROR."""
-    try:
-        return _validate(request, sr, config)
-    except Exception as e:
-        return build_result([messages.INTERNAL_ERROR.format(err=_describe(e))], [])
+    """Never raises: an unexpected exception becomes a single INTERNAL_ERROR.
+
+    The whole validation has one deadline, `total_timeout_seconds`. A worker that is still
+    running at the deadline is left to end on its own and its result is discarded.
+    """
+    outcome: list[ValidationResult | BaseException] = []
+
+    def work() -> None:
+        try:
+            outcome.append(_validate(request, sr, config))
+        except BaseException as e:  # a thread must hand back whatever ended it
+            outcome.append(e)
+
+    worker = threading.Thread(target=work, name="schema-validator", daemon=True)
+    worker.start()
+    worker.join(config.total_timeout_seconds)
+    if worker.is_alive():
+        return build_result([messages.SR_UNREACHABLE], [])
+    result = outcome[0]
+    if isinstance(result, BaseException):
+        return build_result([messages.INTERNAL_ERROR.format(err=_describe(result))], [])
+    return result
 
 
 def _validate(request: ValidationRequest, sr: SchemaRegistryClient, config: ValidatorConfig) -> ValidationResult:
@@ -196,7 +215,7 @@ def _rejected(reason: str) -> str:
     return messages.SR_REJECTED.format(reason=reason)
 
 
-def _describe(err: Exception) -> str:
+def _describe(err: BaseException) -> str:
     """str(err), or the exception's type name when str() itself fails."""
     try:
         return str(err)

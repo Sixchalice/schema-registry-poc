@@ -60,7 +60,8 @@ result.message         # "" for Ok; otherwise the messages, one per line
 | `sr_url` | `""` | Base URL of Schema Registry |
 | `sr_username` | `None` | Basic auth user; no authentication when `None` |
 | `sr_password` | `None` | Basic auth password; not shown in `repr` |
-| `sr_timeout_seconds` | `10` | Time limit of each HTTP call, counted from sending the request. It is checked after the headers arrive and after each piece of the body, so a stalled read can take up to one more per-read timeout (about 2 × `sr_timeout_seconds` at worst), and headers sent byte by byte are not interrupted |
+| `sr_timeout_seconds` | `10` | Time limit of each HTTP call, counted from sending the request. It is checked after the headers arrive and after each piece of the body, so a stalled read can take up to one more per-read timeout (about 2 × `sr_timeout_seconds` at worst). Headers sent byte by byte are not interrupted by this limit, but `total_timeout_seconds` bounds them |
+| `total_timeout_seconds` | `30` | Time limit of the whole validation, all registry calls together. When it passes, the result is the E3 error and the unfinished work is dropped. Keep it above `sr_timeout_seconds` |
 | `max_schema_bytes` | `500_000` | Largest schema text accepted, in UTF-8 bytes |
 | `max_nesting_depth` | `64` | Deepest nesting of JSON objects and arrays in an Avro or JSON schema, the root counting as 1 |
 | `allowed_json_drafts` | draft-04, draft-06, draft-07, 2019-09, 2020-12 | Accepted `$schema` values, stored without a trailing `#` (`DEFAULT_JSON_DRAFTS` in `models.py`). This is platform policy: Schema Registry accepts any `$schema` value |

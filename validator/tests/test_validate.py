@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import socket
+import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -18,6 +21,7 @@ from schema_validator import (
 from schema_validator.formats import ANALYSERS
 from schema_validator.models import FormatAnalysis
 from schema_validator.sr_client import (
+    HttpSchemaRegistryClient,
     CompatibilityVerdict,
     SchemaRegistryError,
     SchemaRegistryRejected,
@@ -1154,3 +1158,78 @@ def test_kind_warning_comes_first(sr: FakeSchemaRegistry, run: Callable) -> None
     request = req("AVRO", None, "t.Color", schema=color, previous_name="t.Color")
     assert run(request, sr) == ValidationResult(True, "Warning", messages.AVRO_NOT_A_MESSAGE.format(
         kind="enum") + "\n" + messages.SCHEMA_UNCHANGED.format(n=1, name="t.Color"))
+
+
+# One deadline for the whole validation (audit 2 F6).
+
+def _edit_request() -> ValidationRequest:
+    return req("AVRO", "order", ORDER, previous_name=ORDER)
+
+
+def test_total_deadline_returns_unreachable(sr: FakeSchemaRegistry) -> None:
+    sr.add(ORDER, ORDER_V2)
+    sr.delay_seconds = 0.2
+    started = time.monotonic()
+    result = validate(_edit_request(), sr, ValidatorConfig(total_timeout_seconds=0.3))
+    assert result == ValidationResult(False, "Error", messages.SR_UNREACHABLE)
+    assert time.monotonic() - started < 0.8
+
+
+def test_fast_validation_is_unchanged_by_the_deadline(sr: FakeSchemaRegistry) -> None:
+    sr.add(ORDER, ORDER_V2)
+    request = _edit_request()
+    assert (validate(request, sr, ValidatorConfig(total_timeout_seconds=0.3))
+            == validate(request, sr, cfg))
+
+
+def test_exception_is_still_internal_error_under_the_deadline(sr: FakeSchemaRegistry) -> None:
+    sr.add(ORDER, ORDER_V2)
+    sr.fail_only("get_latest", RuntimeError("boom"))
+    result = validate(_edit_request(), sr, ValidatorConfig(total_timeout_seconds=0.3))
+    assert result == ValidationResult(False, "Error", messages.INTERNAL_ERROR.format(err="boom"))
+
+
+def test_header_drip_is_bounded() -> None:
+    stop = threading.Event()
+
+    def drip(conn: socket.socket) -> None:
+        with conn:
+            conn.settimeout(0.5)
+            try:
+                conn.recv(65536)
+                for byte in b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" * 10:
+                    if stop.is_set():
+                        return
+                    conn.sendall(bytes([byte]))
+                    time.sleep(0.2)
+            except OSError:
+                return
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    listener.settimeout(0.2)
+
+    def accept() -> None:
+        while not stop.is_set():
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                continue
+            threading.Thread(target=drip, args=(conn,), daemon=True).start()
+
+    acceptor = threading.Thread(target=accept, daemon=True)
+    acceptor.start()
+    try:
+        client = HttpSchemaRegistryClient(
+            f"http://127.0.0.1:{listener.getsockname()[1]}", "u", "p", timeout_seconds=5)
+        started = time.monotonic()
+        result = validate(req("AVRO", "order", ORDER, previous_name=ORDER), client,
+                          ValidatorConfig(total_timeout_seconds=1))
+        elapsed = time.monotonic() - started
+    finally:
+        stop.set()
+        acceptor.join()
+        listener.close()
+    assert result == ValidationResult(False, "Error", messages.SR_UNREACHABLE)
+    assert elapsed < 1.5

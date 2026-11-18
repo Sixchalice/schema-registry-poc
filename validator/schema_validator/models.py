@@ -70,6 +70,7 @@ class ValidatorConfig:
     sr_username: str | None = None
     sr_password: str | None = field(default=None, repr=False)
     sr_timeout_seconds: float = 10
+    total_timeout_seconds: float = 30
     max_schema_bytes: int = 500_000
     max_nesting_depth: int = 64
     allowed_json_drafts: tuple[str, ...] = DEFAULT_JSON_DRAFTS
