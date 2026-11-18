@@ -992,3 +992,33 @@ def test_missing_field_name_shows_json() -> None:
     assert len(result.errors) == 1
     assert result.errors[0].endswith('{"type": "int"}')
     assert "{'type'" not in result.errors[0]
+
+
+def test_enum_without_symbols_is_an_error() -> None:
+    # A field of an enum with no symbols can hold no value: Java and Python producers both fail.
+    empty = {"type": "enum", "name": "E", "symbols": []}
+    result = run(rec("Order", [field("e", empty)], namespace="com.acme"))
+    assert result.errors == [messages.AVRO_ENUM_NO_SYMBOLS.format(name="com.acme.E")]
+    assert result.expected_name == "com.acme.Order"
+
+
+def test_top_level_enum_without_symbols_is_an_error() -> None:
+    result = run({"type": "enum", "name": "E", "namespace": "com.acme", "symbols": []})
+    assert result.errors == [messages.AVRO_ENUM_NO_SYMBOLS.format(name="com.acme.E")]
+    assert result.warnings == []
+
+
+def test_enums_without_symbols_are_listed_by_name() -> None:
+    inner = rec("Inner", [field("b", {"type": "enum", "name": "B", "symbols": []})])
+    schema = rec("Order", [field("a", {"type": "enum", "name": "A", "symbols": []}), field("i", inner)],
+                 namespace="com.acme")
+    assert run(schema).errors == [
+        messages.AVRO_ENUM_NO_SYMBOLS.format(name="com.acme.A"),
+        messages.AVRO_ENUM_NO_SYMBOLS.format(name="com.acme.B"),
+    ]
+
+
+def test_enum_from_a_reference_without_symbols_is_not_this_schemas_error() -> None:
+    referenced = {"com.acme.E": json.dumps({"type": "enum", "name": "E", "namespace": "com.acme", "symbols": []})}
+    result = run(rec("Order", [field("e", ["null", "com.acme.E"], default=None)], namespace="com.acme"), referenced)
+    assert result.errors == []

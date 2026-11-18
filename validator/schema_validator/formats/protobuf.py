@@ -110,9 +110,30 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
     if len(main.message_type) != 1:
         errors.append(messages.PROTO_MESSAGE_COUNT.format(n=len(main.message_type)))
     expected_name = None if errors else f"{main.package}.{main.message_type[0].name}"
+    # Step 9a: proto2 groups. The registry's parser drops group fields from its descriptor.
+    errors.extend(_group_errors(main))
 
     # Step 10
     return FormatAnalysis(expected_name, set(main.dependency) - config.builtin_proto_imports, errors)
+
+
+def _group_errors(main: descriptor_pb2.FileDescriptorProto) -> list[str]:
+    """One message per group field, in messages, nested messages and extensions: the file's
+    own extensions first, then each message's fields and extensions, outer scopes before inner."""
+    found: list[str] = []
+    pending = [(main.package, list(main.extension), list(main.message_type))]
+    while pending:
+        scope, extensions, message_types = pending.pop(0)
+        for ext in extensions:
+            if ext.type == descriptor_pb2.FieldDescriptorProto.TYPE_GROUP:
+                found.append(messages.PROTO_GROUP.format(message=scope, group=ext.type_name.rsplit(".", 1)[-1]))
+        for message in message_types:
+            name = f"{scope}.{message.name}" if scope else message.name
+            for f in message.field:
+                if f.type == descriptor_pb2.FieldDescriptorProto.TYPE_GROUP:
+                    found.append(messages.PROTO_GROUP.format(message=name, group=f.type_name.rsplit(".", 1)[-1]))
+            pending.append((name, list(message.extension), list(message.nested_type)))
+    return found
 
 
 def _is_safe_path(path: object) -> bool:

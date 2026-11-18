@@ -407,6 +407,21 @@ Documentation only: the `json_values` shapes that are converted (README, spec 5.
 
 Runs after these commits: unit `1022 passed`, 100% line and branch coverage (1,619 statements, 586 branches); integration `195 passed`. The Java probes and the differential were not re-run.
 
+## Fourth audit (blind), 2026-11-18
+
+A reviewer that saw only the code and a description of the rules (no docs, no tests) tested every pass against the registry and against Java and Python clients. Its report is `/Users/noamram/validator-audit-4/REPORT.md`.
+
+The owner then set the scope: the validator checks the basics, and a case that works for a Java client but not for Python, or that the two read differently, is not a defect. Under that rule two findings were fixed:
+
+| Finding | What was tested | Observed (audit 4) | Pinned by |
+|---|---|---|---|
+| M3: an Avro enum with no symbols | An enum the submitted text defines with `"symbols": []`, in a field, at the top level and nested; an empty enum that comes from a reference | The registry accepted it, and the Java producer (`AvroTypeException`) and the Python producer (`no value and no default`) both failed. Now an Error per enum, sorted by full name. An empty enum in a referenced text is not this schema's error | `tests/test_avro.py::test_enum_without_symbols_is_an_error`, `test_top_level_enum_without_symbols_is_an_error`, `test_enums_without_symbols_are_listed_by_name`, `test_enum_from_a_reference_without_symbols_is_not_this_schemas_error` |
+| C4, the `group` part: a proto2 group field | A group in a message, in a nested message and in a file-level `extend`; a non-group extension; a nested message named like a group | The registry's descriptor had no group field: a Java producer failed with `Cannot find field: G`, and the Java generic consumer read the bytes with the group's data dropped. Now an Error per group; the derived name is unchanged | `tests/test_protobuf.py::test_group_is_an_error`, `test_nested_and_extension_groups_are_errors`, `test_nested_message_is_not_a_group` |
+
+Not taken, by the owner's scope decision: C1, C2, I2 and M4 (Java works, Python does not); C3, I1 and the `[default]` parts of C4 (Java and Python read the data differently); M1 and M5 (message wording); M2 (needs a gateway in front of the registry); M6 (a subject left in the registry after its deployment is gone, a platform matter). The third audit's own leftovers stay as recorded above.
+
+Runs after this change: unit `1029 passed`, 100% line and branch coverage (1,638 statements, 598 branches); integration `195 passed`. The Java probes and the differential were not re-run; the two new checks are in stage B and add no registry call.
+
 ## Packaging
 
 `tests/test_packaging.py` builds the wheel from a copy of the tree with `setuptools.build_meta.build_wheel` on every unit-test run and checks that it holds every `.py` file and the 18 `.proto` files under `schema_validator/_proto/`, and no tests.

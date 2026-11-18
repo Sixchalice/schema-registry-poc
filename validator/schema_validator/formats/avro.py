@@ -76,6 +76,14 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
     elif parsed is not None:
         # Step 8: only when fastavro accepted the whole schema (not when it stopped early).
         errors.extend(default_errors(parsed, named))
+        # Step 9: an enum with no symbols. fastavro and the registry accept it, but a field
+        # of it can hold no value, so no producer can send the record.
+        errors.extend(
+            messages.AVRO_ENUM_NO_SYMBOLS.format(name=name)
+            for name in sorted(defined)
+            if isinstance(named.get(name), dict) and named[name].get("type") == "enum"
+            and not named[name].get("symbols")
+        )
 
     warnings: list[str] = []
     if not errors and schema["type"] != "record":

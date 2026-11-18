@@ -461,3 +461,36 @@ def test_protoc_timeout_is_configurable(monkeypatch: pytest.MonkeyPatch) -> None
     result = analyse(P + "message M { string a = 1; }", {}, ValidatorConfig(protoc_timeout_seconds=2.5))
     assert result.errors == [messages.PROTO_TIMEOUT.format(seconds=2.5)]
     assert result.errors[0].endswith("did not finish in 2.5 seconds.")
+
+
+def group_error(message: str, group: str) -> str:
+    return messages.PROTO_GROUP.format(message=message, group=group)
+
+
+def test_group_is_an_error() -> None:
+    # Schema Registry drops group fields: a Java producer cannot set one, a Java consumer loses its data.
+    text = ('syntax = "proto2";\npackage com.acme;\n'
+            "message Order { optional group G = 1 { optional int32 a = 2; } optional int32 z = 3; }")
+    result = run(text)
+    assert result.errors == [group_error("com.acme.Order", "G")]
+    assert result.expected_name == "com.acme.Order"
+
+
+def test_nested_and_extension_groups_are_errors() -> None:
+    text = ('syntax = "proto2";\npackage com.acme;\n'
+            "message Order {\n"
+            "  extensions 100 to 200;\n"
+            "  message Inner { optional group H = 1 { optional int32 b = 2; } }\n"
+            "  optional Inner inner = 1;\n"
+            "}\n"
+            "extend Order { optional group X = 100 { optional int32 c = 101; } optional int32 y = 150; }\n")
+    # A group in a file-level extend is also a top-level message of its own, so the count error comes too.
+    assert run(text).errors == message_count(2) + [
+        group_error("com.acme", "X"), group_error("com.acme.Order.Inner", "H"),
+    ]
+
+
+def test_nested_message_is_not_a_group() -> None:
+    text = ('syntax = "proto2";\npackage com.acme;\n'
+            "message Order { message G { optional int32 a = 2; } optional G g = 1; }")
+    assert run(text).errors == []

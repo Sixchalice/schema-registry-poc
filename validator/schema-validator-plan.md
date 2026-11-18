@@ -222,6 +222,8 @@ How Confluent derives the RecordNameStrategy subject (confirmed in Confluent doc
 
    The cases, with the validator's and Java's verdicts, are in `tests/schemas/avro_defaults.json`; the unit tests and `probe.Defaults` (Java Avro 1.11.4 `Schema.Parser`) both check them. The check never raises: a shape it cannot follow counts as an invalid default.
 
+9. Enums with no symbols, only when step 7 found no error and fastavro parsed the whole schema: every enum the submitted text defines (not those of referenced texts) must have at least one symbol, or it gets `The enum '{name}' has no symbols, so a field of it can hold no value and producers cannot send it. Add at least one symbol to its "symbols".` (`{name}` is the full name; one message per enum, sorted by full name). fastavro and the registry accept such an enum, but a field of it can hold no value: the Java producer fails with `AvroTypeException` and the Python one with `no value and no default` (audit 4 M3).
+
 fastavro and SR (Java Avro 1.11.4) do not agree on everything, which is fine because both run:
 
 - fastavro checks only primitive defaults (and that a union's default matches some branch); Java Avro 1.11's parser checks more: a union's default against its first branch, records, arrays and maps. Step 8 checks every default like Java does, plus three spec rules Java does not check: enum symbol, fixed size, bytes characters. SR accepts a schema with an invalid default; such a schema breaks Java clients, whose `Schema.Parser` rejects it.
@@ -287,6 +289,7 @@ Parsing `.proto` text requires the protoc compiler shipped in `grpcio-tools`.
 7. `package` must be non-empty: `Protobuf schema needs a package, for example "package com.team.domain;".`
 8. Exactly one top-level message (`len(file.message_type) == 1`). Nested messages and top-level enums are fine. `A Protobuf schema must define exactly one top-level message (found {n}). Nest the others inside it or move them to their own Schema.`
    - Reason: the client derives the subject from whichever message it serializes, so several top-level messages make the name ambiguous. Verified with the Java serializer: a file with `Multi1` and `Multi2` looks up `pkg.Multi1` or `pkg.Multi2` depending on the message sent. SR itself accepts such files, and files with no package or no message.
+   - No proto2 `group` field anywhere in the file (a message's fields, a nested message's, or an `extend` at any level): `'{message}' has a group '{group}'. Schema Registry drops group fields, so Java producers cannot set it and Java consumers lose its data. Use a nested message and a field of that type instead.` (`{message}` is the full name of the message that holds the field, or the package for a file-level `extend`; `{group}` is the group's name as written). One message per group: the file's own extensions first, then each message's fields and extensions, outer messages before inner. It does not change `expected_name`. Why (audit 4 C4): the registry's parser leaves group fields out of its descriptor, so the Java producer fails with `Cannot find field` and the Java generic consumer silently drops the group's bytes. A group in a file-level `extend` is also a top-level message of its own, so step 8's count error comes with it.
 9. `expected_name` = `package + "." + message_type[0].name`. The `java_package` and `java_outer_classname` options do not change it (verified).
 10. External references: `file.dependency` minus the paths in `builtin_proto_imports`. Each remaining path must equal the derived path of a reference row (D4/D5).
 
@@ -574,6 +577,8 @@ Because only the platform registers schemas, clients must not try to register an
 - Java: `value.subject.name.strategy=io.confluent.kafka.serializers.subject.RecordNameStrategy`, `auto.register.schemas=false`, `use.latest.version=true`
 - Java, Protobuf producers whose schema imports another Schema: also `reference.subject.name.strategy=io.confluent.kafka.serializers.subject.QualifiedReferenceSubjectNameStrategy`, and keep the imported file at the path used in the import (`com/acme/Address.proto`). Without the setting the first send fails with `Subject 'com/acme/Address.proto' not found`.
 - Python: `'subject.name.strategy': record_subject_name_strategy`, `'auto.register.schemas': False`, `'use.latest.version': True`
+
+Scope (owner decision, 2026-11-18, after the fourth audit): the validator checks the basics: that the schema registers as the platform sends it, is compatible, is named right, and works for Java producers and consumers. A case that works for Java but not for Python, or that the two read differently, is not treated as a defect. Python clients can hit edge cases with some advanced schema features (for example some `google/type` imports in Protobuf, JSON references with their own relative `$ref` under a root `$id`, JSON references in another draft, or an Avro record with no fields).
 
 Verified pitfalls on the producer side:
 

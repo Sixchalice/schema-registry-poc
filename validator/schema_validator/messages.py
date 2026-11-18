@@ -101,6 +101,10 @@ AVRO_NESTED_IN_REFERENCE = (
     "cannot be used here. Move it to its own Schema and reference that."
 )
 AVRO_INVALID = "Invalid Avro schema: {err}"
+AVRO_ENUM_NO_SYMBOLS = (
+    "The enum '{name}' has no symbols, so a field of it can hold no value and producers cannot send it. "
+    "Add at least one symbol to its \"symbols\"."
+)
 AVRO_WRONG_KIND = "an entry has the wrong kind of value, for example an object where a type name is expected"
 AVRO_UNION_DEFAULT = (
     "The default of field '{field}' in '{record}' must be a value of the first type in its union ({first}). "
@@ -160,6 +164,10 @@ PROTO_PACKAGE = "Protobuf schema needs a package, for example \"package com.team
 PROTO_MESSAGE_COUNT = (
     "A Protobuf schema must define exactly one top-level message (found {n}). "
     "Nest the others inside it or move them to their own Schema."
+)
+PROTO_GROUP = (
+    "'{message}' has a group '{group}'. Schema Registry drops group fields, so Java producers cannot "
+    "set it and Java consumers lose its data. Use a nested message and a field of that type instead."
 )
 
 # Not given by the spec
