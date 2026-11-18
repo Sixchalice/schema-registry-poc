@@ -141,7 +141,7 @@ class HttpSchemaRegistryClient:
         except ValueError:
             parts = None
         if (parts is None or parts.scheme not in ("http", "https") or not parts.hostname
-                or any(c.isspace() for c in parts.hostname)):
+                or any(c in "?#;" or c.isspace() or ord(c) < 32 for c in url)):
             raise SchemaRegistryConfigError("Schema Registry URL must be http:// or https:// with a host")
         if not (_is_number(timeout_seconds) and math.isfinite(timeout_seconds) and timeout_seconds > 0):
             raise SchemaRegistryConfigError("Schema Registry timeout must be a number of seconds above 0")

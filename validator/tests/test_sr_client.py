@@ -942,12 +942,19 @@ URL_ERROR_TEXT = "Schema Registry URL must be http:// or https:// with a host"
 
 
 @pytest.mark.parametrize("url", ["", "localhost:18081", "ftp://x", "http://", "http://[::1",
-                                 "http://host:abc", "http://host:99999", "http://ho st:8081"])
+                                 "http://host:abc", "http://host:99999", "http://ho st:8081",
+                                 "http://localhost:18081?x=1", "http://localhost:18081#frag",
+                                 "http://localhost:18081/;p", "http://ho\tst:8081",
+                                 "http://host:8081\n"])
 def test_bad_url_is_a_config_error(url):
     with pytest.raises(SchemaRegistryConfigError) as info:
         HttpSchemaRegistryClient(url)
     assert str(info.value) == URL_ERROR_TEXT
     assert info.value.__cause__ is None
+
+
+def test_url_with_a_path_is_accepted():
+    HttpSchemaRegistryClient("http://sr.example:8081/registry")
 
 
 def test_default_config_url_is_a_config_error():

@@ -1,10 +1,10 @@
 # Verification record
 
-Checked on 2026-11-16 (the secured registry and the Avro namespace follow-up on 2026-11-17; the second audit's fixes and their final review, and the third audit's fixes, on 2026-11-18) against `confluentinc/cp-schema-registry:7.9.0` on `apache/kafka:3.8.1`, from `integration/docker-compose.yml`, with confluent-kafka-python 2.16.1 and the Confluent 7.9.0 Java serializers.
+Checked on 2026-11-16 (the secured registry and the Avro namespace follow-up on 2026-11-17; the second audit's fixes and their final review, and the third, fourth and fifth audits' fixes, on 2026-11-18) against `confluentinc/cp-schema-registry:7.9.0` on `apache/kafka:3.8.1`, from `integration/docker-compose.yml`, with confluent-kafka-python 2.16.1 and the Confluent 7.9.0 Java serializers.
 
 ```
-.venv/bin/python -m pytest -q                                   # 1009 passed
-.venv/bin/python -m pytest integration/tests -m integration -q  # 195 passed, none skipped
+.venv/bin/python -m pytest -q                                   # 1040 passed
+.venv/bin/python -m pytest integration/tests -m integration -q  # 198 passed, none skipped
 ```
 
 Every integration test creates its subjects under a fresh namespace (`it` + 10 hex digits, shown below as `<ns>`), so the suite can be rerun against the same registry.
@@ -421,6 +421,19 @@ The owner then set the scope: the validator checks the basics, and a case that w
 Not taken, by the owner's scope decision: C1, C2, I2 and M4 (Java works, Python does not); C3, I1 and the `[default]` parts of C4 (Java and Python read the data differently); M1 and M5 (message wording); M2 (needs a gateway in front of the registry); M6 (a subject left in the registry after its deployment is gone, a platform matter). The third audit's own leftovers stay as recorded above.
 
 Runs after this change: unit `1029 passed`, 100% line and branch coverage (1,638 statements, 598 branches); integration `195 passed`. The Java probes and the differential were not re-run; the two new checks are in stage B and add no registry call.
+
+## Fifth audit fixes, 2026-11-18
+
+| Finding | What was tested | Observed | Pinned by |
+|---|---|---|---|
+| C1: an Avro reference text | An Avro reference row with an empty text, and with the text equal to the subject | The platform registers the text as typed. An empty text either failed registration (42201) or registered a subject that Java clients could not use (`refs [{name='null', ...}]`). Now an Error: `For an Avro reference to '{s}', write '{s}' as the reference text.`; a text equal to the subject passes and registers | `tests/test_rules.py::test_avro_empty_reference_text_is_an_error`, `test_avro_reference_text_equal_to_the_subject_passes`; `integration/tests/test_validate_real_sr.py::test_avro_empty_reference_text_is_refused`, `test_avro_reference_with_its_name_registers` |
+| C3: the default schema size limit | A 99,999-byte Protobuf schema nested 30 levels deep, and a 99,998-byte Avro schema | Both register with 200. The audit saw Protobuf schemas of 500 KB (10 levels) and 250 KB (20 levels) fail with 42209, so the default `max_schema_bytes` is now 100,000 | `integration/tests/test_sr_behaviour.py::test_largest_default_schemas_register` |
+| I2: long lists in JSON Schema | `required`, `type` and `dependencies` lists in every draft, and `enum` lists in draft-04, with more than 1,000 items that are not all strings or all numbers | jsonschema checks them in quadratic time: a 40,000-object draft-04 enum took more than 2 minutes. Now refused before `check_schema` with `JSON_ARRAY_TOO_LONG`; the same schema takes 0.02 s | `tests/test_json_schema.py`: the tests with "long" in the name and `test_long_dependencies_list_is_refused` |
+| M2: a registry URL with a query, fragment or parameters | `http://localhost:18081?x=1`, `#frag`, `/;p`, a tab inside the host, a trailing newline; and `http://sr.example:8081/registry` | The client would join paths onto a URL with a query or fragment and call the wrong address. Now `SchemaRegistryConfigError` with the existing URL message for any URL containing `?`, `#`, `;`, a whitespace or a control character; a plain path is accepted. This also closes the tab-or-newline case parked after the third audit | `tests/test_sr_client.py::test_bad_url_is_a_config_error` (5 new cases), `test_url_with_a_path_is_accepted` |
+
+Not taken: C2 (the owner set security aside); C4 (non-ASCII Protobuf defaults are rare, and the owner did not take it); I1 (an old pinned Protobuf reference whose referenced subject is at level NONE: the validator already warns); M1 (message wording only).
+
+Runs after these changes: unit `1040 passed`, 100% line and branch coverage (1,651 statements, 606 branches); integration `198 passed`, none skipped.
 
 ## Packaging
 

@@ -57,7 +57,7 @@ result.message         # "" for Ok; otherwise the messages, one per line
 
 | Field (variable) | Default | Meaning |
 |---|---|---|
-| `sr_url` (`SCHEMA_VALIDATOR_SR_URL`) | `""` | Base URL of Schema Registry: `http://` or `https://` with a host without spaces, and a port, if given, that is a number from 0 to 65535. Anything else (the empty default, `http://host:abc` and `http://ho st:8081` included) makes building the client raise `SchemaRegistryConfigError` |
+| `sr_url` (`SCHEMA_VALIDATOR_SR_URL`) | `""` | Base URL of Schema Registry: `http://` or `https://` with a host, no space or control character anywhere in the URL, no `?`, `#` or `;` (a path such as `/registry` is fine), and a port, if given, that is a number from 0 to 65535. Anything else (the empty default, `http://host:abc`, `http://ho st:8081` and `http://host:8081?x=1` included) makes building the client raise `SchemaRegistryConfigError` |
 | `sr_username` (`SCHEMA_VALIDATOR_SR_USERNAME`) | `None` | Basic auth user; no authentication when `None` |
 | `sr_password` (`SCHEMA_VALIDATOR_SR_PASSWORD`) | `None` | Basic auth password; not shown in `repr` |
 | `sr_timeout_seconds` (`SCHEMA_VALIDATOR_SR_TIMEOUT_SECONDS`) | `10` | Time limit of each HTTP call as a whole, headers included, counted from sending the request: when it passes, the client shuts the call's socket down, or fails the call as soon as a connect still under way returns, and the call is E3, so a registry that sends its headers or body a byte at a time cannot hold a call longer. Not cut this way: a `session` passed to the constructor; a call through a proxy (`HTTP_PROXY` and the like); and the body of a response that closes the connection (`Connection: close`, HTTP/1.0, or no length; the test registry sends HTTP/1.1 keep-alive responses with a length). There the limit is checked after the headers arrive and after each piece of the body, so a stalled read can take up to one more per-read timeout (about 2 × `sr_timeout_seconds` at worst). A DNS lookup, TCP connect or TLS handshake is not interrupted either: a handshake that drips is bounded only by the per-read timeout of each socket operation (a DNS lookup only by the resolver), and the call is E3 as soon as the connect returns. `total_timeout_seconds` bounds the validation in every case |
@@ -83,7 +83,7 @@ The `HttpSchemaRegistryClient` takes its URL, credentials, timeout and response 
 
 | Value | Text |
 |---|---|
-| `url` is not `http://` or `https://` with a host, or its host has a space, or its port is not a number from 0 to 65535 | `Schema Registry URL must be http:// or https:// with a host` |
+| `url` is not `http://` or `https://` with a host, or it has a space or control character, `?`, `#` or `;`, or its port is not a number from 0 to 65535 | `Schema Registry URL must be http:// or https:// with a host` |
 | `timeout_seconds` is not a finite number above 0 | `Schema Registry timeout must be a number of seconds above 0` |
 | `max_response_bytes` is not a whole number of at least 1 | `Schema Registry response limit must be a whole number of bytes, at least 1` |
 | The username or password is not Latin-1 text (the encoding of HTTP Basic auth in `requests`) | `Schema Registry username and password must be Latin-1 text` |
