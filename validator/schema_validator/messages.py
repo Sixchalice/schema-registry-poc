@@ -140,6 +140,11 @@ JSON_REF_SELF_URL = (
     'Schema Registry rejects one written with the schema\'s own "{kw}". Change it at {paths}.'
 )
 JSON_REF_NOT_FOUND = 'A "$ref" points to nothing in this schema. Check the part after "#" at {paths}.'
+JSON_REF_CLIENTS_DIFFER = (
+    'The Python client cannot follow a "$ref", or follows it to a different place than Schema Registry. '
+    'Write it as a plain pointer, for example "#/definitions/Item", with no "+", trailing "/" or anchor '
+    'that is not defined, at {paths}.'
+)
 JSON_TOO_DEEP = "JSON schema is nested too deeply."
 SCHEMA_TOO_DEEP = "Schema is nested more than {max} levels deep."
 

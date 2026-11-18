@@ -521,6 +521,7 @@ _DRAFT_07_REFS = [
     ("https://acme.example/r8.json", True, {"s": {"type": "string"}}, True),
     ("https://acme.example/r8.json#", True, {"s": {"type": "string"}}, False),
     ("r8.json", True, {"s": {"type": "string"}}, True),
+    ("#/allOf/01", True, {"s": {"type": "string"}}, True),
 ]
 _D2019 = "https://json-schema.org/draft/2019-09/schema"
 _D2020 = "https://json-schema.org/draft/2020-12/schema"
@@ -547,7 +548,8 @@ def test_json_internal_refs(
     accepted: bool,
 ) -> None:
     defs = "definitions" if "draft-07" in draft else "$defs"
-    d = {"$schema": draft, "title": f"{ns}.Order", "type": "object",
+    # Every schema has a two-element "allOf", for the list index cases.
+    d = {"$schema": draft, "title": f"{ns}.Order", "type": "object", "allOf": [{}, {"type": "object"}],
          defs: definitions, "properties": {"a": {"$ref": ref}}}
     if with_id:
         d["$id"] = "https://acme.example/r8.json"

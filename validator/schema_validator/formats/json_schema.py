@@ -1,18 +1,24 @@
 """Stage B for JSON Schema (spec section 5.2)."""
 from __future__ import annotations
 
+import contextlib
 import json
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote_to_bytes, urldefrag, urljoin, urlsplit
 
 from jsonschema.exceptions import SchemaError
 from jsonschema.validators import Draft7Validator, validator_for
+from referencing import Registry
+from referencing.jsonschema import DRAFT7, specification_with
 
 from schema_validator import messages
 from schema_validator.formats._depth import json_depth
 from schema_validator._text import shorten
 from schema_validator.models import FormatAnalysis, ValidatorConfig
+
+if TYPE_CHECKING:
+    from referencing._core import Resolver
 
 # The most characters of a parser's own text that go into one message.
 _ERR_LIMIT = 1000
@@ -51,7 +57,8 @@ def _join(keyword: str, base: str, value: str) -> str:
 
 
 def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfig) -> FormatAnalysis:
-    """Steps 1 to 9 of spec 5.2. `referenced` is not used for JSON."""
+    """Steps 1 to 11 of spec 5.2. `referenced` maps reference names to schema texts; step 11 reads
+    the ones a "$ref" with a fragment points at."""
     # Step 1
     try:
         schema = json.loads(schema_text)
@@ -136,22 +143,46 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
     self_url_rejected = draft in _REF_SIBLINGS_IGNORED or "$schema" not in schema
     self_urls = []
     not_found = []
+    differ = []
+    root = _python_resolver(base or _ROOT_URI, schema)
+    documents: dict[str, Resolver[Any] | None] = {}
     for pointer, ref, target in targets:
+        fragment = urldefrag(ref).fragment
         if target not in ("", base):
-            continue
-        if self_url_rejected and "#" in ref and not ref.startswith("#"):
+            # Step 11, external: the Python client must find the fragment in the referenced schema.
+            if fragment and target not in documents:
+                documents[target] = _reference_resolver(target, referenced)
+            document = documents.get(target)
+            if document is not None and _python_target(document, "#" + fragment) is _MISSING:
+                differ.append(pointer)
+        elif self_url_rejected and "#" in ref and not ref.startswith("#"):
             self_urls.append(pointer)
-        elif not _pointer_exists(schema, urldefrag(ref).fragment):
-            not_found.append(pointer)
+        else:
+            # Step 11: the registry and the Python client must both resolve it, to the same place.
+            in_registry = _registry_target(schema, fragment)
+            if in_registry is _MISSING:
+                not_found.append(pointer)
+                continue
+            in_python = _python_target(root, ref)
+            if in_python is _MISSING or (in_registry is not _UNCHECKED and in_registry is not in_python):
+                differ.append(pointer)
     if self_urls:
         errors.append(messages.JSON_REF_SELF_URL.format(kw=id_keyword, paths=_paths(self_urls)))
     if not_found:
         errors.append(messages.JSON_REF_NOT_FOUND.format(paths=_paths(not_found)))
+    if differ:
+        errors.append(messages.JSON_REF_CLIENTS_DIFFER.format(paths=_paths(differ)))
     return FormatAnalysis(expected_name, refs, errors)
 
 
 # A "%" that is not followed by two upper-case hex digits: the registry's reading of it is not pinned.
 _ODD_PERCENT = re.compile(r"%(?![0-9A-F]{2})")
+# What `_registry_target` returns when the registry would not resolve the fragment, and when its
+# reading is not pinned (an anchor, an odd encoding, non-UTF-8). `_python_target` uses `_MISSING` too.
+_MISSING = object()
+_UNCHECKED = object()
+# The URI the root is registered under when it has no id.
+_ROOT_URI = "urn:schema-validator:root"
 
 
 def _token(raw: str) -> str | None:
@@ -164,15 +195,17 @@ def _token(raw: str) -> str | None:
     return text.replace("~1", "/").replace("~0", "~")
 
 
-def _pointer_exists(schema: dict[str, Any], fragment: str) -> bool:
-    """False only when the fragment is a JSON Pointer that the registry would not resolve.
+def _registry_target(schema: dict[str, Any], fragment: str) -> object:
+    """The node the registry reaches for a "#" fragment of this schema, `_MISSING` when it would
+    not resolve it, and `_UNCHECKED` for an anchor, an odd encoding or non-UTF-8.
 
-    An anchor, an odd encoding and anything else not pinned against the registry counts as
-    existing: a wrong pass still fails at stage E, a wrong rejection would block a good schema.
     The registry splits on "/" first, decodes each token, and ignores empty tokens at the end.
+    A list index is ASCII digits, leading zeros allowed, below the length.
     """
+    if not fragment:
+        return schema
     if not fragment.startswith("/") or _ODD_PERCENT.search(fragment):
-        return True
+        return _UNCHECKED
     raw_tokens = fragment[1:].split("/")
     while raw_tokens and not raw_tokens[-1]:
         raw_tokens.pop()
@@ -180,14 +213,51 @@ def _pointer_exists(schema: dict[str, Any], fragment: str) -> bool:
     for raw in raw_tokens:
         token = _token(raw)
         if token is None:
-            return True
+            return _UNCHECKED
         if isinstance(node, dict) and token in node:
             node = node[token]
-        elif isinstance(node, list) and token.isascii() and token.isdecimal() and (token == "0" or token[0] != "0") and int(token) < len(node):
+        elif isinstance(node, list) and token.isascii() and token.isdecimal() and int(token) < len(node):
             node = node[int(token)]
         else:
-            return False
-    return True
+            return _MISSING
+    return node
+
+
+def _python_resolver(uri: str, contents: Any) -> Resolver[Any]:
+    """A `referencing` resolver, as the Python client uses, for `contents` registered under `uri` as
+    a resource of its "$schema" draft (draft-07 when it has none or one `referencing` does not know)."""
+    declared = contents.get("$schema") if isinstance(contents, dict) else None
+    spec = specification_with(declared.removesuffix("#"), default=DRAFT7) if isinstance(declared, str) else DRAFT7
+    registry = Registry().with_resource(uri, spec.create_resource(contents))
+    # Crawled once, so that each anchor lookup does not crawl the whole schema again. A malformed
+    # subschema makes the crawl fail; the lookups that meet it then fail in `_python_target`.
+    with contextlib.suppress(Exception):
+        registry = registry.crawl()
+    return registry.resolver(base_uri=uri)
+
+
+def _reference_resolver(target: str, referenced: dict[str, str]) -> Resolver[Any] | None:
+    """The resolver for the referenced text named `target`; None when it is not there or is not
+    JSON (stage D4 reports a missing reference)."""
+    text = referenced.get(target)
+    if text is None:
+        return None
+    try:
+        contents = json.loads(text)
+    except (ValueError, RecursionError):
+        return None
+    return _python_resolver(target, contents)
+
+
+def _python_target(resolver: Resolver[Any], ref: str) -> object:
+    """The node the Python client reaches for `ref`, or `_MISSING` when it cannot follow it."""
+    try:
+        return resolver.lookup(ref).contents
+    except Exception:
+        # referencing raises Unresolvable for a target that is not there, and a TypeError or
+        # ValueError on a malformed subschema or a list index that is not a number: the Python
+        # client cannot follow the "$ref" either way.
+        return _MISSING
 
 
 def _has_root_fragment(keyword: str, value: str) -> bool:

@@ -586,6 +586,7 @@ def ref_schema(ref: str, with_id: bool = True, **extra: Any) -> dict[str, Any]:
 
 
 A_PATH = "'/properties/a/$ref'"
+A_DIFFERS = messages.JSON_REF_CLIENTS_DIFFER.format(paths=A_PATH)
 
 
 @pytest.mark.parametrize("with_id", [True, False])
@@ -627,7 +628,8 @@ def test_escaped_pointer_resolves(ref: str) -> None:
     assert run(d).errors == []
 
 
-@pytest.mark.parametrize("ref", ["#/allOf/01", "#/allOf/-1", "#/allOf/x", "#/allOf/2", "#/definitions/s/type/x"])
+# "\uff11" is a full-width 1: an index is ASCII digits only.
+@pytest.mark.parametrize("ref", ["#/allOf/-1", "#/allOf/x", "#/allOf/2", "#/allOf/\uff11", "#/definitions/s/type/x"])
 def test_bad_list_index_or_scalar_is_not_found(ref: str) -> None:
     d = ref_schema(ref)
     d["allOf"] = [{}, {}]
@@ -639,9 +641,14 @@ def test_ref_in_default_is_not_checked() -> None:
     assert run(d).errors == []
 
 
-@pytest.mark.parametrize("ref", ["#foo", "#", ""])
-def test_anchor_fragment_is_not_checked(ref: str) -> None:
+@pytest.mark.parametrize("ref", ["#", ""])
+def test_empty_fragment_is_the_root(ref: str) -> None:
     assert run(ref_schema(ref)).errors == []
+
+
+def test_anchor_fragment_is_checked_only_by_python() -> None:
+    # The registry reads an unknown anchor as the root; the Python client cannot follow it.
+    assert run(ref_schema("#foo")).errors == [A_DIFFERS]
 
 
 def test_many_dangling_refs_are_listed_three_and_more() -> None:
@@ -675,9 +682,14 @@ def test_self_url_to_a_missing_place_under_2019_and_2020_is_not_found(draft: str
 
 
 @pytest.mark.parametrize("draft", [D2019, D2020])
-def test_self_url_anchor_under_2019_and_2020_is_not_checked(draft: str) -> None:
-    # Same skip rule as "#foo": an anchor is left to stage E.
-    assert run(defs_ref_schema(draft, R8 + "#foo")).errors == []
+@pytest.mark.parametrize("anchor, expected", [("foo", []), ("bar", [A_DIFFERS])])
+def test_self_url_anchor_under_2019_and_2020_is_checked_only_by_python(
+    draft: str, anchor: str, expected: list[str],
+) -> None:
+    # Same rule as "#foo": the Python client must find the anchor.
+    d = defs_ref_schema(draft, R8 + "#foo")
+    d["$defs"]["s"]["$anchor"] = anchor
+    assert run(d).errors == expected
 
 
 @pytest.mark.parametrize("draft", ["http://json-schema.org/draft-06/schema#", D7])
@@ -719,11 +731,16 @@ def test_bare_own_url_is_not_a_self_url() -> None:
     assert run(ref_schema(R8 + "#")).errors == [messages.JSON_REF_SELF_URL.format(kw="$id", paths=A_PATH)]
 
 
-@pytest.mark.parametrize("ref", [
-    "#/definitions/s/", "#/definitions/s//", "#/definitions/", "#/", "#/definitions//x",
-])
-def test_empty_pointer_tokens_follow_the_registry(ref: str) -> None:
+@pytest.mark.parametrize("ref", ["#/definitions/s/", "#/definitions/s//", "#/definitions/", "#/"])
+def test_empty_tokens_at_the_end_differ(ref: str) -> None:
+    # The registry ignores them; the Python client looks for a "" key, or finds a different place.
     d = ref_schema(ref)
+    d["definitions"][""] = {"x": {}}
+    assert run(d).errors == [A_DIFFERS]
+
+
+def test_empty_token_in_the_middle_with_an_empty_key_passes() -> None:
+    d = ref_schema("#/definitions//x")
     d["definitions"][""] = {"x": {}}
     assert run(d).errors == []
 
@@ -733,25 +750,140 @@ def test_empty_token_in_the_middle_needs_an_empty_key(ref: str) -> None:
     assert run(ref_schema(ref)).errors == [messages.JSON_REF_NOT_FOUND.format(paths=A_PATH)]
 
 
-@pytest.mark.parametrize("ref, defs, found", [
-    ("#/definitions/a%2Fb", {"a/b": {}}, True),
-    ("#/definitions/a%2Fb", {"a": {"b": {}}}, False),
-    ("#/definitions/a+b", {"a b": {}}, True),
-    ("#/definitions/a+b", {"a+b": {}}, False),
-    ("#/definitions/a%2Bb", {"a+b": {}}, True),
-    ("#/definitions/a%2Bb", {"a b": {}}, False),
-    ("#/definitions/a%20b", {"a b": {}}, True),
-    ("#/definitions/%C3%A9", {"é": {}}, True),
-    ("#/definitions/é", {"é": {}}, True),
-    ("#/definitions/a%7E1b", {"a/b": {}}, True),
+NOT_FOUND = messages.JSON_REF_NOT_FOUND.format(paths=A_PATH)
+
+
+@pytest.mark.parametrize("ref, defs, expected", [
+    # The registry splits, then decodes; the Python client decodes, then splits.
+    ("#/definitions/a%2Fb", {"a/b": {}}, [A_DIFFERS]),
+    ("#/definitions/a%2Fb", {"a": {"b": {}}}, [NOT_FOUND]),
+    # The registry reads "+" as a space; the Python client does not.
+    ("#/definitions/a+b", {"a b": {}}, [A_DIFFERS]),
+    ("#/definitions/a+b", {"a+b": {}}, [NOT_FOUND]),
+    ("#/definitions/a%2Bb", {"a+b": {}}, []),
+    ("#/definitions/a%2Bb", {"a b": {}}, [NOT_FOUND]),
+    ("#/definitions/a%20b", {"a b": {}}, []),
+    ("#/definitions/%C3%A9", {"é": {}}, []),
+    ("#/definitions/é", {"é": {}}, []),
+    ("#/definitions/a%7E1b", {"a/b": {}}, []),
 ])
-def test_tokens_are_split_then_decoded(ref: str, defs: dict[str, Any], found: bool) -> None:
+def test_tokens_are_split_then_decoded(ref: str, defs: dict[str, Any], expected: list[str]) -> None:
     d = ref_schema(ref)
     d["definitions"] = defs
-    expected = [] if found else [messages.JSON_REF_NOT_FOUND.format(paths=A_PATH)]
     assert run(d).errors == expected
 
 
 @pytest.mark.parametrize("ref", ["#/definitions/%zz", "#/definitions/%", "#/definitions/%2f", "#/definitions/%e9", "#/definitions/%E9"])
-def test_unpinned_encodings_are_skipped(ref: str) -> None:
-    assert run(ref_schema(ref)).errors == []
+def test_unpinned_encodings_are_checked_only_by_python(ref: str) -> None:
+    # The registry reading skips them; the Python client finds nothing there.
+    assert run(ref_schema(ref)).errors == [A_DIFFERS]
+
+
+@pytest.mark.parametrize("ref, key", [("#/definitions/%zz", "%zz"), ("#/definitions/%E9", "\ufffd")])
+def test_unpinned_encoding_the_python_client_follows_passes(ref: str, key: str) -> None:
+    d = ref_schema(ref)
+    d["definitions"][key] = {}
+    assert run(d).errors == []
+
+
+# --- A "$ref" must resolve the same for the registry and Python (audit 3 I1, M7) ---------
+
+X_PATH = "'/properties/x/$ref'"
+X_DIFFERS = [messages.JSON_REF_CLIENTS_DIFFER.format(paths=X_PATH)]
+ADDRESS = json.dumps({"$schema": D7, "type": "object", "properties": {"street": {"type": "string"}}})
+
+
+def x_ref(ref: str, draft: str = D7, **extra: Any) -> dict[str, Any]:
+    return {"$schema": draft, "title": "com.acme.Order", "type": "object", "properties": {"x": {"$ref": ref}}, **extra}
+
+
+def run_with(d: dict[str, Any], referenced: dict[str, str]) -> FormatAnalysis:
+    return analyse(json.dumps(d), referenced, cfg)
+
+
+def test_plus_in_pointer_differs() -> None:
+    # The registry reads "+" as a space; Python's client does not.
+    assert run(x_ref("#/definitions/a+b", definitions={"a b": {"type": "string"}})).errors == X_DIFFERS
+
+
+def test_trailing_slash_differs() -> None:
+    # The registry ignores the empty last token; Python's client looks for a "" key.
+    assert run(x_ref("#/definitions/A/", definitions={"A": {"type": "string"}})).errors == X_DIFFERS
+
+
+def test_empty_token_target_differs() -> None:
+    # Both resolve, to different places: the registry to "definitions", Python to definitions[""].
+    assert run(x_ref("#/definitions/", definitions={"": {"type": "string"}})).errors == X_DIFFERS
+
+
+def test_missing_anchor_differs() -> None:
+    # The registry resolves an unknown anchor to the root; Python's client cannot follow it.
+    assert run(x_ref("#nope", definitions={"s": {"type": "string"}})).errors == X_DIFFERS
+
+
+@pytest.mark.parametrize("draft", [D2019, D2020])
+def test_existing_anchor_passes(draft: str) -> None:
+    # A draft-07 anchor is a nested "$id", which JSON_NESTED_ID rejects, so "$anchor" is used.
+    assert run(x_ref("#nope", draft, **{"$defs": {"s": {"$anchor": "nope", "type": "string"}}})).errors == []
+
+
+def test_missing_anchor_in_a_reference_differs() -> None:
+    result = run_with(x_ref("address.json#nope"), {"address.json": ADDRESS})
+    assert result.errors == X_DIFFERS
+    assert result.external_refs == {"address.json"}
+    assert run_with(x_ref("address.json#/properties/street"), {"address.json": ADDRESS}).errors == []
+
+
+def test_leading_zero_index_passes() -> None:
+    # The registry, Python's client and Java all read "01" as index 1.
+    assert run(x_ref("#/allOf/01", allOf=[{}, {"type": "object"}])).errors == []
+
+
+@pytest.mark.parametrize("draft, ref, extra, referenced", [
+    (D7, "#/definitions/Item", {"definitions": {"Item": {"type": "string"}}}, {}),
+    (D2019, "#/$defs/Item", {"$defs": {"Item": {"type": "string"}}}, {}),
+    (D2020, "#/$defs/Item", {"$defs": {"Item": {"type": "string"}}}, {}),
+    (D7, "#/definitions/a~1b", {"definitions": {"a/b": {}}}, {}),
+    (D7, "#/definitions/t~0", {"definitions": {"t~": {}}}, {}),
+    (D7, "#/defin%69tions/s", {"definitions": {"s": {}}}, {}),
+    (D2020, R8 + "#/$defs/Item", {"$id": R8, "$defs": {"Item": {"type": "string"}}}, {}),
+    (D7, "address.json#/properties/street", {}, {"address.json": ADDRESS}),
+])
+def test_ordinary_refs_still_pass(draft: str, ref: str, extra: dict[str, Any], referenced: dict[str, str]) -> None:
+    assert run_with(x_ref(ref, draft, **extra), referenced).errors == []
+
+
+def test_reference_fragments_are_read_once_per_reference() -> None:
+    d = schema(properties={
+        "x": {"$ref": "address.json#/properties/street"}, "y": {"$ref": "address.json#nope"},
+        "z": {"$ref": "address.json"}})
+    paths = "'/properties/y/$ref'"
+    assert run_with(d, {"address.json": ADDRESS}).errors == [messages.JSON_REF_CLIENTS_DIFFER.format(paths=paths)]
+
+
+@pytest.mark.parametrize("text", ["{not json", "[" * 100_000])
+def test_reference_text_that_is_not_json_is_skipped(text: str) -> None:
+    assert run_with(x_ref("address.json#nope"), {"address.json": text}).errors == []
+
+
+def test_reference_without_a_schema_keyword_is_read_as_draft_07() -> None:
+    text = json.dumps({"definitions": {"n": {"$id": "#nope"}}})
+    assert run_with(x_ref("address.json#nope"), {"address.json": text}).errors == []
+
+
+def test_malformed_subschema_the_python_client_cannot_walk_differs() -> None:
+    # Python's referencing raises a TypeError, not Unresolvable, on a definition that is a number.
+    errors = run(x_ref("#/definitions/a", definitions={"a": 5})).errors
+    assert errors[0].startswith("Invalid JSON schema: ")
+    assert errors[1:] == X_DIFFERS
+
+
+def test_refs_that_differ_are_listed_once_after_the_others() -> None:
+    d = schema(**{"$id": R8}, properties={
+        "a": {"$ref": "r8.json#/definitions/s"}, "b": {"$ref": "#/nope"}, "c": {"$ref": "#nope"},
+        "d": {"$ref": "#/definitions/s/"}}, definitions={"s": {}})
+    assert run(d).errors == [
+        messages.JSON_REF_SELF_URL.format(kw="$id", paths="'/properties/a/$ref'"),
+        messages.JSON_REF_NOT_FOUND.format(paths="'/properties/b/$ref'"),
+        messages.JSON_REF_CLIENTS_DIFFER.format(paths="'/properties/c/$ref', '/properties/d/$ref'"),
+    ]

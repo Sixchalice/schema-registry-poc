@@ -6,6 +6,10 @@ from collections.abc import Callable, Sequence
 
 import pytest
 import requests
+from confluent_kafka.schema_registry import SchemaRegistryClient, record_subject_name_strategy
+from confluent_kafka.schema_registry.json_schema import JSONSerializer
+from confluent_kafka.serialization import MessageField, SerializationContext
+from referencing.exceptions import Unresolvable
 
 from schema_validator import (
     HttpSchemaRegistryClient,
@@ -576,7 +580,8 @@ def _ref_schema(ns: str, ref: str) -> str:
 
 @pytest.mark.parametrize("ref, expected", [
     ("#/definitions/s", ValidationResult(True, "Ok", "")),
-    ("#/definitions/s/", ValidationResult(True, "Ok", "")),
+    ("#/definitions/s/", ValidationResult(
+        False, "Error", messages.JSON_REF_CLIENTS_DIFFER.format(paths="'/properties/a/$ref'"))),
     ("https://acme.example/r8.json", ValidationResult(True, "Ok", "")),
     ("#/definitions/missing", ValidationResult(
         False, "Error", messages.JSON_REF_NOT_FOUND.format(paths="'/properties/a/$ref'"))),
@@ -589,3 +594,24 @@ def test_json_internal_refs(
     result = validate(request(f"{ns}.Order", "JSON", _ref_schema(ns, ref)), client, config)
 
     assert result == expected
+
+
+def test_json_ref_python_cannot_follow(
+    client: HttpSchemaRegistryClient, config: ValidatorConfig, register: Register, ns: str,
+) -> None:
+    # The registry reads "+" as a space and accepts the schema; Python's JSONSerializer cannot follow the "$ref".
+    name = f"{ns}.Order"
+    text = json.dumps({"$schema": "http://json-schema.org/draft-07/schema#", "title": name, "type": "object",
+                       "definitions": {"a b": {"type": "string"}}, "properties": {"x": {"$ref": "#/definitions/a+b"}}})
+
+    result = validate(request(name, "JSON", text), client, config)
+
+    assert result == ValidationResult(
+        False, "Error", messages.JSON_REF_CLIENTS_DIFFER.format(paths="'/properties/x/$ref'"))
+    status, body = register(name, text, "JSON")
+    assert status == 200, body
+    serializer = JSONSerializer(text, SchemaRegistryClient({"url": config.sr_url}), conf={
+        "auto.register.schemas": False, "use.latest.version": True,
+        "subject.name.strategy": record_subject_name_strategy})
+    with pytest.raises(Unresolvable, match="'/definitions/a\\+b' does not exist"):
+        serializer({"x": "s"}, SerializationContext("validator-it-clients", MessageField.VALUE))
