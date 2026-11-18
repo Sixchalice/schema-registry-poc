@@ -496,7 +496,7 @@ def test_mode_readonly_subject(
 
 # --- Audit 2 F9: "$ref" values that point inside the schema ------------------------------
 
-@pytest.mark.parametrize("ref, with_id, definitions, accepted", [
+_DRAFT_07_REFS = [
     ("#/definitions/s", True, {"s": {"type": "string"}}, True),
     ("#/defin%69tions/s", True, {"s": {"type": "string"}}, True),
     ("https://acme.example/r8.json#/definitions/s", True, {"s": {"type": "string"}}, False),
@@ -521,12 +521,34 @@ def test_mode_readonly_subject(
     ("https://acme.example/r8.json", True, {"s": {"type": "string"}}, True),
     ("https://acme.example/r8.json#", True, {"s": {"type": "string"}}, False),
     ("r8.json", True, {"s": {"type": "string"}}, True),
-])
+]
+_D2019 = "https://json-schema.org/draft/2019-09/schema"
+_D2020 = "https://json-schema.org/draft/2020-12/schema"
+# Under 2019-09 and 2020-12 the registry reads a "$ref" written with the schema's own URL as a "#" ref.
+_LATER_DRAFT_REFS = [
+    (draft, ref, True, {"s": {"type": "string"}}, accepted)
+    for draft in (_D2019, _D2020)
+    for ref, accepted in [
+        ("https://acme.example/r8.json#/$defs/s", True),
+        ("r8.json#/$defs/s", True),
+        ("https://acme.example/r8.json#", True),
+        ("https://acme.example/r8.json#/%24defs/s", True),
+        ("https://acme.example/r8.json#/$defs/missing", False),
+        ("r8.json#/$defs/missing", False),
+    ]
+]
+
+
+@pytest.mark.parametrize("draft, ref, with_id, definitions, accepted", [
+    ("http://json-schema.org/draft-07/schema#", *row) for row in _DRAFT_07_REFS
+] + _LATER_DRAFT_REFS)
 def test_json_internal_refs(
-    sr: HttpSchemaRegistryClient, ns: str, ref: str, with_id: bool, definitions: dict[str, object], accepted: bool,
+    sr: HttpSchemaRegistryClient, ns: str, draft: str, ref: str, with_id: bool, definitions: dict[str, object],
+    accepted: bool,
 ) -> None:
-    d = {"$schema": "http://json-schema.org/draft-07/schema#", "title": f"{ns}.Order", "type": "object",
-         "definitions": definitions, "properties": {"a": {"$ref": ref}}}
+    defs = "definitions" if "draft-07" in draft else "$defs"
+    d = {"$schema": draft, "title": f"{ns}.Order", "type": "object",
+         defs: definitions, "properties": {"a": {"$ref": ref}}}
     if with_id:
         d["$id"] = "https://acme.example/r8.json"
     verdict = sr.check_compatibility(f"{ns}.Order", json.dumps(d), "JSON", ())

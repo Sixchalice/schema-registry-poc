@@ -650,6 +650,52 @@ def test_many_dangling_refs_are_listed_three_and_more() -> None:
     assert run(d).errors == [messages.JSON_REF_NOT_FOUND.format(paths=paths)]
 
 
+D2019 = "https://json-schema.org/draft/2019-09/schema"
+D2020 = "https://json-schema.org/draft/2020-12/schema"
+
+
+def defs_ref_schema(draft: str, ref: str, **extra: Any) -> dict[str, Any]:
+    return {"$schema": draft, "$id": R8, "title": "com.acme.Order", "type": "object",
+            "$defs": {"s": {"type": "string"}}, "properties": {"a": {"$ref": ref}}, **extra}
+
+
+@pytest.mark.parametrize("draft", [D2019, D2020])
+@pytest.mark.parametrize("ref", [R8 + "#/$defs/s", "r8.json#/$defs/s", R8 + "#", "r8.json#", R8 + "#/%24defs/s"])
+def test_self_url_is_internal_under_2019_and_2020(draft: str, ref: str) -> None:
+    # The registry accepts these under 2019-09 and 2020-12 (checked on :18081); it rejects them under 04 to 07.
+    result = run(defs_ref_schema(draft, ref))
+    assert result.errors == []
+    assert result.external_refs == set()
+
+
+@pytest.mark.parametrize("draft", [D2019, D2020])
+@pytest.mark.parametrize("ref", [R8 + "#/$defs/missing", "r8.json#/$defs/missing", R8 + "#/$defs/s/0"])
+def test_self_url_to_a_missing_place_under_2019_and_2020_is_not_found(draft: str, ref: str) -> None:
+    assert run(defs_ref_schema(draft, ref)).errors == [messages.JSON_REF_NOT_FOUND.format(paths=A_PATH)]
+
+
+@pytest.mark.parametrize("draft", [D2019, D2020])
+def test_self_url_anchor_under_2019_and_2020_is_not_checked(draft: str) -> None:
+    # Same skip rule as "#foo": an anchor is left to stage E.
+    assert run(defs_ref_schema(draft, R8 + "#foo")).errors == []
+
+
+@pytest.mark.parametrize("draft", ["http://json-schema.org/draft-06/schema#", D7])
+def test_self_url_under_draft_06_and_07_is_an_error(draft: str) -> None:
+    d = ref_schema(R8 + "#/definitions/s")
+    d["$schema"] = draft
+    assert run(d).errors == [messages.JSON_REF_SELF_URL.format(kw="$id", paths=A_PATH)]
+
+
+def test_self_url_without_schema_is_an_error() -> None:
+    # The registry reads a schema with no "$schema" as draft-07, which rejects a self-URL.
+    d = ref_schema(R8 + "#/definitions/s")
+    del d["$schema"]
+    assert run(d).errors == [
+        messages.JSON_SCHEMA_MISSING, messages.JSON_REF_SELF_URL.format(kw="$id", paths=A_PATH),
+    ]
+
+
 def test_self_url_and_dangling_give_two_messages() -> None:
     d = schema(properties={"a": {"$ref": "r8.json#/x"}, "b": {"$ref": "#/nope"}}, **{"$id": R8})
     assert run(d).errors == [

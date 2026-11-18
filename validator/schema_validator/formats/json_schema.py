@@ -130,12 +130,16 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
         errors.append(messages.JSON_INVALID.format(err=shorten(f"the {e.keyword} '{e.value}' is not a valid URI", _ERR_LIMIT)))
         return FormatAnalysis(expected_name, None, errors)
     refs = {target for _, _, target in targets if target not in ("", base)}
+    # The registry rejects a "$ref" to this schema written with its own URL and a "#" under
+    # draft-04 to 07 (and with no "$schema", which it reads as draft-07); under 2019-09 and
+    # 2020-12 it reads one as a "#" ref, so its fragment gets the same pointer check.
+    self_url_rejected = draft in _REF_SIBLINGS_IGNORED or "$schema" not in schema
     self_urls = []
     not_found = []
     for pointer, ref, target in targets:
         if target not in ("", base):
             continue
-        if "#" in ref and not ref.startswith("#"):
+        if self_url_rejected and "#" in ref and not ref.startswith("#"):
             self_urls.append(pointer)
         elif not _pointer_exists(schema, urldefrag(ref).fragment):
             not_found.append(pointer)
