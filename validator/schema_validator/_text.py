@@ -73,7 +73,6 @@ def json_values(text: str) -> str:
         idx = text.find(marker)
         if idx > 0:
             converted = _literal_as_json(text[:idx])
-            # A quoted string is left alone: `'nope' is not of type 'object'` reads fine.
-            if converted is not None and not converted.startswith('"'):
+            if converted is not None:
                 return converted + _angle_segments(text[idx:]) + tail
     return _angle_segments(text) + tail

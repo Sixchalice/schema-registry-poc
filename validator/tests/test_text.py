@@ -22,7 +22,7 @@ def test_json_values_leaves_unparseable_text() -> None:
         ("None is not of type 'string'", "null is not of type 'string'"),
         ("[] is too short", "[] is too short"),
         ("{'a': 1} is too long", '{"a": 1} is too long'),
-        ("'abc' is not valid", "'abc' is not valid"),
+        ("'abc' is not valid", '"abc" is not valid'),
         ("Value <1> and <True> end", "Value 1 and true end"),
         ("Trailing: not a literal", "Trailing: not a literal"),
         ("a: {x} b: {y} c: {z} d: {w}", "a: {x} b: {y} c: {z} d: {w}"),

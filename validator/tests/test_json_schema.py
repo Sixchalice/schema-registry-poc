@@ -8,7 +8,7 @@ import pytest
 
 from schema_validator import ValidationRequest, ValidationResult, messages, validate
 from schema_validator.formats._depth import json_depth
-from schema_validator.formats.json_schema import analyse
+from schema_validator.formats.json_schema import _metaschema_text, analyse
 from schema_validator.models import DEFAULT_JSON_DRAFTS, FormatAnalysis, ValidatorConfig
 from tests.fake_sr import FakeSchemaRegistry
 
@@ -105,7 +105,7 @@ def test_invalid_schema() -> None:
     result = run(schema(properties="nope"))
     assert len(result.errors) == 1
     assert result.errors[0].startswith("Invalid JSON schema: ")
-    assert "'nope' is not of type 'object'" in result.errors[0]
+    assert "\"nope\" is not of type 'object'" in result.errors[0]
 
 
 def test_missing_schema_keyword_is_an_error() -> None:
@@ -970,3 +970,8 @@ def test_metaschema_error_names_the_top_level_keyword() -> None:
     assert any("(at /required)" in e for e in result.errors)
     result = run(schema(type=5))
     assert any("(at /type)" in e for e in result.errors)
+
+
+def test_metaschema_text_at_the_root_has_no_location() -> None:
+    assert _metaschema_text("True is not of type 'object'", []) == "true is not of type 'object'"
+    assert _metaschema_text("x\nsecond line", ["a/b", 0]) == "x (at /a~1b/0)"

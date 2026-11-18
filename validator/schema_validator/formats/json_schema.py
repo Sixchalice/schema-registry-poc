@@ -17,6 +17,8 @@ from schema_validator._text import json_values, shorten
 from schema_validator.models import FormatAnalysis, ValidatorConfig
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from referencing._core import Resolver
 
 # The most characters of a parser's own text that go into one message.
@@ -102,9 +104,7 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
         try:
             validator_for(schema, default=Draft7Validator).check_schema(schema)
         except SchemaError as e:
-            where = "".join(f"/{_escape(str(part))}" for part in e.path)
-            text = json_values(e.message.partition("\n")[0]) + (f" (at {where})" if where else "")
-            errors.append(messages.JSON_INVALID.format(err=shorten(text, _ERR_LIMIT)))
+            errors.append(messages.JSON_INVALID.format(err=shorten(_metaschema_text(e.message, e.path), _ERR_LIMIT)))
         except RecursionError:
             errors.append(messages.JSON_TOO_DEEP)
 
@@ -282,6 +282,12 @@ def _has_root_fragment(keyword: str, value: str) -> bool:
     except _BadUri:
         return False  # reported as an invalid URI in steps 8 and 9
     return bool(split.url and split.fragment)
+
+
+def _metaschema_text(message: str, path: Iterable[Any]) -> str:
+    """The first line of a meta-schema error in JSON terms, with ` (at /pointer)` unless at the root."""
+    where = "".join(f"/{_escape(str(part))}" for part in path)
+    return json_values(message.partition("\n")[0]) + (f" (at {where})" if where else "")
 
 
 def _escape(token: str) -> str:
