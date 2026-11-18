@@ -1,6 +1,7 @@
 """The validation pipeline (spec section 4): stages A to E, then the warnings."""
 from __future__ import annotations
 
+import re
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -24,6 +25,13 @@ from schema_validator.sr_messages import invalid_schema_reason, parse_incompatib
 
 # The registry failures that become a stage E error. Anything else is an internal error.
 _SR_FAILURES = (SchemaRegistryUnavailable, SchemaRegistryUnauthorized, SchemaRegistryRejected)
+
+# The registry's own not-found texts (class Errors in kafka-schema-registry 7.9.0), shown as they are.
+# "Either the input schema or one its references is invalid" is not in 7.9 and is not shown.
+_NOT_FOUND_PATTERNS = {
+    40401: re.compile(r"Subject '[^'{}]{1,255}' not found\."),
+    40402: re.compile(r"Version [0-9]{1,10} not found\."),
+}
 
 
 class _Stoppable:
@@ -227,16 +235,17 @@ def _sr_failure(err: Exception) -> str:
     if reason is not None:
         return _rejected(reason)
     code = getattr(err, "code", None)
-    if text and "{" not in text and _is_registry_code(code):
+    if _is_known_message(text, code):
         return _rejected(text)
-    # No message, one that embeds a structure (it may echo the schema or a header),
-    # or a code Schema Registry does not use (the body may come from a proxy).
+    # Anything else (no message, free text, a structure that may echo the schema or a header,
+    # a code Schema Registry does not use) may come from a gateway or plugin: show only the code.
     return messages.SR_REJECTED_CODE.format(code=code)
 
 
-def _is_registry_code(code: object) -> bool:
-    """Schema Registry's own error codes: 409, or five digits from 40000 to 49999."""
-    return code == 409 or (isinstance(code, int) and 40000 <= code <= 49999)
+def _is_known_message(text: str, code: object) -> bool:
+    """True for the few Schema Registry 7.9 message texts that are safe and useful to show."""
+    pattern = _NOT_FOUND_PATTERNS.get(code)
+    return pattern is not None and pattern.fullmatch(text) is not None
 
 
 def _rejected(reason: str) -> str:

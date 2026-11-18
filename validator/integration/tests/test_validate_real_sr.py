@@ -17,6 +17,8 @@ from schema_validator import (
     validate,
 )
 from schema_validator.models import proto_import_path
+from schema_validator.sr_client import SchemaRegistryRejected
+from schema_validator.validator import _sr_failure
 
 FORMATS = ("AVRO", "JSON", "PROTOBUF")
 
@@ -173,6 +175,21 @@ def test_stage_e_invalid(client: HttpSchemaRegistryClient, config: ValidatorConf
     assert_error(result)
     assert result.message.startswith("Schema Registry rejected the schema: "), result.message
     assert "Duplicate field a" in result.message
+
+
+def test_real_registry_not_found_texts_are_shown(
+    register: Register, raw_get: Callable[[str], Response], ns: str
+) -> None:
+    # The registry's own not-found texts match the shapes `_sr_failure` shows (audit 2 F7).
+    subject = f"{ns}.Order"
+    missing_subject = raw_get(f"/subjects/{subject}/versions/1")
+    assert register(subject, order("AVRO", ns))[0] == 200
+    missing_version = raw_get(f"/subjects/{subject}/versions/99")
+
+    for (status, body), code in ((missing_subject, 40401), (missing_version, 40402)):
+        assert (status, body["error_code"]) == (404, code)
+        text = body["message"]
+        assert _sr_failure(SchemaRegistryRejected(text, code)) == messages.SR_REJECTED.format(reason=text)
 
 
 @pytest.mark.parametrize("schema_type", FORMATS)

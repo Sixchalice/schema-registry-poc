@@ -593,17 +593,48 @@ def test_sr_rejected_exception(sr: FakeSchemaRegistry, run: Callable) -> None:
     assert result == ValidationResult(False, "Error", "Schema Registry rejected the schema: boom")
 
 
-def test_plain_message_still_shown(sr: FakeSchemaRegistry, run: Callable) -> None:
+def test_text_not_in_registry_7_9_is_not_shown(sr: FakeSchemaRegistry, run: Callable) -> None:
     sr.fail_with = SchemaRegistryRejected("Either the input schema or one its references is invalid", 42201)
     result = run(req("AVRO", "order", "com.acme.Order"), sr)
-    assert result.message == (
-        "Schema Registry rejected the schema: Either the input schema or one its references is invalid")
+    assert result.message == messages.SR_REJECTED_CODE.format(code=42201)
 
 
 def test_sr_rejected_exception_without_invalid_prefix(sr: FakeSchemaRegistry, run: Callable) -> None:
     sr.fail_with = SchemaRegistryRejected("Subject name is too long", 42201)
     result = run(req("AVRO", "order", "com.acme.Order"), sr)
-    assert result.message == "Schema Registry rejected the schema: Subject name is too long"
+    assert result.message == messages.SR_REJECTED_CODE.format(code=42201)
+
+
+def test_unknown_plain_message_is_not_shown(sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.fail_with = SchemaRegistryRejected("Internal host sr-0.internal:8081 refused; token=abc", 42299)
+    result = run(req("AVRO", "order", "com.acme.Order"), sr)
+    assert result.message == messages.SR_REJECTED_CODE.format(code=42299)
+    assert "sr-0" not in result.message
+
+
+@pytest.mark.parametrize("text, code", [
+    ("Subject 'com.acme.Order' not found.", 40401),
+    ("Version 3 not found.", 40402),
+])
+def test_known_not_found_texts_are_shown(text: str, code: int, sr: FakeSchemaRegistry, run: Callable) -> None:
+    sr.fail_with = SchemaRegistryRejected(text, code)
+    result = run(req("AVRO", "order", "com.acme.Order"), sr)
+    assert result.message == messages.SR_REJECTED.format(reason=text)
+
+
+@pytest.mark.parametrize("text, code", [
+    ("Subject 'x' not found.", 42201),
+    ("Subject 'x' not found.", 40402),
+    ("Version 3 not found.", 40401),
+    ("Subject 'x' not found. host=sr-0", 40401),
+    ("Version 3 not found. host=sr-0", 40402),
+])
+def test_not_found_text_with_the_wrong_code_or_extra_words_is_not_shown(
+    text: str, code: int, sr: FakeSchemaRegistry, run: Callable
+) -> None:
+    sr.fail_with = SchemaRegistryRejected(text, code)
+    result = run(req("AVRO", "order", "com.acme.Order"), sr)
+    assert result.message == messages.SR_REJECTED_CODE.format(code=code)
 
 
 def test_sr_rejected_raw_body_is_never_shown(sr: FakeSchemaRegistry, run: Callable) -> None:
@@ -617,15 +648,14 @@ def test_sr_rejected_raw_body_is_never_shown(sr: FakeSchemaRegistry, run: Callab
     (422, messages.SR_REJECTED_CODE.format(code=422)),
     (39999, messages.SR_REJECTED_CODE.format(code=39999)),
     (50001, messages.SR_REJECTED_CODE.format(code=50001)),
-    (40000, "Schema Registry rejected the schema: plain words"),
-    (42201, "Schema Registry rejected the schema: plain words"),
-    (49999, "Schema Registry rejected the schema: plain words"),
-    (409, "Schema Registry rejected the schema: plain words"),
+    (40000, messages.SR_REJECTED_CODE.format(code=40000)),
+    (42201, messages.SR_REJECTED_CODE.format(code=42201)),
+    (49999, messages.SR_REJECTED_CODE.format(code=49999)),
+    (409, messages.SR_REJECTED_CODE.format(code=409)),
 ])
-def test_sr_rejected_message_shown_only_with_a_registry_error_code(
+def test_plain_words_are_never_shown(
     code: int, expected: str, sr: FakeSchemaRegistry, run: Callable
 ) -> None:
-    # Review F-L2: a 4xx whose error_code is not Schema Registry's may come from a proxy.
     sr.fail_with = SchemaRegistryRejected("plain words", code)
     assert run(req("AVRO", "order", "com.acme.Order"), sr) == ValidationResult(False, "Error", expected)
 
@@ -669,7 +699,7 @@ def test_sr_failure_during_references_still_runs_stages_b_to_d(sr: FakeSchemaReg
     (SchemaRegistryUnauthorized("x"), E4),
     (SchemaRegistryRejected("Invalid schema {..}, details: no such subject", 42201),
      "Schema Registry rejected the schema: no such subject"),
-    (SchemaRegistryRejected("plain", 42201), "Schema Registry rejected the schema: plain"),
+    (SchemaRegistryRejected("plain", 42201), messages.SR_REJECTED_CODE.format(code=42201)),
 ])
 def test_sr_failure_during_references_maps_like_stage_e(
     error: Exception, expected: str, sr: FakeSchemaRegistry, run: Callable
