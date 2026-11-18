@@ -128,6 +128,7 @@ def test_internal_refs_ignored() -> None:
     result = run(
         schema(
             definitions={"Z": {"type": "string"}},
+            **{"$defs": {"Z": {"type": "string"}}},
             properties={
                 "a": {"$ref": "#/definitions/Z"},
                 "b": {"$ref": "#/$defs/Z"},
@@ -570,3 +571,94 @@ def test_long_uri_error_is_shortened() -> None:
     schema = {"$schema": D7, "title": "a.B", "type": "object", "$id": "http://[" + "x" * 5000}
     result = analyse(json.dumps(schema), {}, cfg)
     assert all(len(e) <= len("Invalid JSON schema: ") + 1000 for e in result.errors)
+
+
+# --- $ref values that point inside the schema (audit 2 F9) -------------------------------
+
+R8 = "https://acme.example/r8.json"
+
+
+def ref_schema(ref: str, with_id: bool = True, **extra: Any) -> dict[str, Any]:
+    d = schema(definitions={"s": {"type": "string"}}, properties={"a": {"$ref": ref}}, **extra)
+    if with_id:
+        d["$id"] = R8
+    return d
+
+
+A_PATH = "'/properties/a/$ref'"
+
+
+@pytest.mark.parametrize("with_id", [True, False])
+def test_dangling_pointer_is_an_error(with_id: bool) -> None:
+    result = run(ref_schema("#/definitions/missing", with_id))
+    assert result.errors == [messages.JSON_REF_NOT_FOUND.format(paths=A_PATH)]
+    assert result.external_refs == set()
+
+
+def test_list_index_out_of_range_is_an_error() -> None:
+    result = run(ref_schema("#/definitions/s/0"))
+    assert result.errors == [messages.JSON_REF_NOT_FOUND.format(paths=A_PATH)]
+
+
+@pytest.mark.parametrize("ref", [R8 + "#/definitions/s", "r8.json#/definitions/s"])
+def test_self_url_is_an_error(ref: str) -> None:
+    result = run(ref_schema(ref))
+    assert result.errors == [messages.JSON_REF_SELF_URL.format(kw="$id", paths=A_PATH)]
+    assert result.external_refs == set()
+
+
+def test_self_url_under_draft_04_names_id() -> None:
+    d = ref_schema("r8.json#/definitions/s", with_id=False)
+    d["$schema"] = "http://json-schema.org/draft-04/schema#"
+    d["id"] = R8
+    assert run(d).errors == [messages.JSON_REF_SELF_URL.format(kw="id", paths=A_PATH)]
+
+
+def test_self_url_to_a_missing_place_is_one_error() -> None:
+    result = run(ref_schema(R8 + "#/definitions/missing"))
+    assert result.errors == [messages.JSON_REF_SELF_URL.format(kw="$id", paths=A_PATH)]
+
+
+@pytest.mark.parametrize("ref", ["#/defin%69tions/s", "#/definitions/a~1b", "#/definitions/t~0", "#/allOf/1/definitions/x"])
+def test_escaped_pointer_resolves(ref: str) -> None:
+    d = ref_schema(ref)
+    d["definitions"].update({"a/b": {}, "t~": {}})
+    d["allOf"] = [{}, {"definitions": {"x": {}}}]
+    assert run(d).errors == []
+
+
+@pytest.mark.parametrize("ref", ["#/allOf/01", "#/allOf/-1", "#/allOf/x", "#/allOf/2", "#/definitions/s/type/x"])
+def test_bad_list_index_or_scalar_is_not_found(ref: str) -> None:
+    d = ref_schema(ref)
+    d["allOf"] = [{}, {}]
+    assert run(d).errors == [messages.JSON_REF_NOT_FOUND.format(paths=A_PATH)]
+
+
+def test_ref_in_default_is_not_checked() -> None:
+    d = ref_schema("#/definitions/s", default={"$ref": "#/nope"})
+    assert run(d).errors == []
+
+
+@pytest.mark.parametrize("ref", ["#foo", "#", ""])
+def test_anchor_fragment_is_not_checked(ref: str) -> None:
+    assert run(ref_schema(ref)).errors == []
+
+
+def test_many_dangling_refs_are_listed_three_and_more() -> None:
+    d = schema(properties={f"p{i}": {"$ref": "#/nope"} for i in range(5)})
+    paths = "'/properties/p0/$ref', '/properties/p1/$ref', '/properties/p2/$ref' and 2 more"
+    assert run(d).errors == [messages.JSON_REF_NOT_FOUND.format(paths=paths)]
+
+
+def test_self_url_and_dangling_give_two_messages() -> None:
+    d = schema(properties={"a": {"$ref": "r8.json#/x"}, "b": {"$ref": "#/nope"}}, **{"$id": R8})
+    assert run(d).errors == [
+        messages.JSON_REF_SELF_URL.format(kw="$id", paths="'/properties/a/$ref'"),
+        messages.JSON_REF_NOT_FOUND.format(paths="'/properties/b/$ref'"),
+    ]
+
+
+def test_external_ref_is_not_checked_for_a_pointer() -> None:
+    result = run(ref_schema("other.json#/nope"))
+    assert result.errors == []
+    assert result.external_refs == {"https://acme.example/other.json"}

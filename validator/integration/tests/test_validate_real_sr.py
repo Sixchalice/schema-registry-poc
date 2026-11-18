@@ -533,3 +533,25 @@ def test_top_level_enum_warns(
     result = validate(request(name, "AVRO", enum), client, config)
 
     assert result == ValidationResult(True, "Warning", messages.AVRO_NOT_A_MESSAGE.format(kind="enum"))
+
+
+def _ref_schema(ns: str, ref: str) -> str:
+    return json.dumps({
+        "$schema": "http://json-schema.org/draft-07/schema#", "$id": "https://acme.example/r8.json",
+        "title": f"{ns}.Order", "type": "object", "definitions": {"s": {"type": "string"}},
+        "properties": {"a": {"$ref": ref}}})
+
+
+@pytest.mark.parametrize("ref, expected", [
+    ("#/definitions/s", ValidationResult(True, "Ok", "")),
+    ("#/definitions/missing", ValidationResult(
+        False, "Error", messages.JSON_REF_NOT_FOUND.format(paths="'/properties/a/$ref'"))),
+    ("https://acme.example/r8.json#/definitions/s", ValidationResult(
+        False, "Error", messages.JSON_REF_SELF_URL.format(kw="$id", paths="'/properties/a/$ref'"))),
+])
+def test_json_internal_refs(
+    client: HttpSchemaRegistryClient, config: ValidatorConfig, ns: str, ref: str, expected: ValidationResult,
+) -> None:
+    result = validate(request(f"{ns}.Order", "JSON", _ref_schema(ns, ref)), client, config)
+
+    assert result == expected

@@ -492,3 +492,25 @@ def test_mode_readonly_subject(
 
     assert status == 422, body
     assert isinstance(body, dict) and body.get("error_code") == 42205
+
+
+# --- Audit 2 F9: "$ref" values that point inside the schema ------------------------------
+
+@pytest.mark.parametrize("ref, with_id, accepted", [
+    ("#/definitions/s", True, True),
+    ("#/defin%69tions/s", True, True),
+    ("https://acme.example/r8.json#/definitions/s", True, False),
+    ("r8.json#/definitions/s", True, False),
+    ("#/definitions/missing", True, False),
+    ("#/definitions/missing", False, False),
+    ("#/definitions/s/0", True, False),
+])
+def test_json_internal_refs(
+    sr: HttpSchemaRegistryClient, ns: str, ref: str, with_id: bool, accepted: bool,
+) -> None:
+    d = {"$schema": "http://json-schema.org/draft-07/schema#", "title": f"{ns}.Order", "type": "object",
+         "definitions": {"s": {"type": "string"}}, "properties": {"a": {"$ref": ref}}}
+    if with_id:
+        d["$id"] = "https://acme.example/r8.json"
+    verdict = sr.check_compatibility(f"{ns}.Order", json.dumps(d), "JSON", ())
+    assert verdict.is_compatible is accepted, verdict

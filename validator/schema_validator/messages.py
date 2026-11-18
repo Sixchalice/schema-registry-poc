@@ -131,6 +131,11 @@ JSON_ROOT_ID_WITH_REF = (
 JSON_ROOT_ID_FRAGMENT = (
     'The top-level "{kw}" cannot have a fragment. Remove the "#..." part from \'{value}\'.'
 )
+JSON_REF_SELF_URL = (
+    'A "$ref" to a place in this schema must start with "#", for example "#/definitions/Item". '
+    'Schema Registry rejects one written with the schema\'s own "{kw}". Change it at {paths}.'
+)
+JSON_REF_NOT_FOUND = 'A "$ref" points to nothing in this schema. Check the part after "#" at {paths}.'
 JSON_TOO_DEEP = "JSON schema is nested too deeply."
 SCHEMA_TOO_DEEP = "Schema is nested more than {max} levels deep."
 

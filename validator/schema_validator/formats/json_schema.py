@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
-from urllib.parse import urldefrag, urljoin, urlsplit
+from urllib.parse import unquote, urldefrag, urljoin, urlsplit
 
 from jsonschema.exceptions import SchemaError
 from jsonschema.validators import Draft7Validator, validator_for
@@ -101,7 +101,7 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
             errors.append(messages.JSON_TOO_DEEP)
 
     # Steps 6a to 6d: where "$id" and "$schema" may be (the order is C, D, A, B)
-    ref_values, nested_ids, nested_schemas = _walk(schema, id_keyword)
+    ref_places, nested_ids, nested_schemas = _walk(schema, id_keyword)
     if "$schema" not in schema:
         errors.append(messages.JSON_SCHEMA_MISSING)
     root_id = schema.get(id_keyword)
@@ -125,11 +125,41 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
     # Steps 8 and 9 (a top-level javaType needs no check)
     try:
         base = urldefrag(_join(id_keyword, "", root_id)).url if isinstance(root_id, str) else ""
-        refs = {target for ref in ref_values if (target := _target(base, ref)) not in ("", base)}
+        targets = [(pointer, ref, _target(base, ref)) for pointer, ref in ref_places]
     except _BadUri as e:
         errors.append(messages.JSON_INVALID.format(err=shorten(f"the {e.keyword} '{e.value}' is not a valid URI", _ERR_LIMIT)))
         return FormatAnalysis(expected_name, None, errors)
+    refs = {target for _, _, target in targets if target not in ("", base)}
+    self_urls = []
+    not_found = []
+    for pointer, ref, target in targets:
+        if target not in ("", base):
+            continue
+        if ref and not ref.startswith("#"):
+            self_urls.append(pointer)
+        elif not _pointer_exists(schema, urldefrag(ref).fragment):
+            not_found.append(pointer)
+    if self_urls:
+        errors.append(messages.JSON_REF_SELF_URL.format(kw=id_keyword, paths=_paths(self_urls)))
+    if not_found:
+        errors.append(messages.JSON_REF_NOT_FOUND.format(paths=_paths(not_found)))
     return FormatAnalysis(expected_name, refs, errors)
+
+
+def _pointer_exists(schema: dict[str, Any], fragment: str) -> bool:
+    """True when the fragment is an anchor (not checked) or a JSON Pointer that resolves in the schema."""
+    if not fragment.startswith("/"):
+        return True
+    node: Any = schema
+    for token in unquote(fragment)[1:].split("/"):
+        token = token.replace("~1", "/").replace("~0", "~")
+        if isinstance(node, dict) and token in node:
+            node = node[token]
+        elif isinstance(node, list) and token.isascii() and token.isdecimal() and (token == "0" or token[0] != "0") and int(token) < len(node):
+            node = node[int(token)]
+        else:
+            return False
+    return True
 
 
 def _has_root_fragment(keyword: str, value: str) -> bool:
@@ -146,8 +176,8 @@ def _escape(token: str) -> str:
     return token.replace("~", "~0").replace("/", "~1")
 
 
-def _walk(schema: dict[str, Any], id_keyword: str) -> tuple[list[str], list[str], list[str]]:
-    """The string `$ref` values, and the JSON Pointers of the nested objects that have the id keyword
+def _walk(schema: dict[str, Any], id_keyword: str) -> tuple[list[tuple[str, str]], list[str], list[str]]:
+    """The string `$ref` values with the JSON Pointer of each `$ref` keyword, and the JSON Pointers of the nested objects that have the id keyword
     and of those that have `$schema`.
 
     Visits the objects a schema can hold: name maps (`properties` and the like) are names, not
@@ -155,7 +185,7 @@ def _walk(schema: dict[str, Any], id_keyword: str) -> tuple[list[str], list[str]
     `example` are data; lists are walked. It is iterative,
     so a deep schema costs no recursion.
     """
-    refs: list[str] = []
+    refs: list[tuple[str, str]] = []
     with_id: list[str] = []
     with_schema: list[str] = []
     pending: list[tuple[Any, str]] = [(schema, "")]
@@ -173,7 +203,7 @@ def _walk(schema: dict[str, Any], id_keyword: str) -> tuple[list[str], list[str]
                 with_schema.append(pointer)
         for key, child in value.items():
             if key == "$ref" and isinstance(child, str):
-                refs.append(child)
+                refs.append((f"{pointer}/$ref", child))
             elif key in _DATA_KEYWORDS:
                 continue
             elif key in _NAME_MAPS and isinstance(child, dict):
