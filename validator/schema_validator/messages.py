@@ -77,6 +77,10 @@ LEVEL_WARNING = (
 
 # Avro (5.1)
 AVRO_TOP_LEVEL = "The top level of an Avro schema must be a single record, enum or fixed."
+AVRO_NOT_A_MESSAGE = (
+    "This Schema is an Avro {kind}. A producer cannot send it as a message, because under RecordNameStrategy "
+    "a message must be a record. Use it as a reference from a record Schema."
+)
 AVRO_NAMESPACE = "Avro schema needs a namespace, for example \"namespace\": \"com.team.domain\"."
 AVRO_NESTED_NAMESPACE = (
     "Type '{name}' needs a namespace. Remove its \"namespace\" entry so it uses the schema's namespace."

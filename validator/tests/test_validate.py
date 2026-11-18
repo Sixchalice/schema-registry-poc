@@ -1145,3 +1145,12 @@ def test_older_version_lookup_failure_is_unreachable(sr: FakeSchemaRegistry, run
     sr.fail_only("registered_version", SchemaRegistryUnavailable("x"))
     request = req("AVRO", "order", ORDER, previous_name=ORDER)
     assert run(request, sr) == ValidationResult(False, "Error", messages.SR_UNREACHABLE)
+
+
+def test_kind_warning_comes_first(sr: FakeSchemaRegistry, run: Callable) -> None:
+    color = json.dumps({"type": "enum", "name": "Color", "namespace": "t", "symbols": ["RED"]})
+    sr.add("t.Color", color)
+    sr.levels["t.Color"] = "BACKWARD"
+    request = req("AVRO", None, "t.Color", schema=color, previous_name="t.Color")
+    assert run(request, sr) == ValidationResult(True, "Warning", messages.AVRO_NOT_A_MESSAGE.format(
+        kind="enum") + "\n" + messages.SCHEMA_UNCHANGED.format(n=1, name="t.Color"))

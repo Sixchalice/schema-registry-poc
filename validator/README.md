@@ -166,6 +166,7 @@ Warnings, returned as `Warning` when there is no error:
 
 | When | Message |
 |---|---|
+| The top level is an Avro enum or fixed (`{kind}` is `enum` or `fixed`) | `This Schema is an Avro {kind}. A producer cannot send it as a message, because under RecordNameStrategy a message must be a record. Use it as a reference from a record Schema.` |
 | The schema has references | `References will be pinned to: {list}.` when every reference is at its latest version, otherwise `References will be pinned to: {list}. To update one, select a newer version for it.` (`{list}` is for example `com.acme.Address v3, com.acme.Money v1 (latest is v2)`) |
 | On edit, the level is the same and the schema is identical to the latest version | `This is already version {n} of '{name}'. Saving it changes nothing in Schema Registry.` |
 | On edit, `compatibility` differs from the subject's current level in Schema Registry, and the schema is unchanged, or the subject has no versions | `Compatibility was checked using the current level '{sr_level}', not the new level '{compatibility}'.` |

@@ -82,6 +82,8 @@ class FormatAnalysis:
     # None when the text could not be analysed (stages D4/D5 are skipped).
     external_refs: set[str] | None
     errors: list[str]
+    # Messages for a schema that passes: the validator adds them first, before its own warnings.
+    warnings: list[str] = field(default_factory=list)
 
 
 def proto_import_path(schema_name: str) -> str:

@@ -66,7 +66,10 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
         # Step 8: only when fastavro accepted the whole schema (not when it stopped early).
         errors.extend(default_errors(parsed, named))
 
-    return FormatAnalysis(expected_name, external_refs, errors)
+    warnings: list[str] = []
+    if not errors and schema["type"] != "record":
+        warnings.append(messages.AVRO_NOT_A_MESSAGE.format(kind=schema["type"]))
+    return FormatAnalysis(expected_name, external_refs, errors, warnings)
 
 
 def _own_namespace(named_type: dict[str, Any], enclosing: str | None) -> str | None:

@@ -520,3 +520,16 @@ def test_soft_deleted_version_is_not_found(
 
     assert result == ValidationResult(
         False, "Error", messages.REF_VERSION_NOT_FOUND.format(s=subject, v=1, latest=2))
+
+
+def test_top_level_enum_warns(
+    client: HttpSchemaRegistryClient,
+    config: ValidatorConfig,
+    ns: str,
+) -> None:
+    name = f"{ns}.Color"
+    enum = json.dumps({"type": "enum", "name": "Color", "namespace": ns, "symbols": ["RED"]})
+
+    result = validate(request(name, "AVRO", enum), client, config)
+
+    assert result == ValidationResult(True, "Warning", messages.AVRO_NOT_A_MESSAGE.format(kind="enum"))

@@ -837,3 +837,24 @@ def test_array_without_items_and_map_without_values(type_: dict[str, Any], entry
     assert result.external_refs == set()
     assert result.errors == [f"Invalid Avro schema: a type is missing its '{entry}' entry"]
 
+
+
+def test_enum_and_fixed_warn() -> None:
+    enum = run({"type": "enum", "name": "Color", "namespace": "t", "symbols": ["RED"]})
+    assert enum.errors == []
+    assert enum.warnings == [messages.AVRO_NOT_A_MESSAGE.format(kind="enum")]
+    fixed = run({"type": "fixed", "name": "Md5", "namespace": "t", "size": 2})
+    assert fixed.errors == []
+    assert fixed.warnings == [messages.AVRO_NOT_A_MESSAGE.format(kind="fixed")]
+
+
+def test_record_has_no_kind_warning() -> None:
+    result = run(rec("Order", [field("id", "string")], namespace="t"))
+    assert result.errors == []
+    assert result.warnings == []
+
+
+def test_no_kind_warning_with_errors() -> None:
+    result = run({"type": "enum", "name": "Color", "symbols": ["RED"]})
+    assert result.errors == NAMESPACE
+    assert result.warnings == []

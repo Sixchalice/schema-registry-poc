@@ -134,7 +134,7 @@ def _validate(request: ValidationRequest, sr: SchemaRegistryClient, config: Vali
         return build_result([messages.SR_MODE.format(name=name, mode=mode)], [])
 
     # Warnings
-    warnings: list[str] = []
+    warnings: list[str] = list(analysis.warnings)
     if resolution.resolved:
         warnings.append(pinned_warning(resolution.resolved, resolution.latest))
     if level_warning is not None:
