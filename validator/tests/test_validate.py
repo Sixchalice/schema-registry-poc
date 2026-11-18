@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import contextvars
 import json
 import socket
+import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -1288,3 +1291,73 @@ def test_abandoned_worker_stops_calling_the_registry(sr: FakeSchemaRegistry) -> 
     at_return = len(sr.calls)
     time.sleep(0.6)
     assert len(sr.calls) <= at_return + 1
+
+
+# The worker thread: its own stack size and the caller's context (final review I1, I2).
+
+_SMALL_DEFAULT_STACK = """
+import json, threading
+threading.stack_size(128 * 1024)
+from schema_validator import ValidationRequest, ValidatorConfig, validate
+from schema_validator.formats._depth import json_depth
+from tests.fake_sr import FakeSchemaRegistry
+node = {"type": "string", "enum": ["x"]}
+for _ in range(30):
+    node = {"type": "object", "properties": {"p": node}}
+d = {"$schema": "http://json-schema.org/draft-07/schema#", "title": "a.B", "type": "object", "properties": {"p": node}}
+assert json_depth(d, 1000) == 64
+request = ValidationRequest(name="a.B", schema_type="JSON", schema=json.dumps(d), compatibility="BACKWARD",
+                            references=[], previous_name=None, existing_names=[])
+result = validate(request, FakeSchemaRegistry(), ValidatorConfig())
+print(result.validationType, threading.stack_size())
+"""
+
+
+def test_default_depth_json_passes_with_a_small_default_thread_stack() -> None:
+    # musl (Alpine) gives threads 128 KB by default; the worker must not inherit it. A crash
+    # would take pytest down, so this runs in a child process (which also restores the default).
+    child = subprocess.run([sys.executable, "-c", _SMALL_DEFAULT_STACK], cwd=Path(__file__).parent.parent,
+                           capture_output=True, text=True, timeout=60)
+    assert (child.returncode, child.stdout, child.stderr) == (0, f"Ok {128 * 1024}\n", "")
+
+
+def test_worker_stack_is_set_and_restored(sr: FakeSchemaRegistry, monkeypatch: pytest.MonkeyPatch) -> None:
+    sizes: list[int] = []
+    real = threading.stack_size
+
+    def record(*size: int) -> int:
+        sizes.extend(size)
+        return real(*size)
+    monkeypatch.setattr(threading, "stack_size", record)
+    before = real()
+    assert validate(_edit_request(), sr, cfg).validationType == "Ok"
+    assert sizes == [16 << 20, before]
+    assert real() == before
+
+
+@pytest.mark.parametrize("error", [ValueError("size not valid"), RuntimeError("setting stack size not supported")])
+def test_unsupported_stack_size_falls_back_to_the_default(
+    error: Exception, sr: FakeSchemaRegistry, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(threading, "stack_size", raiser(error))
+    assert validate(_edit_request(), sr, cfg) == validate(_edit_request(), FakeSchemaRegistry(), cfg)
+    assert validate(_edit_request(), sr, cfg).validationType == "Ok"
+
+
+_CALLER = contextvars.ContextVar("caller", default="unset")
+
+
+def test_worker_sees_the_callers_context(sr: FakeSchemaRegistry) -> None:
+    seen: list[str] = []
+    check = sr.check_compatibility
+
+    def reading(*args: Any, **kwargs: Any) -> Any:
+        seen.append(_CALLER.get())
+        return check(*args, **kwargs)
+    sr.check_compatibility = reading  # type: ignore[method-assign]
+    token = _CALLER.set("request-42")
+    try:
+        assert validate(_edit_request(), sr, cfg).validationType == "Ok"
+    finally:
+        _CALLER.reset(token)
+    assert seen == ["request-42"]

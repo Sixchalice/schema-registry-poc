@@ -1,6 +1,7 @@
 """The validation pipeline (spec section 4): stages A to E, then the warnings."""
 from __future__ import annotations
 
+import contextvars
 import re
 import threading
 from collections.abc import Callable
@@ -34,6 +35,26 @@ _NOT_FOUND_PATTERNS = {
 }
 
 
+# The worker's stack: a default-depth schema needs more than a small default (128 KB on musl).
+_WORKER_STACK_BYTES = 16 << 20
+# threading.stack_size is process-global: set and restored under this lock.
+_STACK_LOCK = threading.Lock()
+
+
+def _start(worker: threading.Thread) -> None:
+    """Starts the worker with a 16 MB stack, or the default one where the size cannot be set."""
+    with _STACK_LOCK:
+        try:
+            old = threading.stack_size(_WORKER_STACK_BYTES)
+        except Exception:  # not supported on this platform
+            worker.start()
+            return
+        try:
+            worker.start()
+        finally:
+            threading.stack_size(old)
+
+
 class _Stoppable:
     """The registry client for one validation's worker thread.
 
@@ -60,7 +81,8 @@ def validate(request: ValidationRequest, sr: SchemaRegistryClient, config: Valid
 
     The whole validation has one deadline, `total_timeout_seconds`. A worker that is still
     running at the deadline is abandoned: its result is discarded and it makes no further
-    registry calls after the one in flight.
+    registry calls after the one in flight. The worker gets a 16 MB stack: the stack size is
+    process-global, so it is set and restored around the start, under a lock.
     """
     outcome: list[ValidationResult | BaseException] = []
     stop = threading.Event()
@@ -73,8 +95,10 @@ def validate(request: ValidationRequest, sr: SchemaRegistryClient, config: Valid
             outcome.append(e)
 
     try:
-        worker = threading.Thread(target=work, name="schema-validator", daemon=True)
-        worker.start()
+        # The worker runs in a copy of the caller's context, so a client that reads a ContextVar sees its value.
+        context = contextvars.copy_context()
+        worker = threading.Thread(target=context.run, args=(work,), name="schema-validator", daemon=True)
+        _start(worker)
         worker.join(config.total_timeout_seconds)
         if worker.is_alive():
             stop.set()
