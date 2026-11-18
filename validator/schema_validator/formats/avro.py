@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import fastavro
@@ -24,6 +25,8 @@ _NAMED_TYPES = frozenset({"record", "enum", "fixed"})
 # What the walk treats as defining a name: a nested "error" is a record to Java and fastavro.
 # It is not allowed at the top level (_NAMED_TYPES above).
 _WALK_NAMED_TYPES = _NAMED_TYPES | {"error"}
+# The Avro spec's name: each dotted part is an ASCII letter or underscore, then letters, digits, underscores.
+_NAME_PARTS = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*")
 
 
 def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfig) -> FormatAnalysis:
@@ -49,10 +52,12 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
     name = schema.get("name")
     if isinstance(name, str):
         full_name = _full_name(name, _own_namespace(schema, None))
-        if _well_formed(full_name):
-            expected_name = full_name
-        else:
+        if not _well_formed(full_name):
             errors.append(messages.AVRO_NAMESPACE)
+        elif not _NAME_PARTS.fullmatch(full_name):
+            errors.append(messages.AVRO_NAME_CHARS.format(name=full_name))
+        else:
+            expected_name = full_name
 
     # Step 6
     defined, used, nested_errors = _names(schema, submitted=True)
@@ -182,6 +187,8 @@ def _names(schema: Any, submitted: bool = False) -> tuple[set[str], set[str], li
                         if "." in name:
                             if not _well_formed(name):
                                 nested_errors.append(messages.AVRO_NESTED_NAME.format(name=name))
+                            elif submitted and not _NAME_PARTS.fullmatch(name):
+                                nested_errors.append(messages.AVRO_NAME_CHARS.format(name=name))
                         elif namespace and (not _well_formed(full) or (own is not None or "namespace" in node)
                                             and not isinstance(own, str)):
                             # "", a malformed namespace, or one that is not a string: Java Avro
@@ -193,6 +200,8 @@ def _names(schema: Any, submitted: bool = False) -> tuple[set[str], set[str], li
                             # A referenced text defines exactly what it says.
                             if submitted:
                                 defined.add(f"{namespace}.{name}")
+                        elif submitted and not _NAME_PARTS.fullmatch(full):
+                            nested_errors.append(messages.AVRO_NAME_CHARS.format(name=full))
                 fields = node.get("fields") if kind in ("record", "error") else None
                 if isinstance(fields, list):
                     pending.extend(

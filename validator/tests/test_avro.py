@@ -921,3 +921,62 @@ def test_nested_error_namespace_rules_apply() -> None:
 def test_top_level_error_unchanged() -> None:
     result = run({"type": "error", "name": "Oops", "namespace": "t", "fields": []})
     assert result == FormatAnalysis(None, None, [messages.AVRO_TOP_LEVEL])
+
+
+def _chars(name: str) -> str:
+    return messages.AVRO_NAME_CHARS.format(name=name)
+
+
+def test_namespace_with_a_hyphen_is_an_error() -> None:
+    assert run(rec("R", [], namespace="a-b")).errors == [_chars("a-b.R")]
+
+
+def test_namespace_part_starting_with_a_digit_is_an_error() -> None:
+    assert run(rec("R", [], namespace="x.9x")).errors == [_chars("x.9x.R")]
+
+
+def test_non_ascii_name_is_an_error() -> None:
+    assert run(rec("Ordér", [], namespace="t")).errors == [_chars("t.Ordér")]
+
+
+@pytest.mark.parametrize("kind", ["record", "error"])
+def test_nested_bad_name_is_an_error(kind: str) -> None:
+    nested_type = {"type": kind, "name": "Bad-Name", "fields": []}
+    result = run(rec("R", [field("n", nested_type)], namespace="t"))
+    assert result.errors == [_chars("t.Bad-Name")]
+
+
+def test_valid_names_with_digits_and_underscores_pass() -> None:
+    assert run(rec("Z_2", [], namespace="_x.y1")).errors == []
+    nested_type = rec("Line_1", [])
+    assert run(rec("Order_V2", [field("l", nested_type)], namespace="com.acme_2.v1")).errors == []
+
+
+def test_empty_part_keeps_its_own_message() -> None:
+    assert run(rec("Order", [], namespace="com.")).errors == [messages.AVRO_NAMESPACE]
+    assert run(rec("com..Order", [])).errors == [messages.AVRO_NAMESPACE]
+
+
+def test_bad_names_are_reported_in_document_order_one_per_type() -> None:
+    inner = rec("B-b", [])
+    outer = rec("Mid", [field("i", inner)], namespace="t")
+    result = run(rec("A-a", [field("m", outer)], namespace="t"))
+    assert result.errors == [_chars("t.A-a"), _chars("t.B-b")]
+
+
+def test_bad_chars_in_a_type_with_another_message_get_no_second_one() -> None:
+    nested_type = rec("a-b.", [])
+    result = run(rec("R", [field("n", nested_type)], namespace="t"))
+    assert result.errors == [messages.AVRO_NESTED_NAME.format(name="a-b.")]
+
+
+def test_bad_chars_in_a_referenced_text_are_not_checked() -> None:
+    ref = rec("Bad-Name", [], namespace="t")
+    result = run(rec("R", [field("n", "t.Bad-Name")], namespace="t"), {"r": json.dumps(ref)})
+    assert _chars("t.Bad-Name") not in result.errors
+
+
+def test_nested_dotted_bad_name_is_an_error() -> None:
+    nested_type = rec("x.9y.Inner", [])
+    result = run(rec("R", [field("n", nested_type)], namespace="t"))
+    assert result.errors == [_chars("x.9y.Inner")]

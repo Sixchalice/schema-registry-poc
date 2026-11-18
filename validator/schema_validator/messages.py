@@ -92,6 +92,10 @@ AVRO_NESTED_NAME = (
     "Type name '{name}' has an empty part around a dot. "
     "Use a plain name, for example \"Address\", or a full name, for example \"com.team.domain.Address\"."
 )
+AVRO_NAME_CHARS = (
+    "'{name}' is not a valid Avro name. Each part between dots must start with a letter (A-Z, a-z) "
+    "or an underscore and contain only letters, digits and underscores."
+)
 AVRO_NESTED_IN_REFERENCE = (
     "Type '{name}' is defined inside the Schema '{schema}'. A type nested in another Schema "
     "cannot be used here. Move it to its own Schema and reference that."
