@@ -615,3 +615,13 @@ def test_json_ref_python_cannot_follow(
         "subject.name.strategy": record_subject_name_strategy})
     with pytest.raises(Unresolvable, match="'/definitions/a\\+b' does not exist"):
         serializer({"x": "s"}, SerializationContext("validator-it-clients", MessageField.VALUE))
+
+
+def test_json_format_warns(client: HttpSchemaRegistryClient, config: ValidatorConfig, ns: str) -> None:
+    schema = json.dumps({"$schema": "http://json-schema.org/draft-07/schema#", "title": f"{ns}.Order",
+                         "type": "object", "properties": {"e": {"type": "string", "format": "email"}}})
+
+    result = validate(request(f"{ns}.Order", "JSON", schema), client, config)
+
+    assert result == ValidationResult(
+        True, "Warning", messages.JSON_FORMAT_NOT_CHECKED.format(paths="'/properties/e/format'"))

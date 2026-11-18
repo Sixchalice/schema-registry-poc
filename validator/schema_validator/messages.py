@@ -145,6 +145,10 @@ JSON_REF_CLIENTS_DIFFER = (
     'Write it as a plain pointer, for example "#/definitions/Item", with no "+", trailing "/" or anchor '
     'that is not defined, at {paths}.'
 )
+JSON_FORMAT_NOT_CHECKED = (
+    'This schema uses "format" at {paths}. Java producers can reject values that do not match it, '
+    'while Python producers do not check it, so the two can accept different data.'
+)
 JSON_TOO_DEEP = "JSON schema is nested too deeply."
 SCHEMA_TOO_DEEP = "Schema is nested more than {max} levels deep."
 

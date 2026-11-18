@@ -107,7 +107,7 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
             errors.append(messages.JSON_TOO_DEEP)
 
     # Steps 6a to 6d: where "$id" and "$schema" may be (the order is C, D, A, B)
-    ref_places, nested_ids, nested_schemas = _walk(schema, id_keyword)
+    ref_places, nested_ids, nested_schemas, format_places = _walk(schema, id_keyword)
     if "$schema" not in schema:
         errors.append(messages.JSON_SCHEMA_MISSING)
     root_id = schema.get(id_keyword)
@@ -171,7 +171,8 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
         errors.append(messages.JSON_REF_NOT_FOUND.format(paths=_paths(not_found)))
     if differ:
         errors.append(messages.JSON_REF_CLIENTS_DIFFER.format(paths=_paths(differ)))
-    return FormatAnalysis(expected_name, refs, errors)
+    warnings = [messages.JSON_FORMAT_NOT_CHECKED.format(paths=_paths(format_places))] if format_places and not errors else []
+    return FormatAnalysis(expected_name, refs, errors, warnings)
 
 
 # A "%" that is not followed by two upper-case hex digits: the registry's reading of it is not pinned.
@@ -286,9 +287,9 @@ def _escape(token: str) -> str:
     return token.replace("~", "~0").replace("/", "~1")
 
 
-def _walk(schema: dict[str, Any], id_keyword: str) -> tuple[list[tuple[str, str]], list[str], list[str]]:
+def _walk(schema: dict[str, Any], id_keyword: str) -> tuple[list[tuple[str, str]], list[str], list[str], list[str]]:
     """The string `$ref` values with the JSON Pointer of each `$ref` keyword, and the JSON Pointers of the nested objects that have the id keyword
-    and of those that have `$schema`.
+    and of those that have `$schema`, and the JSON Pointers of the `format` keywords with a string value.
 
     Visits the objects a schema can hold: name maps (`properties` and the like) are names, not
     keywords; `enum`, `const`, `default`, `examples` and
@@ -298,6 +299,7 @@ def _walk(schema: dict[str, Any], id_keyword: str) -> tuple[list[tuple[str, str]
     refs: list[tuple[str, str]] = []
     with_id: list[str] = []
     with_schema: list[str] = []
+    formats: list[str] = []
     pending: list[tuple[Any, str]] = [(schema, "")]
     while pending:
         value, pointer = pending.pop()
@@ -314,13 +316,15 @@ def _walk(schema: dict[str, Any], id_keyword: str) -> tuple[list[tuple[str, str]
         for key, child in value.items():
             if key == "$ref" and isinstance(child, str):
                 refs.append((f"{pointer}/$ref", child))
+            elif key == "format" and isinstance(child, str):
+                formats.append(f"{pointer}/format")
             elif key in _DATA_KEYWORDS:
                 continue
             elif key in _NAME_MAPS and isinstance(child, dict):
                 pending.extend((each, f"{pointer}/{_escape(key)}/{_escape(name)}") for name, each in child.items())
             else:
                 pending.append((child, f"{pointer}/{_escape(key)}"))
-    return refs, with_id, with_schema
+    return refs, with_id, with_schema, formats
 
 
 def _paths(pointers: list[str]) -> str:

@@ -921,3 +921,37 @@ def test_anchors_in_a_reference_that_cannot_be_crawled_are_fast() -> None:
     assert time.perf_counter() - start < 1
     # The pointer into the malformed reference still resolves; only the anchors cannot be followed.
     assert errors == [MANY_DIFFER]
+
+
+FORMAT_PATH = "'/properties/e/format'"
+
+
+def test_format_warns() -> None:
+    result = run(schema(properties={"e": {"type": "string", "format": "email"}}))
+    assert result.errors == []
+    assert result.warnings == [messages.JSON_FORMAT_NOT_CHECKED.format(paths=FORMAT_PATH)]
+
+
+def test_many_formats_are_listed_three_and_more() -> None:
+    result = run(schema(properties={name: {"type": "string", "format": "email"} for name in "abcde"}))
+    assert result.warnings == [messages.JSON_FORMAT_NOT_CHECKED.format(
+        paths="'/properties/a/format', '/properties/b/format', '/properties/c/format' and 2 more")]
+
+
+def test_format_as_data_or_property_name_has_no_warning() -> None:
+    result = run(schema(
+        properties={"format": {"type": "string"}, "p": {"default": {"format": "email"}}},
+        patternProperties={"format": {"type": "string"}},
+        enum=[{"format": "x"}], examples=[{"format": "x"}], example={"format": "x"}, const={"format": "x"},
+    ))
+    assert result.errors == []
+    assert result.warnings == []
+
+
+def test_format_that_is_not_a_string_has_no_warning() -> None:
+    assert run(schema(properties={"e": {"format": 1}})).warnings == []
+
+
+def test_no_format_warning_with_errors() -> None:
+    result = run(schema(properties={"e": {"format": "email", "$id": "x"}}))
+    assert result.errors and result.warnings == []
