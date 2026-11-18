@@ -140,7 +140,7 @@ def test_stage_d_failure(client: HttpSchemaRegistryClient, config: ValidatorConf
     customer = json.dumps({"type": "record", "name": "Customer", "namespace": ns,
                            "fields": [{"name": "addr", "type": f"{ns}.Address"}]})
 
-    result = validate(request(f"{ns}.Customer", "AVRO", customer, [ReferenceInput(f"{ns}.Address", None, 1)]),
+    result = validate(request(f"{ns}.Customer", "AVRO", customer, [ReferenceInput(f"{ns}.Address", f"{ns}.Address", 1)]),
                       client, config)
 
     assert result == ValidationResult(
@@ -163,7 +163,7 @@ def test_version_conflict_real_sr(
         {"name": "line", "type": line}, {"name": "total", "type": money}]})
 
     result = validate(request(f"{ns}.Order", "AVRO", order,
-                              [ReferenceInput(line, None, 1), ReferenceInput(money, None, 2)]), client, config)
+                              [ReferenceInput(line, line, 1), ReferenceInput(money, money, 2)]), client, config)
 
     assert result == ValidationResult(False, "Error", messages.REF_VERSION_CONFLICT_DIRECT.format(
         s=money, uses=f"v1 through '{line}', v2 directly", chosen=2))
@@ -233,7 +233,7 @@ def customer(schema_type: str, ns: str) -> tuple[str, ReferenceInput]:
     if schema_type == "AVRO":
         text = json.dumps({"type": "record", "name": "Customer", "namespace": ns,
                            "fields": [{"name": "addr", "type": subject}]})
-        return text, ReferenceInput(subject, None, 1)
+        return text, ReferenceInput(subject, subject, 1)
     if schema_type == "JSON":
         # With and without a #fragment: both match the row without the fragment.
         text = json.dumps({"$schema": "http://json-schema.org/draft-07/schema#", "title": f"{ns}.Customer",
@@ -288,7 +288,7 @@ def test_avro_name_nested_in_a_reference(
         fields.insert(0, {"name": "addr", "type": subject})
     text = json.dumps({"type": "record", "name": "Customer", "namespace": ns, "fields": fields})
 
-    result = validate(request(f"{ns}.Customer", "AVRO", text, [ReferenceInput(subject, None, 1)]), client, config)
+    result = validate(request(f"{ns}.Customer", "AVRO", text, [ReferenceInput(subject, subject, 1)]), client, config)
 
     assert result == ValidationResult(
         False, "Error", messages.AVRO_NESTED_IN_REFERENCE.format(name=f"{ns}.Country", schema=subject))
@@ -423,9 +423,9 @@ def test_level_change_gap_is_closed(
     assert register(name, text, "AVRO", [{"name": money, "subject": money, "version": 1}])[0] == 200
     assert register(money, json.dumps(money2))[0] == 200
 
-    same = validate(request(name, "AVRO", text, [ReferenceInput(money, None, 1)],
+    same = validate(request(name, "AVRO", text, [ReferenceInput(money, money, 1)],
                             previous_name=name, compatibility="FULL"), client, config)
-    newer = validate(request(name, "AVRO", text, [ReferenceInput(money, None, 2)],
+    newer = validate(request(name, "AVRO", text, [ReferenceInput(money, money, 2)],
                              previous_name=name, compatibility="FULL"), client, config)
 
     assert same.validationType == "Warning"
@@ -517,7 +517,7 @@ def test_unknown_version_is_not_found(
     assert register(subject, address("AVRO", ns))[0] == 200
     text, _ = customer("AVRO", ns)
 
-    result = validate(request(f"{ns}.Customer", "AVRO", text, [ReferenceInput(subject, None, 9)]),
+    result = validate(request(f"{ns}.Customer", "AVRO", text, [ReferenceInput(subject, subject, 9)]),
                       client, config)
 
     assert result == ValidationResult(
@@ -536,7 +536,7 @@ def test_soft_deleted_version_is_not_found(
     assert deleted.status_code == 200, deleted.text
     text, _ = customer("AVRO", ns)
 
-    result = validate(request(f"{ns}.Customer", "AVRO", text, [ReferenceInput(subject, None, 1)]),
+    result = validate(request(f"{ns}.Customer", "AVRO", text, [ReferenceInput(subject, subject, 1)]),
                       client, config)
 
     assert result == ValidationResult(
@@ -625,3 +625,34 @@ def test_json_format_warns(client: HttpSchemaRegistryClient, config: ValidatorCo
 
     assert result == ValidationResult(
         True, "Warning", messages.JSON_FORMAT_NOT_CHECKED.format(paths="'/properties/e/format'"))
+
+
+def test_avro_empty_reference_text_is_refused(
+    client: HttpSchemaRegistryClient, config: ValidatorConfig, register: Register, ns: str,
+) -> None:
+    subject = f"{ns}.A"
+    record_a = json.dumps({"type": "record", "name": "A", "namespace": ns,
+                           "fields": [{"name": "x", "type": "string"}]})
+    assert register(subject, record_a)[0] == 200
+    uses_a = json.dumps({"type": "record", "name": "M", "namespace": ns,
+                         "fields": [{"name": "a", "type": subject}]})
+
+    result = validate(request(f"{ns}.M", "AVRO", uses_a, [ReferenceInput(subject, "", 1)]), client, config)
+
+    assert result == ValidationResult(False, "Error", messages.AVRO_REF_STRING.format(s=subject))
+
+
+def test_avro_reference_with_its_name_registers(
+    client: HttpSchemaRegistryClient, config: ValidatorConfig, register: Register, ns: str,
+) -> None:
+    subject = f"{ns}.A"
+    record_a = json.dumps({"type": "record", "name": "A", "namespace": ns,
+                           "fields": [{"name": "x", "type": "string"}]})
+    assert register(subject, record_a)[0] == 200
+    uses_a = json.dumps({"type": "record", "name": "M", "namespace": ns,
+                         "fields": [{"name": "a", "type": subject}]})
+
+    result = validate(request(f"{ns}.M", "AVRO", uses_a, [ReferenceInput(subject, subject, 1)]), client, config)
+
+    assert result == ValidationResult(True, "Warning", messages.PINNED_WARNING.format(list=f"{subject} v1"))
+    assert register(f"{ns}.M", uses_a, "AVRO", [{"name": subject, "subject": subject, "version": 1}])[0] == 200

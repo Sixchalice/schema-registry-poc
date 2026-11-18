@@ -45,10 +45,6 @@ def add_chain(sr: FakeSchemaRegistry, length: int) -> None:
 # normalise_rows (D6)
 
 
-def test_normalise_avro_default() -> None:
-    assert normalise_rows("AVRO", [row("a.B")]) == ([ReferenceInput("a.B", "a.B", 1)], [])
-
-
 def test_normalise_avro_keeps_given() -> None:
     assert normalise_rows("AVRO", [row("a.B", "a.B")]) == ([ReferenceInput("a.B", "a.B", 1)], [])
 
@@ -67,9 +63,8 @@ def test_normalise_json_requires_ref_string() -> None:
     assert errors == ["Reference to 'a.B' needs the text used in the schema (the $ref value)."]
 
 
-@pytest.mark.parametrize("ref_string", [None, ""])
-def test_normalise_avro_agrees_with_stage_a(ref_string: str | None) -> None:
-    given = row("a.B", ref_string)
+def test_normalise_avro_agrees_with_stage_a() -> None:
+    given = row("a.B", "a.B")
     rows, errors = normalise_rows("AVRO", [given])
     assert errors == []
     assert rows[0].ref_string == _effective_ref_string("AVRO", given) == "a.B"

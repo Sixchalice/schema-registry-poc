@@ -66,15 +66,12 @@ def _name_is_valid(name: str) -> bool:
 def _effective_ref_string(schema_type: str, ref: ReferenceInput) -> str | None:
     """The ref_string that will be sent to the registry, or None if it is not compared.
 
-    AVRO defaults a missing ref_string to schema_name. PROTOBUF derives it from
-    schema_name, so the schema_name comparison already covers it. JSON (and an
-    unsupported type) uses the given value; a missing one (None or "") is not
-    compared, and stage D reports D6 for it.
+    PROTOBUF derives it from schema_name, so the schema_name comparison already
+    covers it. AVRO and JSON (and an unsupported type) use the given value; a missing
+    one (None or "") is not compared. AVRO gets A5 for it, JSON gets D6 in stage D.
     """
     if schema_type == "PROTOBUF":
         return None
-    if schema_type == "AVRO":
-        return ref.ref_string or ref.schema_name
     return ref.ref_string or None
 
 
@@ -112,7 +109,7 @@ def _reference_errors(
         errors.extend(
             messages.AVRO_REF_STRING.format(s=ref.schema_name)
             for ref in references
-            if ref.ref_string not in (None, "", ref.schema_name)
+            if ref.ref_string != ref.schema_name
         )
 
     if self_reference:

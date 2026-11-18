@@ -53,7 +53,7 @@ class ReferenceInput:
     schema_name: str          # the Schema deployment selected in the dropdown (= SR subject)
     ref_string: str | None    # how it is written in the schema text.
                               # JSON: required (the $ref value without its #fragment).
-                              # AVRO: optional; empty or schema_name (anything else is rejected, A5).
+                              # AVRO: required; must equal schema_name (anything else, empty included, is rejected, A5).
                               # PROTOBUF: ignored; derived from schema_name (section 6).
     version: int | None       # the version picked by the user, required (int >= 1). None only
                               # so that stage A can report a missing one (A5).
@@ -124,7 +124,7 @@ Collect all errors; do not stop at the first one. A stage is skipped only when i
 | A2 | `schema` is text that encodes as UTF-8, is not empty or whitespace only, and its UTF-8 size is within `max_schema_bytes` | `Schema contains characters that are not valid text.` / `Schema is empty.` / `Schema is too large ({n} bytes, limit {max}).` |
 | A3 | `compatibility` is one of BACKWARD, BACKWARD_TRANSITIVE, FORWARD, FORWARD_TRANSITIVE, FULL, FULL_TRANSITIVE, NONE | `Unknown compatibility level '{x}'.` |
 | A4 | `name` is non-empty, has no whitespace, does not start with `:` | `Schema name is invalid.` |
-| A5 | No two reference rows share a `ref_string` or a `schema_name`; no row references `name` itself; every row has a `version` that is an integer from 1 up (a `bool` is not one); an AVRO row's `ref_string` is empty or equals its `schema_name` (messages are grouped by kind: the duplicate messages first, then `Select a version...` per offending row, then the Avro reference-text message per offending row, each group in row order; the self-reference message comes last) | `Reference '{x}' is listed twice.` / `A schema cannot reference itself.` / `Select a version for reference '{s}'.` / `For an Avro reference to '{s}', leave the reference text empty or write '{s}'.` |
+| A5 | No two reference rows share a `ref_string` or a `schema_name`; no row references `name` itself; every row has a `version` that is an integer from 1 up (a `bool` is not one); an AVRO row's `ref_string` equals its `schema_name`; an empty or missing one is an error too, because the platform registers `ref_string` exactly as typed and cannot fill it in (messages are grouped by kind: the duplicate messages first, then `Select a version...` per offending row, then the Avro reference-text message per offending row, each group in row order; the self-reference message comes last) | `Reference '{x}' is listed twice.` / `A schema cannot reference itself.` / `Select a version for reference '{s}'.` / `For an Avro reference to '{s}', write '{s}' as the reference text.` |
 
 If A1 or A2 fails, stop and return. If A5 fails, stage D is skipped (no reference lookups, no D4/D5); stages B and C still run.
 
@@ -159,7 +159,7 @@ On edit, if the user changed the namespace or record name inside the schema, C3 
 
 A nested reference that is not registered gives D1 with the nested subject.
 
-For AVRO, a missing `ref_string` defaults to `schema_name`; any other value is rejected by A5, so stage D always uses `schema_name`. For PROTOBUF, `ref_string` is always derived: `schema_name.replace(".", "/") + ".proto"`.
+For AVRO, `ref_string` must equal `schema_name` (A5 rejects an empty, missing or other value), so stage D keeps the row as it is. For PROTOBUF, `ref_string` is always derived: `schema_name.replace(".", "/") + ".proto"`.
 
 D3, D4 and D5 exist only in the validator. Verified: SR accepts unused reference rows in every format, accepts a Protobuf reference whose name differs from the import path (a Java consumer then fails with `"X" is not defined`), and does not detect cycles for Protobuf or JSON (Avro fails only by accident, with `Can't redefine`).
 
@@ -311,7 +311,7 @@ For AVRO, SR ignores the reference `name` entirely (any text works); the exact-m
 
 Algorithm:
 
-1. Normalise rows (AVRO: a missing or empty `ref_string` defaults to `schema_name`; PROTOBUF: set `ref_string` to `schema_name.replace(".", "/") + ".proto"`).
+1. Normalise rows (AVRO: keep the row, stage A guarantees `ref_string == schema_name`; PROTOBUF: set `ref_string` to `schema_name.replace(".", "/") + ".proto"`).
 2. For each row, `GET /subjects/{schema_name}/versions/latest`. 404 gives D1. If the row's `version` is the latest, use it; otherwise `GET /subjects/{schema_name}/versions/{version}`, and a 404 gives the not-found error for the version. Keep `schemaType` (absent means AVRO), `schema` text and its `references` of the row's version. The latest version number is kept for the warning.
 3. D2 format check, on the row's version.
 4. D3 cycle check: depth-first walk over the referenced schemas' own `references` (fetch each `subject`/`version` from SR, memoised per request, max depth `max_reference_depth`, 20 by default). If `name` is reached, report the cycle.

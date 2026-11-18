@@ -45,6 +45,7 @@ DEFAULT_BUILTIN_PROTO_IMPORTS: frozenset[str] = frozenset(
 @dataclass(frozen=True)
 class ReferenceInput:
     schema_name: str
+    # AVRO: must equal schema_name. PROTOBUF: ignored. JSON: required.
     ref_string: str | None = None
     # The version the user picked. None exists only so stage A can report it.
     version: int | None = None

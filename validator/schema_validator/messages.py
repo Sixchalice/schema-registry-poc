@@ -8,7 +8,7 @@ SCHEMA_TOO_LARGE = "Schema is too large ({n} bytes, limit {max})."
 UNKNOWN_COMPATIBILITY = "Unknown compatibility level '{x}'."
 NAME_INVALID = "Schema name is invalid."
 REFERENCE_DUPLICATE = "Reference '{x}' is listed twice."
-AVRO_REF_STRING = "For an Avro reference to '{s}', leave the reference text empty or write '{s}'."
+AVRO_REF_STRING = "For an Avro reference to '{s}', write '{s}' as the reference text."
 SELF_REFERENCE = "A schema cannot reference itself."
 
 # Stage C

@@ -175,7 +175,7 @@ def test_avro_with_reference(
                                              "fields": [{"name": "city", "type": "string"}]}), "AVRO")()
     schema = json.dumps({"type": "record", "name": "Customer", "namespace": ns,
                          "fields": [{"name": "addr", "type": address}]})
-    name = accepted_name(f"{ns}.Customer", "AVRO", schema, config, [ReferenceInput(address, None, 1)])
+    name = accepted_name(f"{ns}.Customer", "AVRO", schema, config, [ReferenceInput(address, address, 1)])
     refs = [{"name": address, "subject": address, "version": 1}]
 
     serializer = AvroSerializer(ck_client, Schema(schema, "AVRO", [SchemaReference(**refs[0])]), conf=CONF)
@@ -202,7 +202,7 @@ def test_older_pinned_version_registers_and_produces(
     name = f"{ns}.Line"
     request = ValidationRequest(
         name=name, schema_type="AVRO", schema=schema, compatibility="BACKWARD",
-        references=[ReferenceInput(money, None, 1)], previous_name=None, existing_names=[],
+        references=[ReferenceInput(money, money, 1)], previous_name=None, existing_names=[],
     )
 
     result = validate(request, HttpSchemaRegistryClient.from_config(config), config)
@@ -231,7 +231,7 @@ def test_avro_shared_enum(
 
     schema = json.dumps({"type": "record", "name": "Paint", "namespace": ns,
                          "fields": [{"name": "color", "type": color}]})
-    name = accepted_name(f"{ns}.Paint", "AVRO", schema, config, [ReferenceInput(color, None, 1)])
+    name = accepted_name(f"{ns}.Paint", "AVRO", schema, config, [ReferenceInput(color, color, 1)])
     refs = [{"name": color, "subject": color, "version": 1}]
 
     serializer = AvroSerializer(ck_client, Schema(schema, "AVRO", [SchemaReference(**refs[0])]), conf=CONF)
@@ -258,7 +258,7 @@ def test_avro_name_from_a_transitive_reference(
         {"name": "country", "type": country}]}), "AVRO", [{"name": country, "subject": country, "version": 1}])()
     schema = json.dumps({"type": "record", "name": "Customer", "namespace": ns, "fields": [
         {"name": "addr", "type": address}, {"name": "extra", "type": country}]})
-    name = accepted_name(f"{ns}.Customer", "AVRO", schema, config, [ReferenceInput(address, None, 1)])
+    name = accepted_name(f"{ns}.Customer", "AVRO", schema, config, [ReferenceInput(address, address, 1)])
     refs = [{"name": address, "subject": address, "version": 1}]
 
     serializer = AvroSerializer(ck_client, Schema(schema, "AVRO", [SchemaReference(**refs[0])]), conf=CONF)

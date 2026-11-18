@@ -65,7 +65,7 @@ def test_invalid_names(name: str) -> None:
 
 @pytest.mark.parametrize("version", [None, 0, -1, True, "2"])
 def test_missing_version_is_required(version: object) -> None:
-    refs = [ReferenceInput("a.B", None, 1), ReferenceInput("a.C", None, version)]  # type: ignore[arg-type]
+    refs = [ReferenceInput("a.B", "a.B", 1), ReferenceInput("a.C", "a.C", version)]  # type: ignore[arg-type]
     result = check_input(req(references=refs), CONFIG)
     assert result.errors == [messages.REF_VERSION_REQUIRED.format(s="a.C")]
     assert result.references_ok is False
@@ -73,7 +73,7 @@ def test_missing_version_is_required(version: object) -> None:
 
 
 def test_stage_a_reference_messages_are_ordered() -> None:
-    refs = [ReferenceInput("a.B", None, 1), ReferenceInput("a.B", None, 1),
+    refs = [ReferenceInput("a.B", "a.B", 1), ReferenceInput("a.B", "a.B", 1),
             ReferenceInput("a.C", "custom", None)]
     result = check_input(req(references=refs), CONFIG)
     assert result.errors == [
@@ -84,7 +84,7 @@ def test_stage_a_reference_messages_are_ordered() -> None:
 
 
 def test_duplicate_reference_subject() -> None:
-    refs = [ReferenceInput("a.B", None, 1), ReferenceInput("a.B", None, 1)]
+    refs = [ReferenceInput("a.B", "a.B", 1), ReferenceInput("a.B", "a.B", 1)]
     result = check_input(req(references=refs), CONFIG)
     assert result.errors == ["Reference 'a.B' is listed twice."]
     assert result.references_ok is False
@@ -99,18 +99,18 @@ def test_duplicate_ref_string() -> None:
 
 
 def test_self_reference() -> None:
-    result = check_input(req(references=[ReferenceInput("com.acme.Order", None, 1)]), CONFIG)
+    result = check_input(req(references=[ReferenceInput("com.acme.Order", "com.acme.Order", 1)]), CONFIG)
     assert result.errors == ["A schema cannot reference itself."]
     assert result.references_ok is False
 
 
-def test_avro_ref_string_defaults_to_schema_name() -> None:
+def test_avro_ref_string_equal_to_another_rows_name() -> None:
     # a.C's own text 'a.B' is a custom ref_string (L6) and also repeats a.B's name.
-    refs = [ReferenceInput("a.B", None, 1), ReferenceInput("a.C", "a.B", 1)]
+    refs = [ReferenceInput("a.B", "a.B", 1), ReferenceInput("a.C", "a.B", 1)]
     result = check_input(req(references=refs), CONFIG)
     assert result.errors == [
         "Reference 'a.B' is listed twice.",
-        "For an Avro reference to 'a.C', leave the reference text empty or write 'a.C'.",
+        "For an Avro reference to 'a.C', write 'a.C' as the reference text.",
     ]
     assert result.references_ok is False
 
@@ -124,9 +124,17 @@ def test_avro_custom_ref_string_rejected() -> None:
     assert result.fatal is False
 
 
-@pytest.mark.parametrize("ref_string", [None, "", "a.Address"])
-def test_avro_ref_string_equal_to_name_allowed(ref_string: str | None) -> None:
-    result = check_input(req(references=[ReferenceInput("a.Address", ref_string, 1)]), CONFIG)
+def test_avro_empty_reference_text_is_an_error() -> None:
+    refs = [ReferenceInput("a.Address", "", 1), ReferenceInput("a.Money", None, 1)]
+    result = check_input(req(references=refs), CONFIG)
+    assert result.errors == [
+        messages.AVRO_REF_STRING.format(s="a.Address"), messages.AVRO_REF_STRING.format(s="a.Money")]
+    assert result.references_ok is False
+    assert result.fatal is False
+
+
+def test_avro_reference_text_equal_to_the_subject_passes() -> None:
+    result = check_input(req(references=[ReferenceInput("a.Address", "a.Address", 1)]), CONFIG)
     assert result.errors == []
     assert result.references_ok is True
 
@@ -138,7 +146,7 @@ def test_lone_surrogate_schema() -> None:
 
 
 def test_avro_same_row_twice_reports_once() -> None:
-    refs = [ReferenceInput("a.B", None, 1), ReferenceInput("a.B", None, 1)]
+    refs = [ReferenceInput("a.B", "a.B", 1), ReferenceInput("a.B", "a.B", 1)]
     result = check_input(req(references=refs), CONFIG)
     assert result.errors == ["Reference 'a.B' is listed twice."]
 
