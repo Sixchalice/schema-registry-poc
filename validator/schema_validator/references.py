@@ -5,12 +5,8 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from schema_validator import messages
-from schema_validator.models import ReferenceInput, proto_import_path
+from schema_validator.models import ReferenceInput, ValidatorConfig, proto_import_path
 from schema_validator.sr_client import SchemaRegistryClient, SchemaVersion, SrReference
-
-# Levels below the referenced row's own schema (which is level 0).
-_MAX_DEPTH = 20
-
 
 def normalise_rows(
     schema_type: str, references: Sequence[ReferenceInput]
@@ -55,7 +51,11 @@ class Resolution:
 
 
 def resolve(
-    name: str, schema_type: str, rows: Sequence[ReferenceInput], sr: SchemaRegistryClient
+    name: str,
+    schema_type: str,
+    rows: Sequence[ReferenceInput],
+    sr: SchemaRegistryClient,
+    config: ValidatorConfig,
 ) -> Resolution:
     """Spec §6 steps 2 to 4. `rows` come from `normalise_rows`.
 
@@ -107,7 +107,7 @@ def resolve(
         names.setdefault(key, set()).add(row.schema_name)
         error = _walk(
             name, row.schema_name, key, chosen, sr, fetched, referenced, provided_by, report,
-            uses, names)
+            uses, names, config.max_reference_depth)
         if error is not None:
             report(error)
 
@@ -159,6 +159,7 @@ def _walk(
     report: Callable[[str], None],
     uses: dict[str, dict[int, set[str | None]]],
     names: dict[str, set[str]],
+    max_depth: int,
 ) -> str | None:
     """Depth-first walk of one row's references, adding texts to `referenced` post-order.
 
@@ -166,7 +167,7 @@ def _walk(
     nested schema (D1) is passed to `report` and the walk goes on with the others.
     A schema is walked again only when reached at a deeper level than before, so the
     depth limit applies to the longest path and the walk ends even on cycles that do
-    not involve `name` (at most _MAX_DEPTH + 1 walks of each schema). Every edge is
+    not involve `name` (at most max_depth + 1 walks of each schema). Every edge is
     recorded in `uses` and `names` (D7), also when the target is not walked again.
     """
     if row_subject == name:
@@ -186,8 +187,8 @@ def _walk(
         if child.subject == name:
             return messages.REF_CYCLE.format(s=row_subject, name=name)
         child_depth = depth + 1
-        if child_depth > _MAX_DEPTH:
-            return messages.REF_TOO_DEEP.format(s=row_subject)
+        if child_depth > max_depth:
+            return messages.REF_TOO_DEEP.format(s=row_subject, max=max_depth)
         node = (child.subject, child.version)
         uses.setdefault(child.subject, {}).setdefault(child.version, set()).add(schema.subject)
         names.setdefault(child.name, set()).add(child.subject)

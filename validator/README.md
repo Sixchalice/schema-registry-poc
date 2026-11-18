@@ -53,19 +53,25 @@ result.message         # "" for Ok; otherwise the messages, one per line
 
 ## Configuration
 
-`ValidatorConfig` fields:
+`ValidatorConfig` is a pydantic settings class: it is frozen, rejects unknown fields, and each field can also be set by the environment variable `SCHEMA_VALIDATOR_` plus the field name in capitals (for example `SCHEMA_VALIDATOR_MAX_REFERENCE_DEPTH`). Constructor arguments win over variables. A bad value (zero, negative, NaN, a non-number) raises `pydantic.ValidationError` at construction, which is the platform's startup error, not a validation message. Fields:
 
-| Field | Default | Meaning |
+| Field (variable) | Default | Meaning |
 |---|---|---|
-| `sr_url` | `""` | Base URL of Schema Registry |
-| `sr_username` | `None` | Basic auth user; no authentication when `None` |
-| `sr_password` | `None` | Basic auth password; not shown in `repr` |
-| `sr_timeout_seconds` | `10` | Time limit of each HTTP call, counted from sending the request. It is checked after the headers arrive and after each piece of the body, so a stalled read can take up to one more per-read timeout (about 2 × `sr_timeout_seconds` at worst). Headers sent byte by byte are not interrupted by this limit, but `total_timeout_seconds` bounds them |
-| `total_timeout_seconds` | `30` | Time limit of the whole validation, all registry calls together. When it passes, the result is the E3 error and the unfinished work is dropped. Keep it above `sr_timeout_seconds` |
-| `max_schema_bytes` | `500_000` | Largest schema text accepted, in UTF-8 bytes |
-| `max_nesting_depth` | `64` | Deepest nesting of JSON objects and arrays in an Avro or JSON schema, the root counting as 1 |
-| `allowed_json_drafts` | draft-04, draft-06, draft-07, 2019-09, 2020-12 | Accepted `$schema` values, stored without a trailing `#` (`DEFAULT_JSON_DRAFTS` in `models.py`). This is platform policy: Schema Registry accepts any `$schema` value |
-| `builtin_proto_imports` | 29 paths (`DEFAULT_BUILTIN_PROTO_IMPORTS` in `models.py`) | Import paths that need no reference row: `google/protobuf/` `any`, `api`, `descriptor`, `duration`, `empty`, `field_mask`, `source_context`, `struct`, `timestamp`, `type`, `wrappers`; `google/type/` `calendar_period`, `color`, `date`, `datetime`, `dayofweek`, `decimal`, `expr`, `fraction`, `interval`, `latlng`, `money`, `month`, `phone_number`, `postal_address`, `quaternion`, `timeofday` (each `.proto`); `confluent/meta.proto`, `confluent/type/decimal.proto` |
+| `sr_url` (`SCHEMA_VALIDATOR_SR_URL`) | `""` | Base URL of Schema Registry |
+| `sr_username` (`SCHEMA_VALIDATOR_SR_USERNAME`) | `None` | Basic auth user; no authentication when `None` |
+| `sr_password` (`SCHEMA_VALIDATOR_SR_PASSWORD`) | `None` | Basic auth password; not shown in `repr` |
+| `sr_timeout_seconds` (`SCHEMA_VALIDATOR_SR_TIMEOUT_SECONDS`) | `10` | Time limit of each HTTP call, counted from sending the request. It is checked after the headers arrive and after each piece of the body, so a stalled read can take up to one more per-read timeout (about 2 × `sr_timeout_seconds` at worst). Headers sent byte by byte are not interrupted by this limit, but `total_timeout_seconds` bounds them |
+| `total_timeout_seconds` (`SCHEMA_VALIDATOR_TOTAL_TIMEOUT_SECONDS`) | `30` | Time limit of the whole validation, all registry calls together. When it passes, the result is the E3 error and the unfinished work is dropped. Keep it above `sr_timeout_seconds` |
+| `max_schema_bytes` (`SCHEMA_VALIDATOR_MAX_SCHEMA_BYTES`) | `500_000` | Largest schema text accepted, in UTF-8 bytes |
+| `max_nesting_depth` (`SCHEMA_VALIDATOR_MAX_NESTING_DEPTH`) | `64` | Deepest nesting of JSON objects and arrays in an Avro or JSON schema, the root counting as 1 |
+| `max_reference_depth` (`SCHEMA_VALIDATOR_MAX_REFERENCE_DEPTH`) | `20` | Deepest chain of references below a referenced row's own schema (level 0), at least 1 |
+| `max_response_bytes` (`SCHEMA_VALIDATOR_MAX_RESPONSE_BYTES`) | `5_000_000` | Largest Schema Registry response body accepted, at least 1 |
+| `protoc_timeout_seconds` (`SCHEMA_VALIDATOR_PROTOC_TIMEOUT_SECONDS`) | `10` | Time limit of one protoc run |
+| `python_executable` (`SCHEMA_VALIDATOR_PYTHON_EXECUTABLE`) | `sys.executable` | The Python interpreter that runs protoc (`python -m grpc_tools.protoc`) |
+| `allowed_json_drafts` (`SCHEMA_VALIDATOR_ALLOWED_JSON_DRAFTS`) | draft-04, draft-06, draft-07, 2019-09, 2020-12 | Accepted `$schema` values, stored without a trailing `#` (`DEFAULT_JSON_DRAFTS` in `models.py`). This is platform policy: Schema Registry accepts any `$schema` value |
+| `builtin_proto_imports` (`SCHEMA_VALIDATOR_BUILTIN_PROTO_IMPORTS`) | 29 paths (`DEFAULT_BUILTIN_PROTO_IMPORTS` in `models.py`) | Import paths that need no reference row: `google/protobuf/` `any`, `api`, `descriptor`, `duration`, `empty`, `field_mask`, `source_context`, `struct`, `timestamp`, `type`, `wrappers`; `google/type/` `calendar_period`, `color`, `date`, `datetime`, `dayofweek`, `decimal`, `expr`, `fraction`, `interval`, `latlng`, `money`, `month`, `phone_number`, `postal_address`, `quaternion`, `timeofday` (each `.proto`); `confluent/meta.proto`, `confluent/type/decimal.proto` |
+
+`python_executable` must be a real Python interpreter. Under uWSGI, `sys.executable` is the uWSGI binary, not Python, so set `python_executable` (or `SCHEMA_VALIDATOR_PYTHON_EXECUTABLE`) to the interpreter of the virtualenv; otherwise every Protobuf schema fails with `Internal validator error`.
 
 On a registry with ACLs (Confluent Security Plugin), the validator's user needs `SUBJECT_READ`, `SUBJECT_WRITE` and `SUBJECT_COMPATIBILITY_READ` on subject `*`. `SUBJECT_READ` also covers the lookup `POST /subjects/{subject}` that tells which version holds the schema (every edit). `SUBJECT_WRITE` is for the compatibility check: it stores nothing, but the registry asks for Write. `SUBJECT_COMPATIBILITY_READ` is also what the mode lookup (`GET /mode/{subject}`) needs, so there is no fourth operation. The same credentials can therefore register schemas, so protect them accordingly.
 
@@ -137,7 +143,7 @@ All errors are collected; a stage is skipped only when it depends on one that fa
 | B, JSON | In draft-04, -06 and -07, and with no `$schema` (which Schema Registry reads as draft-07), no `$ref` to a place in this schema is written with the schema's own `$id` (`id` in draft-04), as `https://acme.example/r8.json#/definitions/s` or `r8.json#/definitions/s` (Schema Registry rejects it; the bare `https://acme.example/r8.json` with no `#` is accepted). Under 2019-09 and 2020-12 Schema Registry accepts such a `$ref`, so its part after `#` gets the check of the next row instead | `A "$ref" to a place in this schema must start with "#", for example "#/definitions/Item". Schema Registry rejects one written with the schema's own "{kw}". Change it at {paths}.` |
 | B, JSON | Every `$ref` of the form `#/...` resolves in the schema, read as the registry reads it: split on `/` first, then each token has `+` as a space, is percent-decoded, and has `~1` as `/` and `~0` as `~`; empty tokens at the end are ignored; a list is entered by an index without a leading zero. A `$ref` inside `enum`, `const`, `default` or `examples` is data and is not checked, nor is an anchor such as `#foo`, nor a fragment with an odd percent escape (not pinned, so left to the registry) | `A "$ref" points to nothing in this schema. Check the part after "#" at {paths}.` |
 | B, Protobuf | Every reference's import path (derived, or read from Schema Registry) is not empty, is relative, has no `..` path segment, contains no backslash or NUL character, and can be written (it does not collide with `__main__.proto` or another reference's directory) | `Invalid import path '{x}'.` |
-| B, Protobuf | protoc compiles the schema with its references. The main file's name `__main__.proto` is shown as `your schema` | `Invalid Protobuf schema: {err}` / `Invalid Protobuf schema: the Protobuf compiler did not finish in 10 seconds.` |
+| B, Protobuf | protoc compiles the schema with its references. The main file's name `__main__.proto` is shown as `your schema` | `Invalid Protobuf schema: {err}` / `Invalid Protobuf schema: the Protobuf compiler did not finish in {seconds:g} seconds.` |
 | B, Protobuf | protoc reports more than 5 errors | `Invalid Protobuf schema: ` plus the first 5 errors, then `and {n} more` (the part after `Invalid Protobuf schema: ` is at most 1,000 characters) |
 | B, Protobuf | `package` is set | `Protobuf schema needs a package, for example "package com.team.domain;".` |
 | B, Protobuf | Exactly one top-level message | `A Protobuf schema must define exactly one top-level message (found {n}). Nest the others inside it or move them to their own Schema.` |
@@ -148,7 +154,7 @@ All errors are collected; a stage is skipped only when it depends on one that fa
 | D1 | Each referenced subject is registered | `Referenced schema '{s}' is not registered in Schema Registry yet.` |
 | D1 (version) | The row's version is registered | `'{s}' has no version {v} (the latest is {latest}).` |
 | D2 | Each referenced subject has the same format | `'{s}' is a schema in {their_type} format. A schema in {my_type} format can only reference schemas in {my_type} format.` |
-| D3 | Following references from each referenced subject never reaches `name`, within 20 levels | `Reference cycle: '{s}' already depends on '{name}'.` / `References of '{s}' are nested more than 20 levels deep.` |
+| D3 | Following references from each referenced subject never reaches `name`, within `max_reference_depth` levels (20 by default) | `Reference cycle: '{s}' already depends on '{name}'.` / `References of '{s}' are nested more than {max} levels deep.` |
 | D4 | Every external name the schema uses has a row | `Your schema uses '{x}' but no reference is selected for it.` |
 | D5 | Every row is used in the schema | `'{x}' is selected as a reference but is not used in the schema.` (Protobuf: `'{s}' is selected as a reference but the schema does not import it. Write the import as: import "{path}";`) |
 | D6 | JSON: every row has a non-empty `ref_string` | `Reference to '{s}' needs the text used in the schema (the $ref value).` |

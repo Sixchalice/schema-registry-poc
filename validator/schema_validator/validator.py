@@ -130,7 +130,7 @@ def _validate(request: ValidationRequest, sr: SchemaRegistryClient, config: Vali
     if check.references_ok:
         rows, d6 = normalise_rows(schema_type, request.references)
         try:
-            resolution = resolve(name, schema_type, rows, sr)
+            resolution = resolve(name, schema_type, rows, sr, config)
         except _SR_FAILURES as err:
             e.append(_sr_failure(err))
         d.extend(resolution.errors)

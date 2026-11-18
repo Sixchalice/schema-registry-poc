@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from schema_validator import (
     ReferenceInput,
@@ -1277,9 +1278,20 @@ def test_thread_start_failure_is_internal_error(sr: FakeSchemaRegistry, monkeypa
         False, "Error", messages.INTERNAL_ERROR.format(err="can't start new thread"))
 
 
-@pytest.mark.parametrize("bad", [float("nan"), "30"])
-def test_unusable_total_timeout_is_internal_error(bad: Any, sr: FakeSchemaRegistry) -> None:
-    result = validate(_edit_request(), sr, ValidatorConfig(total_timeout_seconds=bad))
+def test_nan_total_timeout_is_refused_at_construction() -> None:
+    with pytest.raises(ValidationError):
+        ValidatorConfig(total_timeout_seconds=float("nan"))
+
+
+def test_numeric_text_total_timeout_is_coerced(sr: FakeSchemaRegistry) -> None:
+    config = ValidatorConfig(total_timeout_seconds="30")  # type: ignore[arg-type]
+    assert config.total_timeout_seconds == 30.0
+    assert validate(_edit_request(), sr, config).validationType != "Error"
+
+
+def test_unusable_total_timeout_is_internal_error(sr: FakeSchemaRegistry) -> None:
+    config = ValidatorConfig.model_construct(total_timeout_seconds=float("nan"))
+    result = validate(_edit_request(), sr, config)
     assert result.validationType == "Error"
     assert result.message.startswith("Internal validator error: ")
 

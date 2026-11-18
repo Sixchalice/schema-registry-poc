@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from schema_validator.models import ReferenceInput
+from schema_validator import messages
+from schema_validator.models import ReferenceInput, ValidatorConfig
 from schema_validator.references import (
     Resolution,
     cross_check,
@@ -15,9 +16,10 @@ from schema_validator.sr_client import SchemaRegistryUnavailable, SrReference
 from tests.fake_sr import FakeSchemaRegistry
 
 MAIN = "a.Main"
+CFG = ValidatorConfig()
 B1 = '{"type": "record", "name": "B", "namespace": "a", "fields": []}'
 B2 = '{"type": "record", "name": "B", "namespace": "a", "fields": [], "doc": "v2"}'
-TOO_DEEP_S0 = "References of 'a.S0' are nested more than 20 levels deep."
+TOO_DEEP_S0 = messages.REF_TOO_DEEP.format(s="a.S0", max=20)
 
 
 @pytest.fixture
@@ -89,7 +91,7 @@ def test_normalise_json_missing_ref_string_agrees_with_stage_a(ref_string: str |
 def test_resolve_happy(sr: FakeSchemaRegistry) -> None:
     sr.add("a.B", B1)
     sr.add("a.B", B2)
-    result = resolve(MAIN, "AVRO", [row("a.B", "a.B", 2)], sr)
+    result = resolve(MAIN, "AVRO", [row("a.B", "a.B", 2)], sr, CFG)
     assert result == Resolution(
         resolved=[SrReference("a.B", "a.B", 2)], referenced={"a.B": B2}, errors=[],
         provided_by={"a.B": "a.B"}, latest={"a.B": 2},
@@ -97,14 +99,14 @@ def test_resolve_happy(sr: FakeSchemaRegistry) -> None:
 
 
 def test_not_registered(sr: FakeSchemaRegistry) -> None:
-    result = resolve(MAIN, "AVRO", [row("a.B", "a.B")], sr)
+    result = resolve(MAIN, "AVRO", [row("a.B", "a.B")], sr, CFG)
     assert result.errors == ["Referenced schema 'a.B' is not registered in Schema Registry yet."]
     assert result.resolved == []
 
 
 def test_wrong_format(sr: FakeSchemaRegistry) -> None:
     sr.add("a.B", "{}", "JSON")
-    result = resolve(MAIN, "AVRO", [row("a.B", "a.B")], sr)
+    result = resolve(MAIN, "AVRO", [row("a.B", "a.B")], sr, CFG)
     assert result.errors == [
         "'a.B' is a schema in JSON format. A schema in AVRO format can only reference schemas in AVRO format."
     ]
@@ -113,7 +115,7 @@ def test_wrong_format(sr: FakeSchemaRegistry) -> None:
 
 def test_wrong_format_row_is_not_walked(sr: FakeSchemaRegistry) -> None:
     sr.add("a.B", "{}", "JSON", [SrReference("c.json", "a.C", 1)])
-    result = resolve(MAIN, "AVRO", [row("a.B", "a.B")], sr)
+    result = resolve(MAIN, "AVRO", [row("a.B", "a.B")], sr, CFG)
     assert get_version_calls(sr) == []
     assert result.referenced == {}
 
@@ -121,7 +123,7 @@ def test_wrong_format_row_is_not_walked(sr: FakeSchemaRegistry) -> None:
 def test_transitive_order(sr: FakeSchemaRegistry) -> None:
     sr.add("a.C", "C")
     sr.add("a.B", "B", references=[SrReference("c.ref", "a.C", 1)])
-    result = resolve(MAIN, "AVRO", [row("a.B", "a.B")], sr)
+    result = resolve(MAIN, "AVRO", [row("a.B", "a.B")], sr, CFG)
     assert list(result.referenced) == ["c.ref", "a.B"]
     assert result.referenced == {"c.ref": "C", "a.B": "B"}
     assert result.errors == []
@@ -129,14 +131,14 @@ def test_transitive_order(sr: FakeSchemaRegistry) -> None:
 
 def test_direct_cycle(sr: FakeSchemaRegistry) -> None:
     sr.add("a.B", "B", references=[SrReference("a.Main", MAIN, 1)])
-    result = resolve(MAIN, "AVRO", [row("a.B", "a.B")], sr)
+    result = resolve(MAIN, "AVRO", [row("a.B", "a.B")], sr, CFG)
     assert result.errors == ["Reference cycle: 'a.B' already depends on 'a.Main'."]
 
 
 def test_transitive_cycle(sr: FakeSchemaRegistry) -> None:
     sr.add("a.C", "C", references=[SrReference("a.Main", MAIN, 1)])
     sr.add("a.B", "B", references=[SrReference("a.C", "a.C", 1)])
-    result = resolve(MAIN, "AVRO", [row("a.B", "a.B")], sr)
+    result = resolve(MAIN, "AVRO", [row("a.B", "a.B")], sr, CFG)
     assert result.errors == ["Reference cycle: 'a.B' already depends on 'a.Main'."]
 
 
@@ -145,13 +147,13 @@ def test_cycle_is_reported_once_per_row(sr: FakeSchemaRegistry) -> None:
     sr.add("a.B", "B", references=[
         SrReference("a.C", "a.C", 1), SrReference("a.Main", MAIN, 1),
     ])
-    result = resolve(MAIN, "AVRO", [row("a.B", "a.B")], sr)
+    result = resolve(MAIN, "AVRO", [row("a.B", "a.B")], sr, CFG)
     assert result.errors == ["Reference cycle: 'a.B' already depends on 'a.Main'."]
 
 
 def test_row_for_name_itself_is_a_cycle(sr: FakeSchemaRegistry) -> None:
     sr.add(MAIN, "M")
-    result = resolve(MAIN, "AVRO", [row(MAIN, MAIN)], sr)
+    result = resolve(MAIN, "AVRO", [row(MAIN, MAIN)], sr, CFG)
     assert result.errors == ["Reference cycle: 'a.Main' already depends on 'a.Main'."]
 
 
@@ -161,7 +163,7 @@ def test_shared_dependency_reaching_name_is_a_cycle_for_every_row(
     sr.add("a.D", "D", references=[SrReference("a.Main", MAIN, 1)])
     sr.add("a.B", "B", references=[SrReference("a.D", "a.D", 1)])
     sr.add("a.C", "C", references=[SrReference("a.D", "a.D", 1)])
-    result = resolve(MAIN, "AVRO", [row("a.B", "a.B"), row("a.C", "a.C")], sr)
+    result = resolve(MAIN, "AVRO", [row("a.B", "a.B"), row("a.C", "a.C")], sr, CFG)
     assert result.errors == [
         "Reference cycle: 'a.B' already depends on 'a.Main'.",
         "Reference cycle: 'a.C' already depends on 'a.Main'.",
@@ -173,7 +175,7 @@ def test_diamond_is_not_a_cycle(sr: FakeSchemaRegistry) -> None:
     sr.add("a.D", "D")
     sr.add("a.B", "B", references=[SrReference("a.D", "a.D", 1)])
     sr.add("a.C", "C", references=[SrReference("a.D", "a.D", 1)])
-    result = resolve(MAIN, "AVRO", [row("a.B", "a.B"), row("a.C", "a.C")], sr)
+    result = resolve(MAIN, "AVRO", [row("a.B", "a.B"), row("a.C", "a.C")], sr, CFG)
     assert result.errors == []
     assert sr.calls.count(("get_version", "a.D", 1)) == 1
     assert list(result.referenced.values()).count("D") == 1
@@ -185,7 +187,7 @@ def test_diamond_within_one_row_keeps_dependencies_first(sr: FakeSchemaRegistry)
     sr.add("a.C", "C", references=[SrReference("a.E", "a.E", 1)])
     sr.add("a.D", "D", references=[SrReference("a.E", "a.E", 1)])
     sr.add("a.B", "B", references=[SrReference("a.C", "a.C", 1), SrReference("a.D", "a.D", 1)])
-    result = resolve(MAIN, "AVRO", [row("a.B", "a.B")], sr)
+    result = resolve(MAIN, "AVRO", [row("a.B", "a.B")], sr, CFG)
     assert result.errors == []
     assert list(result.referenced) == ["a.E", "a.C", "a.D", "a.B"]
     assert sr.calls.count(("get_version", "a.E", 1)) == 1
@@ -193,13 +195,13 @@ def test_diamond_within_one_row_keeps_dependencies_first(sr: FakeSchemaRegistry)
 
 def test_too_deep(sr: FakeSchemaRegistry) -> None:
     add_chain(sr, 22)
-    result = resolve(MAIN, "AVRO", [row("a.S0", "a.S0")], sr)
+    result = resolve(MAIN, "AVRO", [row("a.S0", "a.S0")], sr, CFG)
     assert result.errors == [TOO_DEEP_S0]
 
 
 def test_twenty_levels_is_allowed(sr: FakeSchemaRegistry) -> None:
     add_chain(sr, 21)  # a.S20 is 20 levels below a.S0
-    result = resolve(MAIN, "AVRO", [row("a.S0", "a.S0")], sr)
+    result = resolve(MAIN, "AVRO", [row("a.S0", "a.S0")], sr, CFG)
     assert result.errors == []
     assert list(result.referenced) == [f"a.S{i}" for i in reversed(range(21))]
 
@@ -213,7 +215,7 @@ def test_depth_counts_the_longest_path(sr: FakeSchemaRegistry) -> None:
         nxt = SrReference(f"a.S{i + 1}", f"a.S{i + 1}", 1) if i < 19 else SrReference("a.X", "a.X", 1)
         sr.add(f"a.S{i}", f"S{i}", references=[nxt])
     sr.add("a.S0", "S0", references=[SrReference("a.X", "a.X", 1), SrReference("a.S1", "a.S1", 1)])
-    result = resolve(MAIN, "AVRO", [row("a.S0", "a.S0")], sr)
+    result = resolve(MAIN, "AVRO", [row("a.S0", "a.S0")], sr, CFG)
     assert result.errors == [TOO_DEEP_S0]
     assert sr.calls.count(("get_version", "a.X", 1)) == 1
 
@@ -222,21 +224,21 @@ def test_cycle_not_involving_name_terminates(sr: FakeSchemaRegistry) -> None:
     # Cannot happen in a real registry; the registry's data is not trusted.
     sr.add("a.S0", "S0", references=[SrReference("a.B", "a.B", 1)])
     sr.add("a.B", "B", references=[SrReference("a.S0", "a.S0", 1)])
-    result = resolve(MAIN, "AVRO", [row("a.S0", "a.S0")], sr)
+    result = resolve(MAIN, "AVRO", [row("a.S0", "a.S0")], sr, CFG)
     assert result.errors == [TOO_DEEP_S0]
     assert get_version_calls(sr) == [("get_version", "a.B", 1)]
 
 
 def test_schema_referencing_itself_terminates(sr: FakeSchemaRegistry) -> None:
     sr.add("a.S0", "S0", references=[SrReference("a.S0", "a.S0", 1)])
-    result = resolve(MAIN, "AVRO", [row("a.S0", "a.S0")], sr)
+    result = resolve(MAIN, "AVRO", [row("a.S0", "a.S0")], sr, CFG)
     assert result.errors == [TOO_DEEP_S0]
     assert get_version_calls(sr) == []
 
 
 def test_nested_not_registered(sr: FakeSchemaRegistry) -> None:
     sr.add("a.B", "B", references=[SrReference("a.C", "a.C", 5)])
-    result = resolve(MAIN, "AVRO", [row("a.B", "a.B")], sr)
+    result = resolve(MAIN, "AVRO", [row("a.B", "a.B")], sr, CFG)
     assert result.errors == ["Referenced schema 'a.C' is not registered in Schema Registry yet."]
     assert result.resolved == [SrReference("a.B", "a.B", 1)]
 
@@ -244,7 +246,7 @@ def test_nested_not_registered(sr: FakeSchemaRegistry) -> None:
 def test_same_missing_dependency_is_reported_once(sr: FakeSchemaRegistry) -> None:
     sr.add("a.B", "B", references=[SrReference("a.C", "a.C", 1)])
     sr.add("a.D", "D", references=[SrReference("a.C", "a.C", 1)])
-    result = resolve(MAIN, "AVRO", [row("a.B", "a.B"), row("a.D", "a.D")], sr)
+    result = resolve(MAIN, "AVRO", [row("a.B", "a.B"), row("a.D", "a.D")], sr, CFG)
     assert result.errors == ["Referenced schema 'a.C' is not registered in Schema Registry yet."]
 
 
@@ -255,7 +257,7 @@ def test_same_reference_name_for_different_schemas_keeps_the_first(
     sr.add("a.E", "E")
     sr.add("a.B", "B", references=[SrReference("shared", "a.C", 1)])
     sr.add("a.D", "D", references=[SrReference("shared", "a.E", 1)])
-    result = resolve(MAIN, "AVRO", [row("a.B", "a.B"), row("a.D", "a.D")], sr)
+    result = resolve(MAIN, "AVRO", [row("a.B", "a.B"), row("a.D", "a.D")], sr, CFG)
     assert result.referenced == {"shared": "C", "a.B": "B", "a.D": "D"}
     assert result.errors == [
         "The reference name 'shared' is used for more than one Schema: 'a.C', 'a.E'. "
@@ -267,7 +269,7 @@ def test_sr_failure_propagates(sr: FakeSchemaRegistry) -> None:
     sr.add("a.B", "B")
     sr.fail_with = SchemaRegistryUnavailable("x")
     with pytest.raises(SchemaRegistryUnavailable):
-        resolve(MAIN, "AVRO", [row("a.B", "a.B")], sr)
+        resolve(MAIN, "AVRO", [row("a.B", "a.B")], sr, CFG)
 
 
 # cross_check (D4, D5)
@@ -330,7 +332,7 @@ def _money_setup(sr: FakeSchemaRegistry) -> None:
 def test_version_conflict_direct_and_transitive(sr: FakeSchemaRegistry) -> None:
     _money_setup(sr)
     sr.add("a.Line", "Line", references=[SrReference("a.Money", "a.Money", 1)])
-    result = resolve(MAIN, "AVRO", [row("a.Line", "a.Line"), row("a.Money", "a.Money", 2)], sr)
+    result = resolve(MAIN, "AVRO", [row("a.Line", "a.Line"), row("a.Money", "a.Money", 2)], sr, CFG)
     assert result.errors == [
         "'a.Money' is used at more than one version: v1 through 'a.Line', v2 directly. "
         "A schema can use only one version of it. Select the same version for 'a.Money' as the "
@@ -343,7 +345,7 @@ def test_conflict_between_two_transitive_paths(sr: FakeSchemaRegistry) -> None:
     _money_setup(sr)
     sr.add("a.B", "B", references=[SrReference("a.Money", "a.Money", 1)])
     sr.add("a.C", "C", references=[SrReference("a.Money", "a.Money", 2)])
-    result = resolve(MAIN, "AVRO", [row("a.B", "a.B"), row("a.C", "a.C")], sr)
+    result = resolve(MAIN, "AVRO", [row("a.B", "a.B"), row("a.C", "a.C")], sr, CFG)
     assert result.errors == [
         "'a.Money' is used at more than one version: v1 through 'a.B', v2 through 'a.C'. "
         "A schema can use only one version of it. Update the Schemas that use an older version "
@@ -355,7 +357,7 @@ def test_diamond_same_version_is_not_a_conflict(sr: FakeSchemaRegistry) -> None:
     sr.add("a.Money", "Money1")
     sr.add("a.B", "B", references=[SrReference("a.Money", "a.Money", 1)])
     sr.add("a.C", "C", references=[SrReference("a.Money", "a.Money", 1)])
-    result = resolve(MAIN, "AVRO", [row("a.B", "a.B"), row("a.C", "a.C")], sr)
+    result = resolve(MAIN, "AVRO", [row("a.B", "a.B"), row("a.C", "a.C")], sr, CFG)
     assert result.errors == []
 
 
@@ -366,7 +368,7 @@ def test_same_version_directly_and_through_another_parent(sr: FakeSchemaRegistry
     sr.add("a.D", "D", references=[SrReference("a.Money", "a.Money", 2)])
     result = resolve(
         MAIN, "AVRO",
-        [row("a.B", "a.B"), row("a.C", "a.C"), row("a.D", "a.D"), row("a.Money", "a.Money", 2)], sr)
+        [row("a.B", "a.B"), row("a.C", "a.C"), row("a.D", "a.D"), row("a.Money", "a.Money", 2)], sr, CFG)
     assert result.errors == [
         "'a.Money' is used at more than one version: v1 through 'a.B', "
         "v2 directly and through 'a.C' and 'a.D'. "
@@ -380,7 +382,7 @@ def test_name_conflict(sr: FakeSchemaRegistry) -> None:
     sr.add("a.Other", "Other", schema_type="JSON")
     sr.add("a.Address", "Address", schema_type="JSON",
            references=[SrReference("address.json", "a.Other", 1)])
-    result = resolve(MAIN, "JSON", [row("a.Address", "address.json")], sr)
+    result = resolve(MAIN, "JSON", [row("a.Address", "address.json")], sr, CFG)
     assert result.errors == [
         "The reference name 'address.json' is used for more than one Schema: "
         "'a.Address', 'a.Other'. Each Schema needs its own reference name."
@@ -395,7 +397,7 @@ def test_conflict_recorded_on_a_skipped_revisit(sr: FakeSchemaRegistry) -> None:
     sr.add("a.Top", "Top", references=[SrReference("a.Mid", "a.Mid", 1),
                                        SrReference("a.Money", "a.Money", 1)])
     sr.add("a.Other", "Other", references=[SrReference("a.Money", "a.Money", 2)])
-    result = resolve(MAIN, "AVRO", [row("a.Top", "a.Top"), row("a.Other", "a.Other")], sr)
+    result = resolve(MAIN, "AVRO", [row("a.Top", "a.Top"), row("a.Other", "a.Other")], sr, CFG)
     assert len(result.errors) == 1
     assert "v1 through 'a.Mid' and 'a.Top', v2 through 'a.Other'" in result.errors[0]
 
@@ -405,7 +407,7 @@ def test_conflict_recorded_on_a_skipped_revisit(sr: FakeSchemaRegistry) -> None:
 def test_pinned_older_version_is_used(sr: FakeSchemaRegistry) -> None:
     sr.add("a.Money", "Money1")
     sr.add("a.Money", "Money2")
-    result = resolve(MAIN, "AVRO", [row("a.Money", "a.Money", 1)], sr)
+    result = resolve(MAIN, "AVRO", [row("a.Money", "a.Money", 1)], sr, CFG)
     assert result.resolved == [SrReference("a.Money", "a.Money", 1)]
     assert result.referenced == {"a.Money": "Money1"}
     assert result.latest == {"a.Money": 2}
@@ -415,14 +417,14 @@ def test_pinned_older_version_is_used(sr: FakeSchemaRegistry) -> None:
 def test_row_at_latest_fetches_only_latest(sr: FakeSchemaRegistry) -> None:
     sr.add("a.Money", "Money1")
     sr.add("a.Money", "Money2")
-    resolve(MAIN, "AVRO", [row("a.Money", "a.Money", 2)], sr)
+    resolve(MAIN, "AVRO", [row("a.Money", "a.Money", 2)], sr, CFG)
     assert sr.calls == [("get_latest", "a.Money")]
 
 
 def test_version_above_latest_is_not_found(sr: FakeSchemaRegistry) -> None:
     for text in ("M1", "M2", "M3"):
         sr.add("a.Money", text)
-    result = resolve(MAIN, "AVRO", [row("a.Money", "a.Money", 7)], sr)
+    result = resolve(MAIN, "AVRO", [row("a.Money", "a.Money", 7)], sr, CFG)
     assert result.errors == ["'a.Money' has no version 7 (the latest is 3)."]
     assert result.resolved == []
 
@@ -432,7 +434,7 @@ def test_walk_follows_the_pinned_versions_references(sr: FakeSchemaRegistry) -> 
     sr.add("a.Money", "Money2")
     sr.add("a.Line", "Line1", references=[SrReference("a.Money", "a.Money", 1)])
     sr.add("a.Line", "Line2", references=[SrReference("a.Money", "a.Money", 2)])
-    result = resolve(MAIN, "AVRO", [row("a.Line", "a.Line", 1)], sr)
+    result = resolve(MAIN, "AVRO", [row("a.Line", "a.Line", 1)], sr, CFG)
     assert result.errors == []
     assert result.referenced == {"a.Money": "Money1", "a.Line": "Line1"}
 
@@ -460,7 +462,7 @@ def test_version_conflict_without_own_row_says_update_them(sr: FakeSchemaRegistr
     _money_setup(sr)
     sr.add("a.B", "B", references=[SrReference("a.Money", "a.Money", 1)])
     sr.add("a.C", "C", references=[SrReference("a.Money", "a.Money", 2)])
-    result = resolve(MAIN, "AVRO", [row("a.B", "a.B"), row("a.C", "a.C")], sr)
+    result = resolve(MAIN, "AVRO", [row("a.B", "a.B"), row("a.C", "a.C")], sr, CFG)
     assert result.errors == [
         "'a.Money' is used at more than one version: v1 through 'a.B', v2 through 'a.C'. "
         "A schema can use only one version of it. Update the Schemas that use an older version "
@@ -471,7 +473,7 @@ def test_version_conflict_without_own_row_says_update_them(sr: FakeSchemaRegistr
 def test_version_conflict_with_own_row_suggests_selecting(sr: FakeSchemaRegistry) -> None:
     _money_setup(sr)
     sr.add("a.Line", "Line", references=[SrReference("a.Money", "a.Money", 1)])
-    result = resolve(MAIN, "AVRO", [row("a.Line", "a.Line", 1), row("a.Money", "a.Money", 2)], sr)
+    result = resolve(MAIN, "AVRO", [row("a.Line", "a.Line", 1), row("a.Money", "a.Money", 2)], sr, CFG)
     assert result.errors == [
         "'a.Money' is used at more than one version: v1 through 'a.Line', v2 directly. "
         "A schema can use only one version of it. Select the same version for 'a.Money' as the "
@@ -483,7 +485,7 @@ def test_version_conflict_with_own_row_suggests_selecting(sr: FakeSchemaRegistry
 def test_version_conflict_with_an_older_own_row_suggests_the_newer_version(sr: FakeSchemaRegistry) -> None:
     _money_setup(sr)
     sr.add("a.Line", "Line", references=[SrReference("a.Money", "a.Money", 2)])
-    result = resolve(MAIN, "AVRO", [row("a.Line", "a.Line", 1), row("a.Money", "a.Money", 1)], sr)
+    result = resolve(MAIN, "AVRO", [row("a.Line", "a.Line", 1), row("a.Money", "a.Money", 1)], sr, CFG)
     assert result.errors == [
         "'a.Money' is used at more than one version: v1 directly, v2 through 'a.Line'. "
         "A schema can use only one version of it. Select v2 for 'a.Money', the version the "
@@ -496,9 +498,9 @@ def test_wrong_format_checks_the_pinned_version(sr: FakeSchemaRegistry) -> None:
     # to v2 is not.
     sr.add("a.B", B1)
     sr.add("a.B", "{}", "JSON")
-    ok = resolve(MAIN, "AVRO", [row("a.B", "a.B", 1)], sr)
+    ok = resolve(MAIN, "AVRO", [row("a.B", "a.B", 1)], sr, CFG)
     assert ok.errors == [] and ok.resolved == [SrReference("a.B", "a.B", 1)]
-    bad = resolve(MAIN, "AVRO", [row("a.B", "a.B", 2)], sr)
+    bad = resolve(MAIN, "AVRO", [row("a.B", "a.B", 2)], sr, CFG)
     assert bad.errors == ["'a.B' is a schema in JSON format. A schema in AVRO format can only reference schemas in AVRO format."]
     assert bad.resolved == []
 
@@ -506,11 +508,19 @@ def test_wrong_format_checks_the_pinned_version(sr: FakeSchemaRegistry) -> None:
 def test_wrong_format_of_an_older_pinned_version(sr: FakeSchemaRegistry) -> None:
     sr.add("a.B", "{}", "JSON")
     sr.add("a.B", B1)
-    bad = resolve(MAIN, "AVRO", [row("a.B", "a.B", 1)], sr)
+    bad = resolve(MAIN, "AVRO", [row("a.B", "a.B", 1)], sr, CFG)
     assert bad.errors == ["'a.B' is a schema in JSON format. A schema in AVRO format can only reference schemas in AVRO format."]
 
 
 def test_resolve_row_without_a_version_fails_closed(sr: FakeSchemaRegistry) -> None:
     sr.add("a.B", B1)
     with pytest.raises(ValueError, match="reference row without a version"):
-        resolve(MAIN, "AVRO", [ReferenceInput("a.B", "a.B", None)], sr)
+        resolve(MAIN, "AVRO", [ReferenceInput("a.B", "a.B", None)], sr, CFG)
+
+
+def test_reference_depth_is_configurable(sr: FakeSchemaRegistry) -> None:
+    add_chain(sr, 5)  # a.S4 is 4 levels below a.S0
+    shallow = resolve(MAIN, "AVRO", [row("a.S0", "a.S0")], sr, ValidatorConfig(max_reference_depth=3))
+    assert shallow.errors == [messages.REF_TOO_DEEP.format(s="a.S0", max=3)]
+    deep = resolve(MAIN, "AVRO", [row("a.S0", "a.S0")], sr, ValidatorConfig(max_reference_depth=4))
+    assert deep.errors == []

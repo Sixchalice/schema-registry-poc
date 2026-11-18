@@ -1,7 +1,11 @@
 """Shared data models for the schema validator."""
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SCHEMA_TYPES = ("AVRO", "JSON", "PROTOBUF")
 COMPATIBILITY_LEVELS = (
@@ -64,15 +68,24 @@ class ValidationResult:
     message: str
 
 
-@dataclass(frozen=True)
-class ValidatorConfig:
+class ValidatorConfig(BaseSettings):
+    """Every configurable value. Constructor arguments win over `SCHEMA_VALIDATOR_<FIELD>` variables."""
+
+    model_config = SettingsConfigDict(env_prefix="SCHEMA_VALIDATOR_", frozen=True, extra="forbid")
+
     sr_url: str = ""
     sr_username: str | None = None
-    sr_password: str | None = field(default=None, repr=False)
-    sr_timeout_seconds: float = 10
-    total_timeout_seconds: float = 30
-    max_schema_bytes: int = 500_000
-    max_nesting_depth: int = 64
+    sr_password: str | None = Field(None, repr=False)
+    sr_timeout_seconds: float = Field(10, gt=0, allow_inf_nan=False)
+    total_timeout_seconds: float = Field(30, gt=0, allow_inf_nan=False)
+    max_schema_bytes: int = Field(500_000, ge=1)
+    max_nesting_depth: int = Field(64, ge=1)
+    # Levels below a referenced row's own schema (which is level 0).
+    max_reference_depth: int = Field(20, ge=1)
+    max_response_bytes: int = Field(5_000_000, ge=1)
+    protoc_timeout_seconds: float = Field(10, gt=0, allow_inf_nan=False)
+    # Must be a real Python interpreter; sys.executable is not one under uWSGI.
+    python_executable: str = Field(default_factory=lambda: sys.executable)
     allowed_json_drafts: tuple[str, ...] = DEFAULT_JSON_DRAFTS
     builtin_proto_imports: frozenset[str] = DEFAULT_BUILTIN_PROTO_IMPORTS
 

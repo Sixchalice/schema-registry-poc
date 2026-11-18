@@ -18,6 +18,14 @@ dependencies = [
     "protobuf==7.36.2",
     "requests==2.34.2",
     "urllib3==2.8.0",
+    # The settings class (ValidatorConfig) and what it pulls in.
+    "pydantic==2.14.2",
+    "pydantic-settings==2.16.2",
+    "pydantic-core==2.50.2",
+    "annotated-types==0.8.0",
+    "python-dotenv==1.2.4",
+    "typing-inspection==0.4.5",
+    "typing-extensions==4.16.0",
 ]
 
 [tool.setuptools.packages.find]

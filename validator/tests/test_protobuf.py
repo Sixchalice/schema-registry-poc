@@ -9,13 +9,14 @@ from typing import Any
 
 import pytest
 
+from schema_validator import messages
 from schema_validator._text import shorten
 from schema_validator.formats.protobuf import _clean_stderr, _imports, analyse
 from schema_validator.models import DEFAULT_BUILTIN_PROTO_IMPORTS, FormatAnalysis, ValidatorConfig
 
 P = 'syntax = "proto3";\npackage com.acme;\n'
 NO_PACKAGE = ['Protobuf schema needs a package, for example "package com.team.domain;".']
-TIMEOUT = ["Invalid Protobuf schema: the Protobuf compiler did not finish in 10 seconds."]
+TIMEOUT = [messages.PROTO_TIMEOUT.format(seconds=10)]
 ADDRESS = P + "message Address { string street = 1; }"
 
 
@@ -441,3 +442,22 @@ def test_main_file_name_is_your_schema() -> None:
         'Invalid Protobuf schema: 4:13: "aud.p.Geo" seems to be defined in "aud/p/Geo.proto", '
         "which is not imported by your schema.  To use it here, please add the necessary import."
     ]
+
+
+def test_python_executable_is_configurable() -> None:
+    config = ValidatorConfig(python_executable="/nonexistent/python")
+    result = analyse(P + "message M { string a = 1; }", {}, config)
+    assert result.external_refs is None
+    assert len(result.errors) == 1
+    assert result.errors[0].startswith("Internal validator error: ")
+
+
+def test_protoc_timeout_is_configurable(monkeypatch: pytest.MonkeyPatch) -> None:
+    def slow(*args: Any, **kwargs: Any) -> None:
+        assert kwargs["timeout"] == 2.5
+        raise subprocess.TimeoutExpired(args[0], 2.5)
+
+    monkeypatch.setattr(subprocess, "run", slow)
+    result = analyse(P + "message M { string a = 1; }", {}, ValidatorConfig(protoc_timeout_seconds=2.5))
+    assert result.errors == [messages.PROTO_TIMEOUT.format(seconds=2.5)]
+    assert result.errors[0].endswith("did not finish in 2.5 seconds.")

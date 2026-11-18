@@ -5,7 +5,6 @@ import importlib.resources
 import os
 import re
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
@@ -18,7 +17,6 @@ from schema_validator.models import FormatAnalysis, ValidatorConfig
 
 _MAIN = "__main__.proto"
 _DESCRIPTOR_SET = "out.pb"
-_PROTOC_TIMEOUT_SECONDS = 10
 _PROTOC_ERRORS_SHOWN = 5
 _PROTOC_MESSAGE_LIMIT = 1000
 
@@ -68,7 +66,7 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
 
         # Step 4
         command = [
-            sys.executable, "-m", "grpc_tools.protoc",
+            config.python_executable, "-m", "grpc_tools.protoc",
             "-I", tmp,
             "-I", str(importlib.resources.files("grpc_tools") / "_proto"),
             "-I", str(importlib.resources.files("schema_validator") / "_proto"),
@@ -80,10 +78,10 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
             # cwd=tmp: protoc must not pick up a __main__.proto from the caller's directory.
             completed = subprocess.run(
                 command, cwd=tmp, capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=_PROTOC_TIMEOUT_SECONDS, check=False,
+                errors="replace", timeout=config.protoc_timeout_seconds, check=False,
             )
         except subprocess.TimeoutExpired:
-            return FormatAnalysis(None, None, [messages.PROTO_TIMEOUT])
+            return FormatAnalysis(None, None, [messages.PROTO_TIMEOUT.format(seconds=config.protoc_timeout_seconds)])
         except OSError as e:
             return FormatAnalysis(None, None, [messages.INTERNAL_ERROR.format(err=e)])
 

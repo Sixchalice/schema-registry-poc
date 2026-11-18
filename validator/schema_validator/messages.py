@@ -174,6 +174,6 @@ REF_NAME_CONFLICT = (
     "The reference name '{x}' is used for more than one Schema: {subjects}. "
     "Each Schema needs its own reference name."
 )
-REF_TOO_DEEP = "References of '{s}' are nested more than 20 levels deep."
-PROTO_TIMEOUT = "Invalid Protobuf schema: the Protobuf compiler did not finish in 10 seconds."
+REF_TOO_DEEP = "References of '{s}' are nested more than {max} levels deep."
+PROTO_TIMEOUT = "Invalid Protobuf schema: the Protobuf compiler did not finish in {seconds:g} seconds."
 INTERNAL_ERROR = "Internal validator error: {err}"

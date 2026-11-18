@@ -45,7 +45,7 @@ def test_empty_schema() -> None:
 
 
 def test_schema_too_large() -> None:
-    result = check_input(req(schema="é" * 6), replace(CONFIG, max_schema_bytes=10))
+    result = check_input(req(schema="é" * 6), CONFIG.model_copy(update={"max_schema_bytes": 10}))
     assert result.errors == ["Schema is too large (12 bytes, limit 10)."]
     assert result.fatal is True
 
