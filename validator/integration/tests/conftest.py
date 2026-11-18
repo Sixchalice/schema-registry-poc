@@ -70,6 +70,14 @@ def _register(subject: str, schema: str, schema_type: str = "AVRO",
     return sr_call("POST", f"/subjects/{quote(subject)}/versions", body)
 
 
+@pytest.fixture(autouse=True)
+def _clean_validator_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No SCHEMA_VALIDATOR_* variable from the shell reaches ValidatorConfig (or a subprocess)."""
+    for name in list(os.environ):
+        if name.startswith("SCHEMA_VALIDATOR_"):
+            monkeypatch.delenv(name)
+
+
 @pytest.fixture
 def ns() -> str:
     """A namespace no earlier run has used, so subjects never collide."""

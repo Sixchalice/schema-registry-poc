@@ -14,10 +14,7 @@ from schema_validator.models import (
 )
 
 
-@pytest.fixture(autouse=True)
-def _clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in list(ValidatorConfig.model_fields):
-        monkeypatch.delenv(f"SCHEMA_VALIDATOR_{name.upper()}", raising=False)
+# tests/conftest.py removes every SCHEMA_VALIDATOR_* variable before each test.
 
 
 def test_defaults_unchanged() -> None:
