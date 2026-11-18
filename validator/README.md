@@ -57,15 +57,15 @@ result.message         # "" for Ok; otherwise the messages, one per line
 
 | Field (variable) | Default | Meaning |
 |---|---|---|
-| `sr_url` (`SCHEMA_VALIDATOR_SR_URL`) | `""` | Base URL of Schema Registry |
+| `sr_url` (`SCHEMA_VALIDATOR_SR_URL`) | `""` | Base URL of Schema Registry: `http://` or `https://` with a host. Anything else (the empty default included) makes building the client raise `SchemaRegistryConfigError` |
 | `sr_username` (`SCHEMA_VALIDATOR_SR_USERNAME`) | `None` | Basic auth user; no authentication when `None` |
 | `sr_password` (`SCHEMA_VALIDATOR_SR_PASSWORD`) | `None` | Basic auth password; not shown in `repr` |
-| `sr_timeout_seconds` (`SCHEMA_VALIDATOR_SR_TIMEOUT_SECONDS`) | `10` | Time limit of each HTTP call, counted from sending the request. It is checked after the headers arrive and after each piece of the body, so a stalled read can take up to one more per-read timeout (about 2 × `sr_timeout_seconds` at worst). Headers sent byte by byte are not interrupted by this limit, but `total_timeout_seconds` bounds them |
+| `sr_timeout_seconds` (`SCHEMA_VALIDATOR_SR_TIMEOUT_SECONDS`) | `10` | Time limit of each HTTP call as a whole, headers included, counted from sending the request: when it passes, the client shuts the call's socket down and the call is E3, so a registry that sends its headers or body a byte at a time cannot hold a call longer. Three cases are not cut this way: a `session` passed to the constructor, a call through a proxy (`HTTP_PROXY` and the like), and the body of a response sent without a length (Schema Registry always sends one). There the limit is checked after the headers arrive and after each piece of the body, so a stalled read can take up to one more per-read timeout (about 2 × `sr_timeout_seconds` at worst), and `total_timeout_seconds` bounds the validation |
 | `total_timeout_seconds` (`SCHEMA_VALIDATOR_TOTAL_TIMEOUT_SECONDS`) | `30` | Time limit of the whole validation, all registry calls together. When it passes, the result is the E3 error and the unfinished work is dropped. Keep it above `sr_timeout_seconds` |
 | `max_schema_bytes` (`SCHEMA_VALIDATOR_MAX_SCHEMA_BYTES`) | `500_000` | Largest schema text accepted, in UTF-8 bytes |
 | `max_nesting_depth` (`SCHEMA_VALIDATOR_MAX_NESTING_DEPTH`) | `64` | Deepest nesting of JSON objects and arrays in an Avro or JSON schema, the root counting as 1 |
 | `max_reference_depth` (`SCHEMA_VALIDATOR_MAX_REFERENCE_DEPTH`) | `20` | Deepest chain of references below a referenced row's own schema (level 0), at least 1 |
-| `max_response_bytes` (`SCHEMA_VALIDATOR_MAX_RESPONSE_BYTES`) | `5_000_000` | Largest Schema Registry response body accepted, at least 1 |
+| `max_response_bytes` (`SCHEMA_VALIDATOR_MAX_RESPONSE_BYTES`) | `5_000_000` | Largest Schema Registry response body accepted, in bytes after decompression, at least 1. A larger body is E3; the client stops reading as soon as it passes the limit, so neither an endless body nor a gzip bomb is held in memory. The default holds a version body with a 900,000-character schema with room to spare |
 | `protoc_timeout_seconds` (`SCHEMA_VALIDATOR_PROTOC_TIMEOUT_SECONDS`) | `10` | Time limit of one protoc run |
 | `python_executable` (`SCHEMA_VALIDATOR_PYTHON_EXECUTABLE`) | `sys.executable` | The Python interpreter that runs protoc (`python -m grpc_tools.protoc`) |
 | `allowed_json_drafts` (`SCHEMA_VALIDATOR_ALLOWED_JSON_DRAFTS`) | draft-04, draft-06, draft-07, 2019-09, 2020-12 | Accepted `$schema` values, stored without a trailing `#` (`DEFAULT_JSON_DRAFTS` in `models.py`). This is platform policy: Schema Registry accepts any `$schema` value |
@@ -79,7 +79,16 @@ On a registry with ACLs (Confluent Security Plugin), the validator's user needs 
 sr-acl-cli --config <sr.properties> --add -s '*' -p schema-validator -o SUBJECT_READ -o SUBJECT_WRITE -o SUBJECT_COMPATIBILITY_READ
 ```
 
-The `HttpSchemaRegistryClient` takes its URL, credentials and timeout from the config through `from_config`, or directly: `HttpSchemaRegistryClient(url, username=None, password=None, timeout_seconds=10)`. The username and password must be Latin-1 text (the encoding of HTTP Basic auth in `requests`); otherwise the constructor (and so `from_config`) raises `SchemaRegistryConfigError`, a `ValueError` with the text `Schema Registry username and password must be Latin-1 text`. This is a startup error for the platform, not a validation message, so the validator never sees a call fail for it.
+The `HttpSchemaRegistryClient` takes its URL, credentials, timeout and response limit from the config through `from_config`, or directly: `HttpSchemaRegistryClient(url, username=None, password=None, timeout_seconds=10, session=None, max_response_bytes=5_000_000)`. The constructor (and so `from_config`) raises `SchemaRegistryConfigError`, a `ValueError`, for a value no call could work with:
+
+| Value | Text |
+|---|---|
+| `url` is not `http://` or `https://` with a host | `Schema Registry URL must be http:// or https:// with a host` |
+| `timeout_seconds` is not a finite number above 0 | `Schema Registry timeout must be a number of seconds above 0` |
+| `max_response_bytes` is not a whole number of at least 1 | `Schema Registry response limit must be a whole number of bytes, at least 1` |
+| The username or password is not Latin-1 text (the encoding of HTTP Basic auth in `requests`) | `Schema Registry username and password must be Latin-1 text` |
+
+These are startup errors for the platform, not validation messages, so the validator never sees a call fail for them. Leave `session` out: the client's own session is what cuts a call at `timeout_seconds`, and a session passed in gets no such watchdog.
 
 ## The request
 
@@ -162,7 +171,7 @@ All errors are collected; a stage is skipped only when it depends on one that fa
 | D7 | One version per subject and one Schema per reference name, across the whole graph (the rows and everything they reference) | `'{s}' is used at more than one version: {uses}. A schema can use only one version of it. Update the Schemas that use an older version to v{latest}: select v{latest} for '{s}' in their references and save them. Then save this schema.` (when one of the versions is this schema's own row and it is the highest: `'{s}' is used at more than one version: {uses}. A schema can use only one version of it. Select the same version for '{s}' as the Schemas it comes through, or update those Schemas to v{chosen}: select v{chosen} for '{s}' in their references and save them.` / when it is not the highest: `'{s}' is used at more than one version: {uses}. A schema can use only one version of it. Select v{latest} for '{s}', the version the Schemas it comes through use.`) / `The reference name '{x}' is used for more than one Schema: {subjects}. Each Schema needs its own reference name.` |
 | E1 | Schema Registry accepts the schema as valid | `Schema Registry rejected the schema: {reason}` / `Schema Registry rejected the schema without giving a reason.` (an `Invalid schema` message with no reason) / `Schema Registry rejected the schema (error code {code}).` (any registry text that is not an `Invalid schema` reason or a known not-found text) |
 | E2 | Schema Registry finds it compatible with the registered versions | `Not {sr_level}-compatible with version {n}: {descriptions}` (when the registry names no version: `Not {sr_level}-compatible with the existing versions: {descriptions}`) |
-| E3 | Schema Registry is reachable (timeouts, connection errors, 5xx, unreadable responses, a response that is not finished within `sr_timeout_seconds`, a redirect, a 404 that is not Schema Registry's "subject or version not found", a 4xx without an error_code, a validation still running at the `total_timeout_seconds` deadline) | `Could not reach Schema Registry to validate. Try again.` |
+| E3 | Schema Registry is reachable (timeouts, connection errors, 5xx, unreadable responses, a response that is not finished within `sr_timeout_seconds`, a response larger than `max_response_bytes`, a redirect, a 404 that is not Schema Registry's "subject or version not found", a 4xx without an error_code, a validation still running at the `total_timeout_seconds` deadline) | `Could not reach Schema Registry to validate. Try again.` |
 | E4 | Schema Registry accepts the validator's credentials (no 401 or 403) | `The validator is not allowed to query Schema Registry. Contact the platform team.` |
 | E5 | The subject accepts new versions (its mode, or the global mode when it has none, is `READWRITE`) | `Schema Registry does not accept new versions of '{name}' right now (mode {mode}). Contact the platform team.` |
 | E7 | On an edit, the format equals the latest version's (the platform never sends a format change; this guards against a platform bug) | `'{name}' is registered as {registered}. Its format cannot change: to use {requested}, create a new Schema.` |

@@ -1,11 +1,17 @@
+import gzip
 import json
+import socket
+import threading
+import time
 from contextlib import nullcontext as _nullcontext
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import requests
 import urllib3.exceptions
 
+from schema_validator import sr_client
 from schema_validator.models import ValidatorConfig
 from schema_validator.sr_client import (
     CompatibilityVerdict,
@@ -18,6 +24,7 @@ from schema_validator.sr_client import (
     SchemaVersion,
     SrReference,
 )
+from tests.local_server import LocalServer, drip, read_request, respond, send_drip
 
 BASE = "http://sr:8081"
 PASSWORD = "s3cret-Pa55"
@@ -69,6 +76,9 @@ class StubSession:
             raise self.raises
         assert self.response is not None
         return self.response
+
+    def mount(self, prefix: str, adapter: Any) -> None:
+        """The client mounts its adapter on a session it builds (test_from_config builds this stub)."""
 
     @property
     def last(self) -> tuple[str, str, dict[str, Any]]:
@@ -356,6 +366,9 @@ def test_from_config(monkeypatch):
     assert url == "http://sr:8081/subjects/a.B/versions/latest"
     assert kwargs["auth"] == ("u", "p")
     assert kwargs["timeout"] == 3
+    small = config.model_copy(update={"max_response_bytes": 10})
+    with pytest.raises(SchemaRegistryUnavailable, match="response larger than the limit"):
+        HttpSchemaRegistryClient.from_config(small).get_latest("a.B")
 
 
 # ---- untrusted 200 bodies of the wrong shape ---------------------------------
@@ -632,14 +645,6 @@ def test_latin1_password_is_accepted():
     HttpSchemaRegistryClient("http://x", "u", "pässwörd")
 
 
-def test_negative_timeout_is_unavailable(no_sockets):
-    # urllib3 rejects a timeout <= 0 with a ValueError before connecting.
-    client = HttpSchemaRegistryClient("http://127.0.0.1:9", timeout_seconds=-1)
-    for call in call_all(client):
-        with pytest.raises(SchemaRegistryUnavailable):
-            call()
-
-
 def test_lone_surrogate_subject_is_unavailable():
     # urllib.parse.quote encodes the subject as strict UTF-8.
     session = StubSession(StubResponse(200, AVRO_BODY))
@@ -795,3 +800,180 @@ def test_deadline_passed_before_the_body_is_unavailable(monkeypatch):
     with pytest.raises(SchemaRegistryUnavailable) as e:
         client_for(StubSession(response), timeout_seconds=2).get_latest("a.B")
     assert "longer than the timeout" in str(e.value)
+
+
+# ---- response cap, a total time per call, startup checks (audit 3 I3, M1, M2) --------
+
+def count_pieces(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """The sizes of the decoded pieces the client reads, in order."""
+    sizes: list[int] = []
+    real = sr_client._pieces
+
+    def counted(response: Any) -> Any:
+        for piece in real(response):
+            sizes.append(len(piece))
+            yield piece
+
+    monkeypatch.setattr(sr_client, "_pieces", counted)
+    return sizes
+
+
+def endless(conn: socket.socket, server: LocalServer) -> None:
+    read_request(conn, server)
+    conn.settimeout(5)
+    conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n")
+    chunk = b"%x\r\n%s\r\n" % (8192, b" " * 8192)
+    while not server.stopping.is_set():
+        conn.sendall(chunk)
+
+
+def test_endless_body_is_capped(monkeypatch):
+    sizes = count_pieces(monkeypatch)
+    with LocalServer(endless) as server:
+        client = HttpSchemaRegistryClient(server.url, max_response_bytes=100_000)
+        started = time.monotonic()
+        with pytest.raises(SchemaRegistryUnavailable) as e:
+            client.get_latest("a.B")
+        elapsed = time.monotonic() - started
+        assert server.peer_closed.wait(2)
+    assert str(e.value) == "GET /subjects/{s}/versions/latest: response larger than the limit"
+    assert elapsed < 2
+    assert 100_000 < sum(sizes) < 100_000 + 65536
+
+
+def test_gzip_bomb_is_capped(monkeypatch):
+    sizes = count_pieces(monkeypatch)
+    bomb = gzip.compress(bytes(50_000_000), compresslevel=9)  # about 50 KB on the wire
+    with LocalServer(respond("200 OK", bomb, "Content-Encoding: gzip\r\n")) as server:
+        client = HttpSchemaRegistryClient(server.url, max_response_bytes=1_000_000)
+        with pytest.raises(SchemaRegistryUnavailable, match="response larger than the limit"):
+            client.get_latest("a.B")
+    # urllib3 2.x read1 decodes at most one piece (64 KB) at a time, so the cap holds after decoding.
+    assert 1_000_000 < sum(sizes) < 1_000_000 + 65536
+    assert max(sizes) <= 65536
+
+
+def test_response_near_the_schema_limit_loads():
+    # Review focus 3: the largest schema a registry may hold, escaped inside its version body,
+    # fits the default limit with room to spare.
+    fields: list[dict[str, str]] = []
+    schema = ""
+    while len(schema) < 900_000:
+        fields.extend({"name": f"f{len(fields) + i}", "type": "string", "doc": "\"quoted\""} for i in range(1000))
+        schema = json.dumps({"type": "record", "name": "Big", "namespace": "a", "fields": fields})
+    body = json.dumps({"subject": "a.B", "version": 1, "id": 1, "schema": schema}).encode()
+    assert len(body) > 1_000_000
+    with LocalServer(respond("200 OK", body)) as server:
+        result = HttpSchemaRegistryClient(server.url).get_latest("a.B")
+    assert result is not None and result.schema == schema
+
+
+def test_header_drip_is_cut_at_the_call_timeout():
+    with LocalServer(drip(b"HTTP/1.1 200 OK\r\nX-A: ")) as server:
+        client = HttpSchemaRegistryClient(server.url, timeout_seconds=1)
+        started = time.monotonic()
+        with pytest.raises(SchemaRegistryUnavailable):
+            client.get_latest("a.B")
+        elapsed = time.monotonic() - started
+        assert server.peer_closed.wait(1)
+    assert elapsed < 1.6
+
+
+def test_watchdog_closes_only_its_own_call():
+    # Review focus 4: one client, two threads. A's watchdog fires while B's call is in flight.
+    def by_subject(conn: socket.socket, server: LocalServer) -> None:
+        request = read_request(conn, server)
+        if b"slow" in request:
+            send_drip(conn, server, b"HTTP/1.1 200 OK\r\nX-A: ")
+            return
+        server.stopping.wait(0.7)
+        body = json.dumps(AVRO_BODY).encode()
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s" % (len(body), body))
+
+    outcomes: dict[str, object] = {}
+
+    def run(name: str, subject: str, client: HttpSchemaRegistryClient) -> None:
+        try:
+            outcomes[name] = client.get_latest(subject)
+        except SchemaRegistryError as e:
+            outcomes[name] = e
+
+    with LocalServer(by_subject) as server:
+        client = HttpSchemaRegistryClient(server.url, timeout_seconds=1)
+        a = threading.Thread(target=run, args=("A", "slow.S", client))
+        b = threading.Thread(target=run, args=("B", "a.B", client))
+        a.start()
+        time.sleep(0.5)  # B starts at 0.5 s and is answered at 1.2 s, after A's watchdog (1.0 s)
+        b.start()
+        a.join(3)
+        b.join(3)
+        assert not a.is_alive() and not b.is_alive()
+    assert isinstance(outcomes["A"], SchemaRegistryUnavailable)
+    assert outcomes["B"] == SchemaVersion("a.B", 1, "AVRO", '"string"', ())
+
+
+def test_watchdog_never_reaches_a_connection_back_in_the_pool(monkeypatch):
+    # The timer may fire just as a call ends, after its connection went back to the pool
+    # and before the timer is cancelled. Here it fires exactly then: the next call must
+    # still reuse that connection (the watchdog left it alone).
+    class FiresOnCancel:
+        def __init__(self, interval: float, function: Any) -> None:
+            self.function = function
+            self.daemon = False
+
+        def start(self) -> None:
+            pass
+
+        def cancel(self) -> None:
+            self.function()
+
+    monkeypatch.setattr(sr_client.threading, "Timer", FiresOnCancel)
+    with LocalServer(respond("200 OK", json.dumps(AVRO_BODY).encode())) as server:
+        client = HttpSchemaRegistryClient(server.url)
+        assert client.get_latest("a.B") is not None
+        assert client.get_latest("a.B") is not None
+        assert server.connections == 1
+
+
+URL_ERROR_TEXT = "Schema Registry URL must be http:// or https:// with a host"
+
+
+@pytest.mark.parametrize("url", ["", "localhost:18081", "ftp://x", "http://", "http://[::1"])
+def test_bad_url_is_a_config_error(url):
+    with pytest.raises(SchemaRegistryConfigError) as info:
+        HttpSchemaRegistryClient(url)
+    assert str(info.value) == URL_ERROR_TEXT
+    assert info.value.__cause__ is None
+
+
+def test_default_config_url_is_a_config_error():
+    # ValidatorConfig's sr_url defaults to "": the platform must set it before building the client.
+    with pytest.raises(SchemaRegistryConfigError, match="URL"):
+        HttpSchemaRegistryClient.from_config(ValidatorConfig())
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf"), None, "10"])
+def test_bad_timeout_is_a_config_error(timeout):
+    with pytest.raises(SchemaRegistryConfigError) as info:
+        HttpSchemaRegistryClient(BASE, timeout_seconds=timeout)
+    assert str(info.value) == "Schema Registry timeout must be a number of seconds above 0"
+
+
+@pytest.mark.parametrize("limit", [0, -1, None, 1.5])
+def test_bad_response_limit_is_a_config_error(limit):
+    with pytest.raises(SchemaRegistryConfigError) as info:
+        HttpSchemaRegistryClient(BASE, max_response_bytes=limit)
+    assert str(info.value) == "Schema Registry response limit must be a whole number of bytes, at least 1"
+
+
+def test_https_url_is_accepted(no_sockets):
+    HttpSchemaRegistryClient("https://sr.example:8081")
+
+
+def test_watchdog_ignores_a_socket_closed_meanwhile():
+    # The call may close its socket just as the timer fires: shutdown then fails, harmlessly.
+    sock = socket.socket()
+    sock.close()
+    watch = sr_client._CallWatch(1)
+    watch.record(SimpleNamespace(sock=sock))  # type: ignore[arg-type]
+    watch._abort()

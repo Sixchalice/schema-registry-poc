@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextvars
 import json
-import socket
 import subprocess
 import sys
 import threading
@@ -34,6 +33,7 @@ from schema_validator.sr_client import (
     SrReference,
 )
 from tests.fake_sr import FakeSchemaRegistry
+from tests.local_server import LocalServer, drip
 from tests.test_sr_messages import AVRO, INVALID, TYPE_CHANGE
 
 SCHEMAS = Path(__file__).parent / "schemas"
@@ -1224,47 +1224,13 @@ def test_exception_is_still_internal_error_under_the_deadline(sr: FakeSchemaRegi
 
 
 def test_header_drip_is_bounded() -> None:
-    stop = threading.Event()
-
-    def drip(conn: socket.socket) -> None:
-        with conn:
-            conn.settimeout(0.5)
-            try:
-                conn.recv(65536)
-                for byte in b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" * 10:
-                    if stop.is_set():
-                        return
-                    conn.sendall(bytes([byte]))
-                    time.sleep(0.2)
-            except OSError:
-                return
-
-    listener = socket.socket()
-    listener.bind(("127.0.0.1", 0))
-    listener.listen(1)
-    listener.settimeout(0.2)
-
-    def accept() -> None:
-        while not stop.is_set():
-            try:
-                conn, _ = listener.accept()
-            except OSError:
-                continue
-            threading.Thread(target=drip, args=(conn,), daemon=True).start()
-
-    acceptor = threading.Thread(target=accept, daemon=True)
-    acceptor.start()
-    try:
-        client = HttpSchemaRegistryClient(
-            f"http://127.0.0.1:{listener.getsockname()[1]}", "u", "p", timeout_seconds=5)
+    # The client's own limit (5 s) is longer than the validation's: the total deadline answers first.
+    with LocalServer(drip(b"HTTP/1.1 200 OK\r\nX-A: ")) as server:
+        client = HttpSchemaRegistryClient(server.url, "u", "p", timeout_seconds=5)
         started = time.monotonic()
         result = validate(req("AVRO", "order", ORDER, previous_name=ORDER), client,
                           ValidatorConfig(total_timeout_seconds=1))
         elapsed = time.monotonic() - started
-    finally:
-        stop.set()
-        acceptor.join()
-        listener.close()
     assert result == ValidationResult(False, "Error", messages.SR_UNREACHABLE)
     assert elapsed < 1.5
 
@@ -1313,6 +1279,7 @@ threading.stack_size(128 * 1024)
 from schema_validator import ValidationRequest, ValidatorConfig, validate
 from schema_validator.formats._depth import json_depth
 from tests.fake_sr import FakeSchemaRegistry
+from tests.local_server import LocalServer, drip
 node = {"type": "string", "enum": ["x"]}
 for _ in range(30):
     node = {"type": "object", "properties": {"p": node}}

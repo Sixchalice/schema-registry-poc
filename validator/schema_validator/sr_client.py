@@ -2,13 +2,19 @@
 from __future__ import annotations
 
 import json
+import math
+import socket
+import threading
 import time
 import urllib.parse
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 import requests
+import requests.adapters
+import urllib3.connection
+import urllib3.connectionpool
 import urllib3.exceptions
 
 from schema_validator.models import ValidatorConfig
@@ -120,7 +126,26 @@ class HttpSchemaRegistryClient:
     """
 
     def __init__(self, url: str, username: str | None = None, password: str | None = None,
-                 timeout_seconds: float = 10, session: requests.Session | None = None) -> None:
+                 timeout_seconds: float = 10, session: requests.Session | None = None,
+                 max_response_bytes: int = 5_000_000) -> None:
+        """Raises SchemaRegistryConfigError for a value no call could work with.
+
+        `timeout_seconds` bounds each call as a whole, headers included: the client's own
+        session shuts the call's socket down when it runs out (_CallWatch). A `session`
+        passed in gets no such watchdog; its calls are bounded only by the per-read timeout
+        and the clock checks between body pieces.
+        """
+        try:
+            parts = urllib.parse.urlsplit(url)
+        except ValueError:
+            parts = None
+        if parts is None or parts.scheme not in ("http", "https") or not parts.hostname:
+            raise SchemaRegistryConfigError("Schema Registry URL must be http:// or https:// with a host")
+        if not (_is_number(timeout_seconds) and math.isfinite(timeout_seconds) and timeout_seconds > 0):
+            raise SchemaRegistryConfigError("Schema Registry timeout must be a number of seconds above 0")
+        if not _is_int(max_response_bytes) or max_response_bytes < 1:
+            raise SchemaRegistryConfigError(
+                "Schema Registry response limit must be a whole number of bytes, at least 1")
         for credential in (username, password):
             try:
                 (credential or "").encode("latin-1")
@@ -131,11 +156,18 @@ class HttpSchemaRegistryClient:
         self._url = url.rstrip("/")
         self._auth = (username, password or "") if username else None
         self._timeout = timeout_seconds
-        self._session = session if session is not None else requests.Session()
+        self._max_response_bytes = max_response_bytes
+        # Each thread's current _CallWatch, for the client's own session; None for a caller's.
+        self._calls: threading.local | None = None
+        if session is None:
+            self._calls = threading.local()
+            session = _watched_session(self._calls)
+        self._session = session
 
     @classmethod
     def from_config(cls, config: ValidatorConfig) -> HttpSchemaRegistryClient:
-        return cls(config.sr_url, config.sr_username, config.sr_password, config.sr_timeout_seconds)
+        return cls(config.sr_url, config.sr_username, config.sr_password, config.sr_timeout_seconds,
+                   max_response_bytes=config.max_response_bytes)
 
     def get_latest(self, subject: str) -> SchemaVersion | None:
         return self._get_version("/subjects/{s}/versions/latest", subject)
@@ -219,6 +251,11 @@ class HttpSchemaRegistryClient:
         """
         where = f"{method} {path}"
         started = time.monotonic()
+        watch = None
+        if self._calls is not None:
+            watch = _CallWatch(self._timeout)
+            self._calls.watch = watch
+            watch.start()
         response = None
         try:
             try:
@@ -234,21 +271,28 @@ class HttpSchemaRegistryClient:
                     allow_redirects=False,
                     stream=True,
                 )
-                # `timeout` bounds connect and each read, not the whole response: a
-                # server that trickles bytes would hold the call open, so check the
-                # clock after every piece of the body.
-                # Headers are not covered (requests has no total limit for them), but
-                # a deadline already passed is caught here, which also covers an empty body.
+                # `timeout` bounds connect and each read, not the whole response. The
+                # watchdog bounds the whole call on the client's own session; for a
+                # caller's session (and a body sent without a length, read after
+                # http.client has let go of the socket) the clock is checked when the
+                # headers are in, which also covers an empty body, and after every piece.
                 _check_deadline(started, self._timeout, where)
+                # The decoded size is counted too: neither an endless body nor a gzip
+                # bomb is held in memory.
                 chunks = []
+                size = 0
                 for chunk in _pieces(response):
+                    size += len(chunk)
+                    if size > self._max_response_bytes:
+                        raise SchemaRegistryUnavailable(f"{where}: response larger than the limit")
                     chunks.append(chunk)
                     _check_deadline(started, self._timeout, where)
                 raw = b"".join(chunks)
             except (requests.RequestException, urllib3.exceptions.HTTPError, OSError, ValueError) as e:
                 # urllib3 errors and OSError come from reading the body (stream=True, so
-                # requests does not wrap them). ValueError covers urllib3's timeout <= 0
-                # check (non-Latin-1 credentials are rejected at construction).
+                # requests does not wrap them), or from a socket the watchdog shut down.
+                # ValueError covers value checks in urllib3 and http.client (the URL and
+                # credentials are checked at construction).
                 raise SchemaRegistryUnavailable(f"{where}: {type(e).__name__}") from None
             status = response.status_code
             if status in (401, 403):
@@ -274,6 +318,8 @@ class HttpSchemaRegistryClient:
                 raise _bad_body(method, path)
             return body
         finally:
+            if watch is not None:
+                watch.stop()
             if response is not None:
                 response.close()
 
@@ -291,6 +337,10 @@ def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def _quote(subject: str) -> str:
     return urllib.parse.quote(subject, safe="")
 
@@ -306,6 +356,90 @@ _READ_SIZE = 65536
 def _check_deadline(started: float, timeout: float, where: str) -> None:
     if time.monotonic() > started + timeout:
         raise SchemaRegistryUnavailable(f"{where}: response took longer than the timeout")
+
+
+class _CallWatch:
+    """The watchdog of one call: once the call has run `timeout` seconds, it shuts down the
+    socket of the connection the call is using, so a blocked read ends (audit 3 M1).
+
+    The connection is recorded as a request starts on it and forgotten when it goes back
+    to the pool or the call ends, all under one lock, so the watchdog never reaches a
+    connection that another call may be using.
+    """
+
+    def __init__(self, timeout: float) -> None:
+        self._lock = threading.Lock()
+        self._connection: urllib3.connection.HTTPConnection | None = None
+        self._timer = threading.Timer(timeout, self._abort)
+        self._timer.daemon = True
+
+    def start(self) -> None:
+        self._timer.start()
+
+    def record(self, connection: urllib3.connection.HTTPConnection) -> None:
+        with self._lock:
+            self._connection = connection
+
+    def release(self, connection: object) -> None:
+        with self._lock:
+            if self._connection is connection:
+                self._connection = None
+
+    def stop(self) -> None:
+        self._timer.cancel()
+        with self._lock:
+            self._connection = None
+
+    def _abort(self) -> None:
+        with self._lock:
+            sock = self._connection.sock if self._connection is not None else None
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass  # already closed
+
+
+def _watched_session(calls: threading.local) -> requests.Session:
+    """A Session whose connections report to `calls.watch`, the calling thread's _CallWatch.
+
+    A connection records itself as each request starts on it, and its pool releases it
+    from the watch when it is put back. Every request and release happens inside a call,
+    in the calling thread, after that call has set `calls.watch`.
+    """
+
+    class Recording:
+        def request(self, *args: Any, **kwargs: Any) -> None:
+            calls.watch.record(self)
+            super().request(*args, **kwargs)  # type: ignore[misc]
+
+    class Connection(Recording, urllib3.connection.HTTPConnection):
+        pass
+
+    class TlsConnection(Recording, urllib3.connection.HTTPSConnection):
+        pass
+
+    class Releasing:
+        def _put_conn(self, conn: urllib3.connection.HTTPConnection | None) -> None:
+            calls.watch.release(conn)
+            super()._put_conn(conn)  # type: ignore[misc]
+
+    class Pool(Releasing, urllib3.connectionpool.HTTPConnectionPool):
+        ConnectionCls = Connection
+
+    class TlsPool(Releasing, urllib3.connectionpool.HTTPSConnectionPool):
+        ConnectionCls = TlsConnection
+
+    class Adapter(requests.adapters.HTTPAdapter):
+        def init_poolmanager(self, *args: Any, **kwargs: Any) -> None:
+            super().init_poolmanager(*args, **kwargs)
+            self.poolmanager.pool_classes_by_scheme = {"http": Pool, "https": TlsPool}
+
+    session = requests.Session()
+    adapter = Adapter()
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
 
 
 def _pieces(response: requests.Response) -> Iterator[bytes]:
