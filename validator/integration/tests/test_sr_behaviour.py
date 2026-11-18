@@ -557,8 +557,9 @@ def test_json_internal_refs(
     assert verdict.is_compatible is accepted, verdict
 
 
-# The default max_schema_bytes (100,000) is the largest the registry can store in the worst case: it keeps a
-# re-printed copy of the schema in one Kafka record of about 1 MB (audit 5 C3)
+# These two shapes (30-level int32 fields, Avro 1e6 numbers) register at the default max_schema_bytes (100,000);
+# the registry keeps a re-printed copy in one Kafka record of about 1 MB (audit 5 C3). Not every shape fits:
+# a deeply nested allow_alias enum of short values is refused above about 89,998 bytes (see VERIFICATION.md)
 
 def _largest_protobuf(ns: str, levels: int = 30) -> str:
     """Compact, `levels` nested messages (protoc compiles at most 31), int32 fields up to 99,000-100,000 bytes."""

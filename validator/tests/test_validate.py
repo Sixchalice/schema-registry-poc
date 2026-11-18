@@ -491,7 +491,7 @@ def test_duplicate_rows_skip_stage_d(sr: FakeSchemaRegistry, run: Callable) -> N
 
 def test_duplicate_rows_skip_row_normalisation(sr: FakeSchemaRegistry, run: Callable) -> None:
     # JSON rows without a ref_string would get D6 if the rows were normalised.
-    rows = [ReferenceInput("com.acme.Address", "com.acme.Address", 1), ReferenceInput("com.acme.Address", "com.acme.Address", 1)]
+    rows = [ReferenceInput("com.acme.Address", None, 1), ReferenceInput("com.acme.Address", None, 1)]
     result = run(req("JSON", "order", "com.acme.Order", references=rows), sr)
     assert result == ValidationResult(False, "Error", messages.REFERENCE_DUPLICATE.format(x="com.acme.Address"))
     assert sr.calls == []
