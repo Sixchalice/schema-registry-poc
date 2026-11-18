@@ -99,8 +99,15 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
     draft = declared.removesuffix("#") if draft_ok and isinstance(declared, str) else None
     id_keyword = "id" if draft == _DRAFT_04 else "$id"
 
+    # Step 5a: the walk comes first, because check_schema takes quadratic time on some long lists
+    ref_places, nested_ids, nested_schemas, format_places, long_lists = _walk(
+        schema, id_keyword, draft == _DRAFT_04
+    )
+    if long_lists:
+        errors.append(messages.JSON_ARRAY_TOO_LONG.format(paths=_paths(long_lists)))
+
     # Step 6
-    if draft_ok:
+    if draft_ok and not long_lists:
         try:
             validator_for(schema, default=Draft7Validator).check_schema(schema)
         except SchemaError as e:
@@ -109,7 +116,6 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
             errors.append(messages.JSON_TOO_DEEP)
 
     # Steps 6a to 6d: where "$id" and "$schema" may be (the order is C, D, A, B)
-    ref_places, nested_ids, nested_schemas, format_places = _walk(schema, id_keyword)
     if "$schema" not in schema:
         errors.append(messages.JSON_SCHEMA_MISSING)
     root_id = schema.get(id_keyword)
@@ -308,9 +314,25 @@ def _escape(token: str) -> str:
     return token.replace("~", "~0").replace("/", "~1")
 
 
-def _walk(schema: dict[str, Any], id_keyword: str) -> tuple[list[tuple[str, str]], list[str], list[str], list[str]]:
+_LONG_LIST = 1000
+
+
+def _quadratic(items: list[Any]) -> bool:
+    """A list longer than _LONG_LIST that is not all strings and not all numbers (a bool is not a number)."""
+    if len(items) <= _LONG_LIST:
+        return False
+    if all(isinstance(each, str) for each in items):
+        return False
+    return not all(isinstance(each, (int, float)) and not isinstance(each, bool) for each in items)
+
+
+def _walk(
+    schema: dict[str, Any], id_keyword: str, long_enum: bool
+) -> tuple[list[tuple[str, str]], list[str], list[str], list[str], list[str]]:
     """The string `$ref` values with the JSON Pointer of each `$ref` keyword, and the JSON Pointers of the nested objects that have the id keyword
-    and of those that have `$schema`, and the JSON Pointers of the `format` keywords with a string value.
+    and of those that have `$schema`, and the JSON Pointers of the `format` keywords with a string value,
+    and the JSON Pointers of the `required`, `type` (and, if `long_enum`, `enum`) lists that jsonschema
+    checks for duplicates in quadratic time.
 
     Visits the objects a schema can hold: name maps (`properties` and the like) are names, not
     keywords; `enum`, `const`, `default`, `examples` and
@@ -321,6 +343,7 @@ def _walk(schema: dict[str, Any], id_keyword: str) -> tuple[list[tuple[str, str]
     with_id: list[str] = []
     with_schema: list[str] = []
     formats: list[str] = []
+    long_lists: list[str] = []
     pending: list[tuple[Any, str]] = [(schema, "")]
     while pending:
         value, pointer = pending.pop()
@@ -335,6 +358,12 @@ def _walk(schema: dict[str, Any], id_keyword: str) -> tuple[list[tuple[str, str]
             if "$schema" in value:
                 with_schema.append(pointer)
         for key, child in value.items():
+            if (
+                (key in ("required", "type") or (key == "enum" and long_enum))
+                and isinstance(child, list)
+                and _quadratic(child)
+            ):
+                long_lists.append(f"{pointer}/{key}")
             if key == "$ref" and isinstance(child, str):
                 refs.append((f"{pointer}/$ref", child))
             elif key == "format" and isinstance(child, str):
@@ -345,7 +374,7 @@ def _walk(schema: dict[str, Any], id_keyword: str) -> tuple[list[tuple[str, str]
                 pending.extend((each, f"{pointer}/{_escape(key)}/{_escape(name)}") for name, each in child.items())
             else:
                 pending.append((child, f"{pointer}/{_escape(key)}"))
-    return refs, with_id, with_schema, formats
+    return refs, with_id, with_schema, formats, long_lists
 
 
 def _paths(pointers: list[str]) -> str:

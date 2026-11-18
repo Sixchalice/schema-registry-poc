@@ -1010,3 +1010,43 @@ def test_metaschema_location_longer_than_the_limit_is_cut_with_the_rest() -> Non
     key = "k" * 2000
     err = _metaschema_text("5 is not of type 'string'", ["properties", key, "type"])
     assert err == shorten(f"5 is not of type 'string' (at /properties/{key}/type)", 1000)
+
+
+D4 = "http://json-schema.org/draft-04/schema#"
+
+
+def _d4_enum(values: list[Any]) -> dict[str, Any]:
+    return schema(**{"$schema": D4, "properties": {"x": {"enum": values}}})
+
+
+def test_long_enum_of_objects_is_refused_quickly() -> None:
+    started = time.monotonic()
+    result = run(_d4_enum([{"a": i} for i in range(40_000)]))
+    assert time.monotonic() - started < 2
+    assert result.errors == [messages.JSON_ARRAY_TOO_LONG.format(paths="'/properties/x/enum'")]
+
+
+def test_long_required_of_mixed_items_is_refused() -> None:
+    result = run(schema(required=[1, "a"] * 600))
+    assert result.errors == [messages.JSON_ARRAY_TOO_LONG.format(paths="'/required'")]
+
+
+def test_long_type_with_booleans_among_numbers_is_refused() -> None:
+    result = run(schema(properties={"x": {"type": [True, 1.5] * 600}}))
+    assert result.errors == [messages.JSON_ARRAY_TOO_LONG.format(paths="'/properties/x/type'")]
+
+
+def test_long_sortable_arrays_still_pass() -> None:
+    assert run(_d4_enum([f"v{i}" for i in range(5000)])).errors == []
+    assert run(_d4_enum(list(range(5000))) ).errors == []
+    assert run(_d4_enum([{"a": i} for i in range(1000)])).errors == []
+
+
+def test_long_enum_outside_draft_04_is_not_checked() -> None:
+    result = run(schema(properties={"x": {"enum": [{"a": i} for i in range(2000)]}}))
+    assert messages.JSON_ARRAY_TOO_LONG.format(paths="'/properties/x/enum'") not in result.errors
+
+
+def test_property_named_required_is_not_a_keyword() -> None:
+    result = run(schema(properties={"required": {"type": "string"}, "type": {"enum": [1, "a"] * 600}}))
+    assert not any("too long" in e or "1,000 items" in e for e in result.errors)

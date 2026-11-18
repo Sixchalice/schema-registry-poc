@@ -153,6 +153,10 @@ JSON_FORMAT_NOT_CHECKED = (
     'This schema uses "format" at {paths}. Java producers can reject values that do not match it, '
     'while Python producers do not check it, so the two can accept different data.'
 )
+JSON_ARRAY_TOO_LONG = (
+    'A "required", "type" or "enum" list at {paths} has more than 1,000 items that are not all strings or all numbers. '
+    "Checking it would take too long: shorten it to 1,000 items or fewer."
+)
 JSON_TOO_DEEP = "JSON schema is nested too deeply."
 SCHEMA_TOO_DEEP = "Schema is nested more than {max} levels deep, counting every JSON object and array."
 
