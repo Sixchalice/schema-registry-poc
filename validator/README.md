@@ -155,7 +155,7 @@ All errors are collected; a stage is skipped only when it depends on one that fa
 | D7 | One version per subject and one Schema per reference name, across the whole graph (the rows and everything they reference) | `'{s}' is used at more than one version: {uses}. A schema can use only one version of it. Update the Schemas that use an older version to v{latest}: select v{latest} for '{s}' in their references and save them. Then save this schema.` (when one of the versions is this schema's own row and it is the highest: `'{s}' is used at more than one version: {uses}. A schema can use only one version of it. Select the same version for '{s}' as the Schemas it comes through, or update those Schemas to v{chosen}: select v{chosen} for '{s}' in their references and save them.` / when it is not the highest: `'{s}' is used at more than one version: {uses}. A schema can use only one version of it. Select v{latest} for '{s}', the version the Schemas it comes through use.`) / `The reference name '{x}' is used for more than one Schema: {subjects}. Each Schema needs its own reference name.` |
 | E1 | Schema Registry accepts the schema as valid | `Schema Registry rejected the schema: {reason}` / `Schema Registry rejected the schema without giving a reason.` (an `Invalid schema` message with no reason) / `Schema Registry rejected the schema (error code {code}).` (any registry text that is not an `Invalid schema` reason or a known not-found text) |
 | E2 | Schema Registry finds it compatible with the registered versions | `Not {sr_level}-compatible with version {n}: {descriptions}` (when the registry names no version: `Not {sr_level}-compatible with the existing versions: {descriptions}`) |
-| E3 | Schema Registry is reachable (timeouts, connection errors, 5xx, unreadable responses, a response that is not finished within `sr_timeout_seconds`, a redirect, a 404 that is not Schema Registry's "subject or version not found", a 4xx without an error_code) | `Could not reach Schema Registry to validate. Try again.` |
+| E3 | Schema Registry is reachable (timeouts, connection errors, 5xx, unreadable responses, a response that is not finished within `sr_timeout_seconds`, a redirect, a 404 that is not Schema Registry's "subject or version not found", a 4xx without an error_code, a validation still running at the `total_timeout_seconds` deadline) | `Could not reach Schema Registry to validate. Try again.` |
 | E4 | Schema Registry accepts the validator's credentials (no 401 or 403) | `The validator is not allowed to query Schema Registry. Contact the platform team.` |
 | E5 | The subject accepts new versions (its mode, or the global mode when it has none, is `READWRITE`) | `Schema Registry does not accept new versions of '{name}' right now (mode {mode}). Contact the platform team.` |
 | E7 | On an edit, the format equals the latest version's (the platform never sends a format change; this guards against a platform bug) | `'{name}' is registered as {registered}. Its format cannot change: to use {requested}, create a new Schema.` |
@@ -236,13 +236,14 @@ The results of the last run are in [VERIFICATION.md](VERIFICATION.md).
 
 ## Known behaviours
 
-These were found by the second audit (F10, F11). They are documented, not changed. The evidence is in `/Users/noamram/validator-audit-2/REPORT.md` (F10, F11), outside this repository.
+These were found by the second audit (F10, F11) and its final review. They are documented, not changed. The evidence is in `/Users/noamram/validator-audit-2/REPORT.md` (F10, F11), outside this repository.
 
 - **A `$ref` inside an unknown keyword is a use (F10).** `"x-doc": {"$ref": "elsewhere.json"}` counts like any other `$ref`: an external one needs a reference row, and an internal one must resolve (stage B, JSON rules 10 and 11). The registry and the clients ignore unknown keywords, so this is a false rejection by design. Move the annotation out of the schema.
 - **Looser than the owner rules (F11).** The clients work in each case.
   - A root `$id` of `#foo` passes (the fragment rule needs a non-empty part before `#`).
   - An Avro type that comes only through another reference, and a Protobuf type from an `import public`, needs no reference row of its own.
   - A Protobuf import that is never used still counts as a use of its row.
+- **Avro names are stricter than the registry and the clients.** The name rule (`AVRO_NAME_CHARS`) allows only A-Z, a-z, digits and underscores in each dotted part. The registry and the clients accept more, such as non-ASCII letters (`Ordér`) and parts like `a-b` (both checked on the registry, which accepts them). The rule follows the Avro specification on purpose.
 
 ## Not done by the validator
 

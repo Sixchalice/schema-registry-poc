@@ -104,7 +104,7 @@ Rules:
 def validate(request: ValidationRequest, sr: SchemaRegistryClient, config: ValidatorConfig) -> ValidationResult
 ```
 
-`validate` must never raise. Unexpected exceptions become a single Error: "Internal validator error: ...".
+`validate` must never raise. Unexpected exceptions become a single Error: "Internal validator error: ...". This still holds with the worker thread of `total_timeout_seconds` (section 3.1): whatever ends the worker (any exception, `BaseException` included) is handed back and becomes that Error, a failure to start the worker becomes it too, and a worker still running at the deadline gives E3 and its late result or exception is discarded. A `KeyboardInterrupt` delivered to the calling thread while it waits is not caught, as before the thread. The worker runs with a 16 MB stack and in a copy of the caller's `contextvars` context (section 8).
 
 ---
 
@@ -317,7 +317,7 @@ Known behaviours, not changed (audit 2 F11; the clients work in each case): an A
 
 Thin wrapper; all calls use header `Content-Type: application/vnd.schemaregistry.v1+json`, basic auth, and the configured timeout. URL-encode subject names in paths.
 
-Every request is sent with `allow_redirects=False` and `stream=True`. `sr_timeout_seconds` is a deadline for the whole response, counted from sending the request: the body is read with urllib3 2.x `response.raw.read1(65536, decode_content=True)` until it returns `b""`, which hands over whatever one underlying read gives, and the clock is checked after each call, so a registry that sends a byte every second cannot hold the call open (`iter_content(chunk_size=None)` waits for the whole non-chunked body, and any larger chunk size waits for a full chunk). Without `raw.read1` (urllib3 1.x) it falls back to `iter_content(chunk_size=1)`. The `timeout` passed to `requests` still bounds connect and each read. An overrun is E3, as is any 3xx (a redirect is never followed, so credentials are never sent to another host). A urllib3 or OS error while reading the body (a stall past the per-read timeout, a reset, a bad encoding) is E3 too. The deadline is also checked once when the headers are in, which covers an empty body. It does not interrupt a slow header read: a server that drips its status line and headers can hold a call for up to the per-read timeout per byte, because `requests` has no total-time limit for headers. `total_timeout_seconds` (section 3.3) is what bounds that case: `validate` gives up at the deadline and answers E3, and the abandoned daemon thread makes no further registry calls (its client is wrapped to raise `SchemaRegistryUnavailable` once the deadline has passed), so it ends when the call in flight does. The response is always closed. A rejection (`SchemaRegistryRejected`) carries only the body's `message` (or "") and its `error_code`, never the raw body, which may echo request headers.
+Every request is sent with `allow_redirects=False` and `stream=True`. `sr_timeout_seconds` is a deadline for the whole response, counted from sending the request: the body is read with urllib3 2.x `response.raw.read1(65536, decode_content=True)` until it returns `b""`, which hands over whatever one underlying read gives, and the clock is checked after each call, so a registry that sends a byte every second cannot hold the call open (`iter_content(chunk_size=None)` waits for the whole non-chunked body, and any larger chunk size waits for a full chunk). Without `raw.read1` (urllib3 1.x) it falls back to `iter_content(chunk_size=1)`. The `timeout` passed to `requests` still bounds connect and each read. An overrun is E3, as is any 3xx (a redirect is never followed, so credentials are never sent to another host). A urllib3 or OS error while reading the body (a stall past the per-read timeout, a reset, a bad encoding) is E3 too. The deadline is also checked once when the headers are in, which covers an empty body. It does not interrupt a slow header read: a server that drips its status line and headers can hold a call for up to the per-read timeout per byte, because `requests` has no total-time limit for headers. `total_timeout_seconds` (section 3.1) is what bounds that case: `validate` gives up at the deadline and answers E3, and the abandoned daemon thread makes no further registry calls (its client is wrapped to raise `SchemaRegistryUnavailable` once the deadline has passed), so it ends when the call in flight does. The response is always closed. A rejection (`SchemaRegistryRejected`) carries only the body's `message` (or "") and its `error_code`, never the raw body, which may echo request headers.
 
 | Purpose | Call |
 |---|---|
@@ -416,10 +416,10 @@ Each format module exposes the same function:
 
 ```python
 def analyse(schema_text: str, referenced: dict[str, str], config) -> FormatAnalysis
-# FormatAnalysis: expected_name | None, external_refs: set[str] | None (None when the text could not be analysed; D4/D5 are then skipped), errors: list[str]
+# FormatAnalysis: expected_name | None, external_refs: set[str] | None (None when the text could not be analysed; D4/D5 are then skipped), errors: list[str], warnings: list[str] (for a schema that passes; added before the validator's own warnings)
 ```
 
-Type hints throughout, no global state, no network access outside `sr_client.py`.
+Type hints throughout, no global state, no network access outside `sr_client.py`. One exception to "no global state": `validate` starts its worker thread with a 16 MB stack (a default-depth JSON schema overflows a small default stack, such as musl's 128 KB, and the process dies with SIGBUS), and `threading.stack_size` is process-global. It is set, the worker started, and the old value restored in a `finally`, all under a module-level lock, so another thread that the application starts in that moment can also get a 16 MB stack. Where the size cannot be set, the worker gets the default stack.
 
 ---
 
