@@ -1,7 +1,6 @@
 """Stage B for JSON Schema (spec section 5.2)."""
 from __future__ import annotations
 
-import contextlib
 import json
 import re
 from typing import TYPE_CHECKING, Any
@@ -145,7 +144,7 @@ def analyse(schema_text: str, referenced: dict[str, str], config: ValidatorConfi
     not_found = []
     differ = []
     root = _python_resolver(base or _ROOT_URI, schema)
-    documents: dict[str, Resolver[Any] | None] = {}
+    documents: dict[str, _PythonReading | None] = {}
     for pointer, ref, target in targets:
         fragment = urldefrag(ref).fragment
         if target not in ("", base):
@@ -223,20 +222,27 @@ def _registry_target(schema: dict[str, Any], fragment: str) -> object:
     return node
 
 
-def _python_resolver(uri: str, contents: Any) -> Resolver[Any]:
+# A `referencing` resolver for one document, and whether crawling the document succeeded.
+_PythonReading = tuple["Resolver[Any]", bool]
+
+
+def _python_resolver(uri: str, contents: Any) -> _PythonReading:
     """A `referencing` resolver, as the Python client uses, for `contents` registered under `uri` as
-    a resource of its "$schema" draft (draft-07 when it has none or one `referencing` does not know)."""
+    a resource of its "$schema" draft (draft-07 when it has none or one `referencing` does not know),
+    and whether its crawl succeeded."""
     declared = contents.get("$schema") if isinstance(contents, dict) else None
     spec = specification_with(declared.removesuffix("#"), default=DRAFT7) if isinstance(declared, str) else DRAFT7
     registry = Registry().with_resource(uri, spec.create_resource(contents))
     # Crawled once, so that each anchor lookup does not crawl the whole schema again. A malformed
-    # subschema makes the crawl fail; the lookups that meet it then fail in `_python_target`.
-    with contextlib.suppress(Exception):
+    # subschema makes the crawl fail, and then every anchor lookup would crawl and fail again.
+    try:
         registry = registry.crawl()
-    return registry.resolver(base_uri=uri)
+    except Exception:
+        return registry.resolver(base_uri=uri), False
+    return registry.resolver(base_uri=uri), True
 
 
-def _reference_resolver(target: str, referenced: dict[str, str]) -> Resolver[Any] | None:
+def _reference_resolver(target: str, referenced: dict[str, str]) -> _PythonReading | None:
     """The resolver for the referenced text named `target`; None when it is not there or is not
     JSON (stage D4 reports a missing reference)."""
     text = referenced.get(target)
@@ -249,8 +255,14 @@ def _reference_resolver(target: str, referenced: dict[str, str]) -> Resolver[Any
     return _python_resolver(target, contents)
 
 
-def _python_target(resolver: Resolver[Any], ref: str) -> object:
+def _python_target(reading: _PythonReading, ref: str) -> object:
     """The node the Python client reaches for `ref`, or `_MISSING` when it cannot follow it."""
+    resolver, crawled = reading
+    fragment = ref.partition("#")[2]
+    if not crawled and fragment and not fragment.startswith("/"):
+        # An anchor lookup crawls the document, which fails for the Python client too. Not
+        # calling it keeps many anchors in a malformed schema from costing a crawl each.
+        return _MISSING
     try:
         return resolver.lookup(ref).contents
     except Exception:

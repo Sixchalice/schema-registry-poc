@@ -887,3 +887,37 @@ def test_refs_that_differ_are_listed_once_after_the_others() -> None:
         messages.JSON_REF_NOT_FOUND.format(paths="'/properties/b/$ref'"),
         messages.JSON_REF_CLIENTS_DIFFER.format(paths="'/properties/c/$ref', '/properties/d/$ref'"),
     ]
+
+
+def _anchors_and_refs(count: int, ref_prefix: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """`count` anchors under "$defs", one malformed subschema, and three "$ref"s to each anchor."""
+    defs: dict[str, Any] = {f"d{i}": {"$anchor": f"a{i}", "type": "string"} for i in range(count)}
+    defs["zz"] = {"items": 5}
+    props = {f"p{i}": {"$ref": f"{ref_prefix}#a{i % count}"} for i in range(3 * count)}
+    return defs, props
+
+
+MANY_DIFFER = messages.JSON_REF_CLIENTS_DIFFER.format(
+    paths="'/properties/p0/$ref', '/properties/p1/$ref', '/properties/p10/$ref' and 2997 more")
+
+
+def test_anchors_in_a_schema_that_cannot_be_crawled_are_fast() -> None:
+    # A failed crawl is not repeated for every anchor lookup (it took about 50 s at 2,000 anchors).
+    defs, props = _anchors_and_refs(1000, "")
+    d = {"$schema": D2020, "title": "com.acme.Order", "type": "object", "$defs": defs, "properties": props}
+    start = time.perf_counter()
+    errors = run(d).errors
+    assert time.perf_counter() - start < 1
+    assert errors[0].startswith("Invalid JSON schema: ")
+    assert errors[1:] == [MANY_DIFFER]
+
+
+def test_anchors_in_a_reference_that_cannot_be_crawled_are_fast() -> None:
+    defs, props = _anchors_and_refs(1000, "address.json")
+    text = json.dumps({"$schema": D2020, "type": "object", "$defs": defs, "properties": {"street": {}}})
+    props["street"] = {"$ref": "address.json#/properties/street"}
+    start = time.perf_counter()
+    errors = run_with(schema(properties=props), {"address.json": text}).errors
+    assert time.perf_counter() - start < 1
+    # The pointer into the malformed reference still resolves; only the anchors cannot be followed.
+    assert errors == [MANY_DIFFER]
